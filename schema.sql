@@ -35,6 +35,8 @@ create table if not exists public.battles (
   my_pick     text[] not null default '{}',    -- 自分の選出
   opp_pick    text[] not null default '{}',    -- 相手の選出
   mega        text,                            -- 自分がメガシンカさせた枠
+  opp_mega    text,                            -- 相手がメガシンカした姿
+  pred_lead   text,                            -- 先発予想（的中率の集計用）
 
   turns       jsonb not null default '[]',     -- ターンごとの行動ログ
   -- turns の1要素:
@@ -51,7 +53,9 @@ create table if not exists public.battles (
 
   created_at  timestamptz not null default now()
 );
-alter table public.battles add column if not exists mega  text;
+alter table public.battles add column if not exists mega      text;
+alter table public.battles add column if not exists opp_mega  text;  -- 相手がメガシンカした姿（バトル中に判明）
+alter table public.battles add column if not exists pred_lead text;  -- 先発予想（的中率の集計用）
 alter table public.battles add column if not exists turns jsonb not null default '[]';
 
 create index if not exists battles_user_played_idx on public.battles (user_id, played_at desc, created_at desc);

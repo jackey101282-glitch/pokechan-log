@@ -33,7 +33,7 @@ const SEASONS = ['M-5','M-6','M-7','M-8','M-4','M-3','M-2','M-1'];
 
 /* ---------- 状態 ---------- */
 let USER=null, TEAMS=[], BATTLES=[], EDIT_ID=null;
-const S = { opp:[], oppPick:[], myPick:[], result:null, mega:null, turns:[], tNew:[] };
+const S = { opp:[], oppPick:[], myPick:[], result:null, mega:null, oppMega:null, predLead:null, turns:[], tNew:[] };
 const DRAFT='pc_note_draft_v2', CTX='pc_note_ctx_v1';
 const setArr=(a,src)=>{a.length=0;(src||[]).forEach(v=>a.push(v));};
 
@@ -82,18 +82,31 @@ function autocomplete(inputSel, boxSel, source, onPick, opts){
   });
   return {refresh:render};
 }
-/** 過去に登録した相手ポケモンを優先して並べる */
-function speciesSource(q){
-  const seen = {};
-  BATTLES.forEach(b=> (b.opp_team||[]).forEach(n=> seen[n]=(seen[n]||0)+1));
-  const hit = n => !q || n.includes(q) || n.replace(/[ァ-ヶ]/g, c=>String.fromCharCode(c.charCodeAt(0)-0x60)).includes(q);
-  const list = SPECIES_NAMES.filter(hit);
-  return list.sort((a,b)=>{
-    const d=(seen[b]||0)-(seen[a]||0); if(d) return d;
-    const ai=a.indexOf(q), bi=b.indexOf(q);
-    return (ai<0?99:ai)-(bi<0?99:bi) || a.length-b.length;
-  }).map(n=> seen[n]? {name:n, meta:`過去${seen[n]}回`} : n);
+/** 過去に登録した相手ポケモンを優先して並べる
+ *  noMega=true のときはメガフォルムを候補から外す（相手のパーティ入力用） */
+function makeSpeciesSource(noMega){
+  return q=>{
+    const seen = {};
+    BATTLES.forEach(b=> (b.opp_team||[]).forEach(n=> seen[n]=(seen[n]||0)+1));
+    const hit = n => !q || n.includes(q);
+    let list = SPECIES_NAMES.filter(hit);
+    if(noMega) list = list.filter(n=> !PC.isMegaForm(n));
+    return list.sort((a,b)=>{
+      const d=(seen[b]||0)-(seen[a]||0); if(d) return d;
+      const ai=a.indexOf(q), bi=b.indexOf(q);
+      return (ai<0?99:ai)-(bi<0?99:bi) || a.length-b.length;
+    }).map(n=>{
+      const tags=[];
+      if(seen[n]) tags.push(`過去${seen[n]}回`);
+      if(noMega && PC.canMega(n)) tags.push('メガ可');
+      return tags.length? {name:n, meta:tags.join(' / ')} : n;
+    });
+  };
 }
+const speciesSource = makeSpeciesSource(false);
+const oppSpeciesSource = makeSpeciesSource(true);
+/** 相手の名前を、メガが判明していればメガ名に解決する */
+function effOpp(n){ return (S.oppMega && PC.BASE_OF[S.oppMega]===n) ? S.oppMega : n; }
 function moveSource(forMon){
   return q=>{
     const obs = PC.observedMoves(BATTLES)[forMon]||[];
@@ -179,10 +192,12 @@ $$('.tab').forEach(b=> b.onclick=()=>{
    対戦タブ
    ========================================================= */
 function initAutocompletes(){
-  autocomplete('#oppInput','#oppSug', speciesSource, n=>{
+  autocomplete('#oppInput','#oppSug', oppSpeciesSource, n=>{
     if(S.opp.length>=6) return toast('6匹までです',true);
-    if(S.opp.includes(n)) return toast('すでに入っています',true);
-    S.opp.push(n); renderOpp(); saveDraft();
+    const base = PC.toBase(n);                 // メガ名で入れられてもベースに直す
+    if(base!==n) toast(`${base} として登録しました（メガはバトル中に記録します）`);
+    if(S.opp.includes(base)) return toast('すでに入っています',true);
+    S.opp.push(base); renderOpp(); saveDraft();
   });
   autocomplete('#tInput','#tSug', speciesSource, n=>{
     if(S.tNew.length>=6) return toast('6匹までです',true);
@@ -208,7 +223,12 @@ function currentRoster(){
 function renderOpp(){
   const el=$('#oppChips');
   el.innerHTML = S.opp.length
-    ? S.opp.map((p,i)=>pkChip(p,{x:true,data:`data-i="${i}"`})).join('')
+    ? S.opp.map((p,i)=>{
+        const megaNow = S.oppMega && PC.BASE_OF[S.oppMega]===p;
+        const badge = megaNow ? `<span class="badge ng" style="margin-left:2px">→ ${esc(S.oppMega)}</span>`
+                   : (PC.canMega(p) ? '<span class="badge wn" style="margin-left:2px">メガ可</span>' : '');
+        return `<span class="pk">${typeChips(megaNow?S.oppMega:p)}<b>${esc(p)}</b>${badge}<span class="x" data-i="${i}">×</span></span>`;
+      }).join('')
     : '<span class="pk ghost">まだ入力されていません</span>';
   el.querySelectorAll('.x').forEach((x,i)=> x.onclick=()=>{
     const removed=S.opp.splice(i,1)[0];
@@ -217,13 +237,14 @@ function renderOpp(){
   });
   $('#oppCount').textContent = `${S.opp.length}/6`;
   renderQuick();
-  renderMyTeamChips(); renderPickers(); renderSuggest(); renderTurns(); renderGuide();
+  renderMyTeamChips(); renderPickers(); renderLeadPredict(); renderSuggest(); renderTurns(); renderGuide();
 }
 
 /* よく当たる相手のクイック選択。履歴がなければ環境の使用率上位で埋める */
+/* 使用率上位。相手側は「メガになる前の姿」で持つ（見せ合いでは判別できないため） */
 const META_TOP = ['ガブリアス','アシレーヌ','マスカーニャ','ブリジュラス','ミミッキュ','カバルドン',
-  'メガギャラドス','メガカイリュー','メガメタグロス','メガマフォクシー','メガリザードンY','メガハッサム',
-  'アーマーガア','イダイトウ♂','キラフロル','サザンドラ','メガゲッコウガ','メガゲンガー','ニンフィア','メガスコヴィラン'];
+  'ギャラドス','カイリュー','メタグロス','マフォクシー','リザードン','ハッサム',
+  'アーマーガア','イダイトウ♂','キラフロル','サザンドラ','ゲッコウガ','ゲンガー','ニンフィア','スコヴィラン'];
 function renderQuick(){
   const seen={};
   BATTLES.forEach(b=>(b.opp_team||[]).forEach(n=>seen[n]=(seen[n]||0)+1));
@@ -243,6 +264,43 @@ function renderQuick(){
   });
 }
 
+/* 相手の先発予想 ＋ それに対する自分の初手 */
+function renderLeadPredict(){
+  const card=$('#cardLead');
+  if(S.opp.length<3){ card.hidden=true; return; }
+  card.hidden=false;
+
+  // 過去の的中率
+  const done = BATTLES.filter(b=> b.pred_lead && (b.turns||[])[0] && b.turns[0].oppMon);
+  const hit  = done.filter(b=> PC.toBase(b.turns[0].oppMon)===b.pred_lead).length;
+  $('#leadAcc').textContent = done.length ? `これまでの的中率 ${pct(hit,done.length)}%（${hit}/${done.length}）` : '';
+
+  const pred = PC.predictLead(S.opp, BATTLES);
+  S.predLead = pred[0] ? pred[0].name : null;
+
+  const rc = rosterForCalc(currentRoster());
+  const mine = S.myPick.length ? S.myPick : rc.map(m=>m.name);
+
+  $('#leadPredict').innerHTML = pred.slice(0,4).map((p,i)=>{
+    // その先発に強い自分の駒
+    const best = mine.map(n=>{
+      const m = rc.find(r=>r.name===n) || {name:n};
+      return {n, mu:PC.matchup(m,{name:p.name})};
+    }).filter(x=>x.mu && !x.mu.danger).sort((a,b)=>b.mu.score-a.mu.score)[0];
+    return `<div class="pick-card ${i===0?'best':''}">
+      <div class="hd">
+        <b>${i===0?'本命':'対抗'+i}</b>
+        <span style="font-size:15px;font-weight:800;color:var(--fg)">${Math.round(p.pct*100)}%</span>
+        ${p.why.length?`<span class="muted">${esc(p.why.join('・'))}</span>`:'<span class="muted">根拠が薄い（記録待ち）</span>'}
+      </div>
+      <div class="pklist">${pkChip(p.name,{})}</div>
+      ${best?`<div class="small" style="margin-top:7px">→ 自分の初手は <b>${esc(best.n)}</b>
+         <span class="muted">(${Math.round(best.mu.myDmg*100)}% / 被${Math.round(best.mu.opDmg*100)}%${best.mu.faster?' 先制':''})</span></div>`
+        :`<div class="small" style="margin-top:7px"><span class="badge ng">安全に置ける初手がありません</span></div>`}
+    </div>`;
+  }).join('');
+}
+
 /* 相手1体ごとに「自分の選出の誰を当てるべきか」 */
 function renderGuide(){
   const card=$('#cardGuide'), out=$('#guideOut');
@@ -254,7 +312,7 @@ function renderGuide(){
   out.innerHTML = targets.map(o=>{
     const rows = mine.map(n=>{
       const m = rc.find(r=>r.name===n) || {name:n};
-      return {n, mu:PC.matchup(m,{name:o})};
+      return {n, mu:PC.matchup(m,{name:effOpp(o)})};
     }).filter(x=>x.mu).sort((a,b)=> b.mu.score - a.mu.score);
     if(!rows.length) return '';
     return `<div class="mg">
@@ -408,6 +466,10 @@ function renderTurns(){
           ? `<input type="text" data-t="${i}" data-k="opMove" value="${esc(t.oppAct.move||'')}" placeholder="使ってきた技" list="mvlist">`
           : t.oppAct.type==='switch'
           ? `<select data-t="${i}" data-k="opTo"><option value="">誰に交代？</option>${S.oppPick.filter(p=>p!==opMon).map(p=>`<option ${t.oppAct.to===p?'selected':''}>${esc(p)}</option>`).join('')}</select>`
+          : t.oppAct.type==='mega'
+          ? (PC.megaFormsOf(opMon).length
+              ? `<select data-t="${i}" data-k="opMegaTo"><option value="">どれになった？</option>${PC.megaFormsOf(opMon).map(m=>`<option ${t.oppAct.to===m?'selected':''}>${esc(m)}</option>`).join('')}</select>`
+              : `<span class="small muted">${esc(opMon)}はメガシンカできません</span>`)
           : ''}
       </div>
       ${t.oppAct.type==='move' && obsHint(opMon) ? `<div class="small muted">よく使ってくる技：${obsHint(opMon)}</div>`:''}
@@ -423,7 +485,13 @@ function renderTurns(){
     if(k==='myType'){t.myAct={type:v};} else if(k==='opType'){t.oppAct={type:v};}
     else if(k==='myMove')t.myAct.move=v; else if(k==='myTo')t.myAct.to=v;
     else if(k==='opMove')t.oppAct.move=v; else if(k==='opTo')t.oppAct.to=v;
-    renderTurns(); saveDraft();
+    else if(k==='opMegaTo'){ t.oppAct.to=v; S.oppMega=v||null; }
+    // 相手がメガを解除する記録は無いので、mega行動を消したら判明状態も戻す
+    if(k==='opType' && v!=='mega'){
+      const stillMega = S.turns.some(x=>x.oppAct&&x.oppAct.type==='mega'&&x.oppAct.to);
+      if(!stillMega) S.oppMega=null;
+    }
+    renderTurns(); renderOpp(); saveDraft();
   }));
   const f=fieldAt(S.turns.length);
   $('#turnField').textContent = `現在の場：${f.my} vs ${f.op}`;
@@ -448,6 +516,7 @@ function setRes(r){ S.result=(S.result===r?null:r);
 function saveDraft(){
   const d={date:$('#fDate').value,season:$('#fSeason').value,rule:$('#fRule').value,rank:$('#fRank').value,
     team:$('#fTeam').value,opp:S.opp,oppPick:S.oppPick,myPick:S.myPick,result:S.result,mega:S.mega,
+    oppMega:S.oppMega,predLead:S.predLead,
     turns:S.turns,reason:$('#fReason').value,sets:$('#fSets').value,key:$('#fKey').value,next:$('#fNext').value,editId:EDIT_ID};
   try{localStorage.setItem(DRAFT,JSON.stringify(d));
       localStorage.setItem(CTX,JSON.stringify({season:d.season,rule:d.rule,rank:d.rank,team:d.team}));}catch(e){}
@@ -472,7 +541,8 @@ function restoreDraft(){
   $('#fDate').value = (d&&d.date)||todayStr();
   if(d){
     setArr(S.opp,d.opp);setArr(S.oppPick,d.oppPick);setArr(S.myPick,d.myPick);setArr(S.turns,d.turns);
-    S.result=d.result||null;S.mega=d.mega||null;EDIT_ID=d.editId||null;
+    S.result=d.result||null;S.mega=d.mega||null;S.oppMega=d.oppMega||null;S.predLead=d.predLead||null;
+    EDIT_ID=d.editId||null;
     $('#fReason').value=d.reason||'';$('#fSets').value=d.sets||'';$('#fKey').value=d.key||'';$('#fNext').value=d.next||'';
     $('#btnWin').classList.toggle('on',S.result==='win');$('#btnLose').classList.toggle('on',S.result==='lose');
     $('#btnSave').textContent=EDIT_ID?'この試合を更新する':'この試合を保存する';
@@ -481,7 +551,7 @@ function restoreDraft(){
 }
 function clearForm(){
   setArr(S.opp);setArr(S.oppPick);setArr(S.myPick);setArr(S.turns);
-  S.result=null;S.mega=null;EDIT_ID=null;
+  S.result=null;S.mega=null;S.oppMega=null;S.predLead=null;EDIT_ID=null;
   ['#fReason','#fSets','#fKey','#fNext'].forEach(s=>$(s).value='');
   $('#btnWin').classList.remove('on');$('#btnLose').classList.remove('on');
   $('#btnSave').textContent='この試合を保存する';
@@ -496,7 +566,8 @@ $('#btnSave').onclick=async ()=>{
   if(!$('#fReason').value.trim() && !confirm('勝因/敗因が空です。ここが一番効くところですが、このまま保存しますか？')) return;
   const rec={user_id:USER.id, team_id:$('#fTeam').value||null, played_at:$('#fDate').value||todayStr(),
     season:$('#fSeason').value||null, rule:$('#fRule').value, rank:$('#fRank').value||null,
-    opp_team:S.opp, my_pick:S.myPick, opp_pick:S.oppPick, mega:S.mega||null, turns:S.turns,
+    opp_team:S.opp, my_pick:S.myPick, opp_pick:S.oppPick, mega:S.mega||null,
+    opp_mega:S.oppMega||null, pred_lead:S.predLead||null, turns:S.turns,
     result:S.result, reason:$('#fReason').value.trim()||null, key_turn:$('#fKey').value.trim()||null,
     next_plan:$('#fNext').value.trim()||null, opp_sets:$('#fSets').value.trim()||null};
   $('#btnSave').disabled=true;
@@ -801,7 +872,7 @@ function renderHist(){
     $('#fDate').value=b.played_at;$('#fSeason').value=b.season||'';$('#fRule').value=b.rule;
     $('#fRank').value=b.rank||'';$('#fTeam').value=b.team_id||'';
     setArr(S.opp,b.opp_team);setArr(S.oppPick,b.opp_pick);setArr(S.myPick,b.my_pick);setArr(S.turns,b.turns);
-    S.result=b.result;S.mega=b.mega||null;
+    S.result=b.result;S.mega=b.mega||null;S.oppMega=b.opp_mega||null;S.predLead=b.pred_lead||null;
     $('#fReason').value=b.reason||'';$('#fSets').value=b.opp_sets||'';$('#fKey').value=b.key_turn||'';$('#fNext').value=b.next_plan||'';
     $('#btnWin').classList.toggle('on',S.result==='win');$('#btnLose').classList.toggle('on',S.result==='lose');
     $('#btnSave').textContent='この試合を更新する';

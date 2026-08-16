@@ -105,6 +105,7 @@ function loadData(){
       acc:   p[4]==='-' ? null : +p[4],
       pp:+p[5], contact: p[6]==='1' };
   });
+  buildMegaMap();
 }
 
 /* ---------- 実数値計算 ----------
@@ -275,6 +276,82 @@ function calcDamage(o){
   if(!ko) ko = '7発以上';
 
   return { eff, min, max, rolls, pctMin, pctMax, ko, note:notes };
+}
+
+/* ---------- メガシンカの対応表 ----------
+   相手のパーティを見た段階では「どれがメガになるか」は分からないので、
+   相手側は必ずベースフォルムで扱い、メガはバトル中のイベントとして記録する。 */
+const MEGA_OF = {};   // ベース名 -> [メガ名, ...]
+const BASE_OF = {};   // メガ名   -> ベース名
+const MEGA_BASE_OVERRIDE = { 'メガフラエッテ':'フラエッテ(えいえん)' };
+function buildMegaMap(){
+  Object.keys(SPECIES).forEach(n=>{
+    if(!n.startsWith('メガ')) return;
+    let base = MEGA_BASE_OVERRIDE[n];
+    if(!base){
+      const c1 = n.slice(2);                       // メガハッサム -> ハッサム
+      const c2 = c1.replace(/[XY]$/,'');           // メガリザードンX -> リザードン
+      base = SPECIES[c1] ? c1 : (SPECIES[c2] ? c2 : null);
+    }
+    if(!base || !SPECIES[base]) return;            // 「メガニウム」等の誤検出を弾く
+    BASE_OF[n] = base;
+    (MEGA_OF[base] = MEGA_OF[base] || []).push(n);
+  });
+}
+function isMegaForm(name){ return !!BASE_OF[name]; }
+function megaFormsOf(name){ return MEGA_OF[name] || []; }
+function canMega(name){ return (MEGA_OF[name]||[]).length > 0; }
+/** 相手側に見せる用：メガ名で来たらベースに戻す */
+function toBase(name){ return BASE_OF[name] || name; }
+
+/* ---------- 先発の読み ----------
+   ①自分の記録（同じ相手が実際に何を初手に置いたか）を最優先
+   ②記録が足りない分は、上位勢が実際に語っている「初手に置かれやすい枠」で補う */
+const LEAD_PRIOR = {
+  // 起点作り（ステロ・どくびし・あくび）＝初手の定番
+  'キラフロル':0.60,'カバルドン':0.55,'ブリジュラス':0.40,'ガブリアス':0.40,'マスカーニャ':0.45,
+  // 天候・場作り
+  'ペリッパー':0.55,'ユキノオー':0.50,'コータス':0.50,'エルフーン':0.50,
+  // 構築記事・解説で「初手に置かれやすい」と名指しされているもの
+  'ウツボット':0.65,        // ふとん氏「ほとんどのウツボット使いが初手にウツボットを出す」
+  'フラエッテ(えいえん)':0.60, // ふとん氏「大体初手にフラエッテが来る」
+  'イダイトウ♂':0.45,       // ふとん氏「初手スカーフイダイトウを置くプレイヤーが多かった」
+  // 高速アタッカー（タスキ・スカーフ想定）
+  'ドラパルト':0.35,'ゲッコウガ':0.30,'プテラ':0.35,'アーマーガア':0.30
+};
+/** 相手6匹から先発候補を確率つきで返す */
+function predictLead(oppNames, battles){
+  const stats = {};   // 名前 -> {lead, seen}
+  (battles||[]).forEach(b=>{
+    const team = b.opp_team||[]; if(!team.length) return;
+    // 実際の初手＝ターン記録の1手目に相手が場に出していたポケモン
+    const actual = (b.turns||[])[0] ? toBase((b.turns[0].oppMon)||'') : null;
+    team.forEach(n=>{ const k=toBase(n); stats[k]=stats[k]||{lead:0,seen:0}; stats[k].seen++; });
+    if(actual){ stats[actual]=stats[actual]||{lead:0,seen:0}; stats[actual].lead++; }
+  });
+
+  const rows = oppNames.map(raw=>{
+    const n = toBase(raw);
+    const sc = SPECIES[n];
+    const st = stats[n] || {lead:0, seen:0};
+
+    // ①実測（母数が増えるほど信頼する）
+    const obsRate = st.seen ? st.lead/st.seen : 0;
+    const obsW    = st.seen>=3 ? Math.min(0.8, st.seen/10) : 0;
+
+    // ②事前分布：定番枠 ＋ 素早さ
+    const prior = LEAD_PRIOR[n] !== undefined ? LEAD_PRIOR[n]
+                : (sc ? Math.min(0.35, sc.base.s/400) : 0.15);
+
+    const score = obsW*obsRate + (1-obsW)*prior;
+    const why = [];
+    if(st.seen>=3) why.push(`実測 ${st.lead}/${st.seen}戦で初手`);
+    if(LEAD_PRIOR[n]!==undefined) why.push('初手の定番枠');
+    else if(sc && sc.base.s>=110) why.push('素早さが高い');
+    return { name:n, score, obs:st, why };
+  });
+  const total = rows.reduce((a,r)=>a+r.score,0) || 1;
+  return rows.map(r=>({...r, pct: r.score/total})).sort((a,b)=> b.pct - a.pct);
 }
 
 /* ---------- 特性によるタイプ無効 ---------- */
@@ -465,6 +542,7 @@ function observedMoves(battles){
 global.PC = {
   TYPES, TYPE_COLOR, TYPE_ICON, CHART, NATURES, SPECIES, MOVES,
   loadData, effectiveness, statHP, statOther, natureMods, realStats, assumedStat,
+  MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck,
   bestOffense, bestThreat, immuneType,
   similarBattles, observedMoves
