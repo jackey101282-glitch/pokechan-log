@@ -3,6 +3,27 @@
    データの正本は Supabase。localStorage は入力途中の下書きのみ。
    ========================================================= */
 'use strict';
+/* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
+   （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
+const APP_VERSION = '2';
+(function(){
+  const meta=document.querySelector('meta[name="app-version"]');
+  const html=meta?meta.content:null;
+  if(html && html!==APP_VERSION){
+    if(sessionStorage.getItem('pc_reloaded')!==html){
+      sessionStorage.setItem('pc_reloaded', html);
+      location.reload();
+      throw new Error('version skew: reloading');
+    }
+    document.addEventListener('DOMContentLoaded',()=>{
+      const d=document.createElement('div');
+      d.style.cssText='position:fixed;inset:auto 0 0 0;z-index:200;background:#f2685f;color:#fff;padding:12px;text-align:center;font-size:14px';
+      d.innerHTML='読み込みが新旧で食い違っています。<b>ページを再読み込みしてください</b>（⌘+Shift+R）';
+      document.body.appendChild(d);
+    });
+  }
+})();
+
 const $  = s=>document.querySelector(s);
 const $$ = s=>[...document.querySelectorAll(s)];
 const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -275,8 +296,24 @@ function renderOpp(){
     renderOpp(); saveDraft();
   });
   $('#oppCount').textContent = `${S.opp.length}/6`;
-  renderQuick();
-  renderMyTeamChips(); renderPickers(); renderLeadPredict(); renderSuggest(); renderTurns(); renderGuide();
+  // 1か所こけても後ろを巻き込まない。黙って空にせず、その場に理由を出す
+  safe('quick', renderQuick, null);
+  safe('team',  renderMyTeamChips, null);
+  safe('pick',  renderPickers, null);
+  safe('読み',  renderLeadPredict, '#predictOut');
+  safe('選出の提案', renderSuggest, '#suggestOut');
+  safe('ターン', renderTurns, '#turnList');
+  safe('対面ガイド', renderGuide, '#guideOut');
+}
+function safe(label, fn, target){
+  try{ fn(); }
+  catch(e){
+    console.error('['+label+']', e);
+    if(target && $(target)) $(target).innerHTML =
+      `<div class="note r small"><b>${esc(label)}の表示に失敗しました</b><br>
+       ページを再読み込みしてください（⌘+Shift+R）。直らない場合はこの文言を伝えてください：<br>
+       <code style="font-size:11px">${esc(e.name+': '+e.message)}</code></div>`;
+  }
 }
 
 /* よく当たる相手のクイック選択。履歴がなければ環境の使用率上位で埋める */
