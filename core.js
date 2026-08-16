@@ -319,6 +319,72 @@ const LEAD_PRIOR = {
   // 高速アタッカー（タスキ・スカーフ想定）
   'ドラパルト':0.35,'ゲッコウガ':0.30,'プテラ':0.35,'アーマーガア':0.30
 };
+/** 相手の「選出3体」を予想する。
+ *  ①相手の駒が自分の6匹にどれだけ刺さるか（相手は自分に刺さる駒を選ぶ）
+ *  ②実測：過去に同じ駒が実際に選出された割合
+ *  ③使用率上位＝軸になりやすい、という弱い事前分布                      */
+function predictPicks(oppNames, battles, myRoster, size, usageRank){
+  size = size || 3;
+  const stats = {};
+  (battles||[]).forEach(b=>{
+    (b.opp_team||[]).forEach(n=>{ const k=toBase(n); stats[k]=stats[k]||{sel:0,seen:0}; stats[k].seen++; });
+    (b.opp_pick||[]).forEach(n=>{ const k=toBase(n); stats[k]=stats[k]||{sel:0,seen:0}; stats[k].sel++; });
+  });
+
+  const rows = oppNames.map(raw=>{
+    const n = toBase(raw);
+    const st = stats[n] || {sel:0, seen:0};
+    const why = [];
+
+    // ① 自分の6匹に対する刺さり（-1〜+1 に潰す）
+    let fit = 0;
+    if(myRoster && myRoster.length){
+      const scores = myRoster.map(m=>{
+        const mu = matchup(m, {name:n});
+        return mu ? -mu.score : 0;          // 自分視点のスコアを反転＝相手視点
+      });
+      fit = scores.reduce((a,b)=>a+b,0)/scores.length;
+      fit = Math.max(-1, Math.min(1, fit/2));
+      if(fit > 0.25) why.push('こちらに刺さっている');
+      if(fit < -0.25) why.push('こちらが有利');
+    }
+
+    // ② 実測
+    const obsRate = st.seen ? st.sel/st.seen : 0;
+    const obsW    = st.seen>=3 ? Math.min(0.75, st.seen/12) : 0;
+    if(st.seen>=3) why.push(`実測 ${st.sel}/${st.seen}戦で選出`);
+
+    // ③ 使用率（順位が上ほど軸になりやすい）
+    const idx = usageRank ? usageRank.indexOf(n) : -1;
+    const usage = idx>=0 ? Math.max(0, 0.35 - idx*0.012) : 0.1;
+
+    const base = 0.5 + fit*0.5;                       // ①だけで 0〜1
+    const score = obsW*obsRate + (1-obsW)*(base*0.75 + usage);
+    return { name:n, score, why, fit, obs:st };
+  }).sort((a,b)=> b.score - a.score);
+
+  const total = rows.reduce((a,r)=>a+r.score,0) || 1;
+  const withPct = rows.map(r=>({...r, pct:r.score/total}));
+  return { ranked: withPct, picks: withPct.slice(0, size).map(r=>r.name) };
+}
+
+/** 選出予想の的中率を、過去ログの時系列で検証する（列を増やさずに測る） */
+function backtestPicks(battles, myRoster, size, usageRank){
+  size = size || 3;
+  let hit=0, total=0, exact=0;
+  const list = [...(battles||[])].reverse();          // 古い順
+  list.forEach((b,i)=>{
+    const team=(b.opp_team||[]).map(toBase), act=(b.opp_pick||[]).map(toBase);
+    if(team.length<size || act.length<size) return;
+    const past = list.slice(0,i).reverse();
+    const {picks} = predictPicks(team, past, myRoster, size, usageRank);
+    const inter = picks.filter(p=>act.includes(p)).length;
+    hit += inter; total += size;
+    if(inter===size) exact++;
+  });
+  return { hit, total, exact, games: total/size };
+}
+
 /** 相手6匹から先発候補を確率つきで返す */
 function predictLead(oppNames, battles){
   const stats = {};   // 名前 -> {lead, seen}
@@ -543,6 +609,7 @@ global.PC = {
   TYPES, TYPE_COLOR, TYPE_ICON, CHART, NATURES, SPECIES, MOVES,
   loadData, effectiveness, statHP, statOther, natureMods, realStats, assumedStat,
   MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
+  predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck,
   bestOffense, bestThreat, immuneType,
   similarBattles, observedMoves

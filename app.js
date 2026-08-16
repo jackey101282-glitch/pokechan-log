@@ -303,41 +303,86 @@ function renderQuick(){
   });
 }
 
-/* 相手の先発予想 ＋ それに対する自分の初手 */
+/* 読み：相手の3体 → その中の先発 → こちらの3体 → こちらの初手 */
 function renderLeadPredict(){
   const card=$('#cardLead');
-  if(S.opp.length<3){ card.hidden=true; return; }
+  const roster=currentRoster();
+  if(S.opp.length<3 || roster.length<3){ card.hidden=true; return; }
   card.hidden=false;
 
-  // 過去の的中率
-  const done = BATTLES.filter(b=> b.pred_lead && (b.turns||[])[0] && b.turns[0].oppMon);
-  const hit  = done.filter(b=> PC.toBase(b.turns[0].oppMon)===b.pred_lead).length;
-  $('#leadAcc').textContent = done.length ? `これまでの的中率 ${pct(hit,done.length)}%（${hit}/${done.length}）` : '';
+  const size = $('#fRule').value==='double' ? 4 : 3;
+  const rc = rosterForCalc(roster);
 
-  const pred = PC.predictLead(S.opp, BATTLES);
-  S.predLead = pred[0] ? pred[0].name : null;
+  // 的中率（先発は保存値と実績を照合、選出は過去ログの時系列で検証）
+  const doneLead = BATTLES.filter(b=> b.pred_lead && (b.turns||[])[0] && b.turns[0].oppMon);
+  const hitLead  = doneLead.filter(b=> PC.toBase(b.turns[0].oppMon)===b.pred_lead).length;
+  const bt = PC.backtestPicks(BATTLES, rc, size, META_TOP);
+  const accParts=[];
+  if(bt.total) accParts.push(`選出の的中 ${pct(bt.hit,bt.total)}%（${bt.hit}/${bt.total}体・${bt.games}戦で検証）`);
+  if(doneLead.length) accParts.push(`先発の的中 ${pct(hitLead,doneLead.length)}%`);
+  $('#leadAcc').textContent = accParts.join(' ／ ');
 
-  const rc = rosterForCalc(currentRoster());
-  const mine = S.myPick.length ? S.myPick : rc.map(m=>m.name);
+  // ① 相手の選出3体
+  const pp = PC.predictPicks(S.opp, BATTLES, rc, size, META_TOP);
+  const theirPicks = pp.picks;
 
-  $('#leadPredict').innerHTML = pred.slice(0,4).map((p,i)=>{
-    // その先発に強い自分の駒
-    const best = mine.map(n=>{
-      const m = rc.find(r=>r.name===n) || {name:n};
-      return {n, mu:PC.matchup(m,{name:p.name})};
-    }).filter(x=>x.mu && !x.mu.danger).sort((a,b)=>b.mu.score-a.mu.score)[0];
-    return `<div class="pick-card ${i===0?'best':''}">
-      <div class="hd">
-        <b>${i===0?'本命':'対抗'+i}</b>
-        <span style="font-size:15px;font-weight:800;color:var(--fg)">${Math.round(p.pct*100)}%</span>
-        ${p.why.length?`<span class="muted">${esc(p.why.join('・'))}</span>`:'<span class="muted">根拠が薄い（記録待ち）</span>'}
+  // ② その3体の中での先発
+  const lead = PC.predictLead(theirPicks, BATTLES);
+  S.predLead = lead[0] ? lead[0].name : null;
+
+  // ③ その3体に対するこちらの3体
+  const sug = PC.suggestPicks(rc, theirPicks, Math.min(size, rc.length));
+  const myPlan = sug.top[0];
+
+  // ④ 相手の先発に対するこちらの初手
+  const myMembers = myPlan ? myPlan.members : rc.map(m=>m.name);
+  const leadAns = myMembers.map(n=>{
+    const m = rc.find(r=>r.name===n) || {name:n};
+    return {n, mu:PC.matchup(m,{name:S.predLead})};
+  }).filter(x=>x.mu).sort((a,b)=>{
+    if(a.mu.danger!==b.mu.danger) return a.mu.danger?1:-1;
+    return b.mu.score-a.mu.score;
+  })[0];
+
+  $('#predictOut').innerHTML = `
+    <div class="pick-card best">
+      <div class="hd"><b>① 相手はこの3体で来る</b><span class="muted">${S.opp.length}体中</span></div>
+      <div class="pklist">${theirPicks.map(n=>pkChip(n,{})).join('')}</div>
+      <div class="small muted" style="margin-top:7px">
+        ${pp.ranked.slice(0,size).map(r=>`${esc(r.name)} ${Math.round(r.pct*100)}%${r.why.length?`（${esc(r.why.join('・'))}）`:''}`).join(' ／ ')}
       </div>
-      <div class="pklist">${pkChip(p.name,{})}</div>
-      ${best?`<div class="small" style="margin-top:7px">→ 自分の初手は <b>${esc(best.n)}</b>
-         <span class="muted">(${Math.round(best.mu.myDmg*100)}% / 被${Math.round(best.mu.opDmg*100)}%${best.mu.faster?' 先制':''})</span></div>`
-        :`<div class="small" style="margin-top:7px"><span class="badge ng">安全に置ける初手がありません</span></div>`}
-    </div>`;
-  }).join('');
+      <div class="small muted" style="margin-top:4px">外れ候補：${pp.ranked.slice(size).map(r=>`${esc(r.name)} ${Math.round(r.pct*100)}%`).join('、')||'—'}</div>
+    </div>
+
+    <div class="pick-card">
+      <div class="hd"><b>② その中の先発</b></div>
+      <div class="pklist">${lead.slice(0,2).map((p,i)=>
+        `<span class="pk ${i===0?'sel':''}">${typeChips(p.name)}<b>${esc(p.name)}</b>
+          <span class="small muted" style="margin-left:4px">${Math.round(p.pct*100)}%</span></span>`).join('')}</div>
+      ${lead[0]&&lead[0].why.length?`<div class="small muted" style="margin-top:6px">${esc(lead[0].why.join('・'))}</div>`:''}
+    </div>
+
+    <div class="pick-card">
+      <div class="hd"><b>③ こちらの選出</b>
+        <span class="badge ${myPlan&&myPlan.cover>=size?'ok':'wn'}">${myPlan?`予想3体中 ${myPlan.cover}体に有利`:''}</span></div>
+      <div class="pklist">${myMembers.map(n=>pkChip(n,{})).join('')}</div>
+      ${myPlan&&myPlan.sharedWeak.length?`<div class="small" style="margin-top:6px"><span class="badge ng">全員 ${esc(myPlan.sharedWeak.join('・'))} に弱い</span></div>`:''}
+      <button class="btn sm" id="btnApplyPlan" style="margin-top:9px">この選出にする</button>
+    </div>
+
+    <div class="pick-card">
+      <div class="hd"><b>④ こちらの初手</b></div>
+      ${leadAns ? `<div class="pklist">${pkChip(leadAns.n,{cls:leadAns.mu.danger?'':'sel'})}</div>
+        <div class="small" style="margin-top:7px">
+          対 <b>${esc(S.predLead)}</b> ：${Math.round(leadAns.mu.myDmg*100)}% / 被${Math.round(leadAns.mu.opDmg*100)}%${leadAns.mu.faster?' 先制':''}
+          ${leadAns.mu.danger?' <span class="badge ng">安全な初手がありません</span>':(leadAns.mu.winsRace?' <span class="badge ok">先に落とせる</span>':' <span class="badge wn">押し切れない</span>')}
+        </div>` : '<p class="hint">初手の候補が出せませんでした。</p>'}
+    </div>
+
+    <div class="small muted">相手の型は「ぶっぱ想定」で計算しています。あくまで初手を決めるための目安です。</div>`;
+
+  const b=$('#btnApplyPlan');
+  if(b) b.onclick=()=>{ setArr(S.myPick, myMembers); renderPickers(); renderTurns(); renderGuide(); saveDraft(); toast('選出に反映しました'); };
 }
 
 /* 相手1体ごとに「自分の選出の誰を当てるべきか」 */
@@ -476,10 +521,11 @@ function fieldAt(i){
 const ACTS=[['move','技'],['switch','交代'],['protect','まもる'],['mega','メガシンカ'],['other','その他']];
 function renderTurns(){
   const list=$('#turnList');
-  if(!S.myPick.length||!S.oppPick.length){
-    list.innerHTML='<p class="hint">先に選出を確定すると、ターンを記録できます。</p>';
+  if(!S.myPick.length){
+    list.innerHTML='<p class="hint">自分の選出だけ決めれば、相手の3体が分からなくてもターンを記録できます。</p>';
     $('#turnField').textContent=''; return;
   }
+  const oppChoices = S.opp.length ? S.opp : S.oppPick;    // 相手は「分かっている全員」から選ぶ
   list.innerHTML = S.turns.map((t,i)=>{
     const f=fieldAt(i);
     const myMon=t.myMon||f.my, opMon=t.oppMon||f.op;
@@ -487,7 +533,14 @@ function renderTurns(){
     const mySel = myMoves.filter(Boolean);
     return `<div class="turn">
       <div class="th"><span class="no">${i+1}手目</span>
-        <span>${esc(myMon)} <span class="muted">vs</span> ${esc(opMon)}</span>
+        <select data-t="${i}" data-k="myMon" style="padding:4px 8px;font-size:12px;width:auto;flex:0 1 auto">
+          ${S.myPick.map(p=>`<option ${myMon===p?'selected':''}>${esc(p)}</option>`).join('')}
+        </select>
+        <span class="muted">vs</span>
+        <select data-t="${i}" data-k="oppMon" style="padding:4px 8px;font-size:12px;width:auto;flex:0 1 auto">
+          <option value="">相手を選ぶ</option>
+          ${oppChoices.map(p=>`<option ${opMon===p?'selected':''}>${esc(p)}</option>`).join('')}
+        </select>
         <span style="flex:1"></span><button class="btn ghost sm" data-del="${i}">削除</button></div>
       <div class="side"><span class="lb me">自分</span>
         <select data-t="${i}" data-k="myType">${ACTS.map(a=>`<option value="${a[0]}" ${t.myAct.type===a[0]?'selected':''}>${a[1]}</option>`).join('')}</select>
@@ -504,7 +557,7 @@ function renderTurns(){
         ${t.oppAct.type==='move'
           ? `<input type="text" data-t="${i}" data-k="opMove" value="${esc(t.oppAct.move||'')}" placeholder="使ってきた技" list="mvlist">`
           : t.oppAct.type==='switch'
-          ? `<select data-t="${i}" data-k="opTo"><option value="">誰に交代？</option>${S.oppPick.filter(p=>p!==opMon).map(p=>`<option ${t.oppAct.to===p?'selected':''}>${esc(p)}</option>`).join('')}</select>`
+          ? `<select data-t="${i}" data-k="opTo"><option value="">誰に交代？</option>${oppChoices.filter(p=>p!==opMon).map(p=>`<option ${t.oppAct.to===p?'selected':''}>${esc(p)}</option>`).join('')}</select>`
           : t.oppAct.type==='mega'
           ? (PC.megaFormsOf(opMon).length
               ? `<select data-t="${i}" data-k="opMegaTo"><option value="">どれになった？</option>${PC.megaFormsOf(opMon).map(m=>`<option ${t.oppAct.to===m?'selected':''}>${esc(m)}</option>`).join('')}</select>`
@@ -525,12 +578,20 @@ function renderTurns(){
     else if(k==='myMove')t.myAct.move=v; else if(k==='myTo')t.myAct.to=v;
     else if(k==='opMove')t.oppAct.move=v; else if(k==='opTo')t.oppAct.to=v;
     else if(k==='opMegaTo'){ t.oppAct.to=v; S.oppMega=v||null; }
+    else if(k==='myMon') t.myMon=v;
+    else if(k==='oppMon') t.oppMon=v;
+    // バトル中に判明した相手は、そのまま「相手の選出」に積み上がる
+    [t.oppMon, t.oppAct && t.oppAct.to].forEach(n=>{
+      if(!n) return;
+      if(!S.opp.includes(n)) S.opp.push(n);
+      if(!S.oppPick.includes(n)) S.oppPick.push(n);
+    });
     // 相手がメガを解除する記録は無いので、mega行動を消したら判明状態も戻す
     if(k==='opType' && v!=='mega'){
       const stillMega = S.turns.some(x=>x.oppAct&&x.oppAct.type==='mega'&&x.oppAct.to);
       if(!stillMega) S.oppMega=null;
     }
-    renderTurns(); renderOpp(); saveDraft();
+    renderTurns(); renderOpp(); renderPickers(); saveDraft();
   }));
   const f=fieldAt(S.turns.length);
   $('#turnField').textContent = `現在の場：${f.my} vs ${f.op}`;
@@ -540,7 +601,7 @@ function obsHint(mon){
   return o.length? o.map(x=>`${esc(x.move)}(${x.count})`).join('、') : '';
 }
 $('#btnAddTurn').onclick=()=>{
-  if(!S.myPick.length||!S.oppPick.length) return toast('先に選出を確定してください',true);
+  if(!S.myPick.length) return toast('自分の選出だけ先に決めてください',true);
   const f=fieldAt(S.turns.length);
   S.turns.push({n:S.turns.length+1, myMon:f.my, oppMon:f.op, myAct:{type:'move'}, oppAct:{type:'move'}});
   renderTurns(); saveDraft();
