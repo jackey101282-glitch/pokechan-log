@@ -185,6 +185,28 @@ async function enterApp(user){
   initAutocompletes(); initDamageUI();
   restoreDraft(); renderAll();
 }
+/* DBにまだ無い列があっても保存を落とさない。
+   足りない列を自動で外して再送し、あとで何が保存できなかったかを知らせる。 */
+async function dbWrite(table, mode, payload, id){
+  const body={...payload}, dropped=[];
+  for(let i=0;i<8;i++){
+    const q = mode==='insert' ? sb.from(table).insert(body) : sb.from(table).update(body).eq('id', id);
+    const { error } = await q;
+    if(!error) return { ok:true, dropped };
+    const m = /Could not find the '(.+?)' column/.exec(error.message||'');
+    if(m && Object.prototype.hasOwnProperty.call(body, m[1])){ delete body[m[1]]; dropped.push(m[1]); continue; }
+    return { ok:false, error };
+  }
+  return { ok:false, error:{message:'保存できませんでした'} };
+}
+const COL_LABEL={roster:'6匹の詳細（特性・性格・持ち物・SP・技）',plans:'並びごとの選出プラン',note:'メモ',
+  turns:'ターンの記録',mega:'自分のメガ枠',opp_mega:'相手のメガ',pred_lead:'先発予想'};
+function warnDropped(dropped){
+  if(!dropped.length) return;
+  const names=dropped.map(c=>COL_LABEL[c]||c).join('・');
+  toast(`保存しました（${names} は未保存：DBの更新が必要）`, true);
+}
+
 async function loadTeams(){
   const {data,error}=await sb.from('teams').select('*').order('created_at',{ascending:false});
   if(error) return toast('構築の読込に失敗: '+error.message,true); TEAMS=data||[];
@@ -588,14 +610,14 @@ $('#btnSave').onclick=async ()=>{
     result:S.result, reason:$('#fReason').value.trim()||null, key_turn:$('#fKey').value.trim()||null,
     next_plan:$('#fNext').value.trim()||null, opp_sets:$('#fSets').value.trim()||null};
   $('#btnSave').disabled=true;
-  let error;
-  if(EDIT_ID) ({error}=await sb.from('battles').update(rec).eq('id',EDIT_ID));
-  else        ({error}=await sb.from('battles').insert(rec));
+  const res = EDIT_ID ? await dbWrite('battles','update',rec,EDIT_ID)
+                      : await dbWrite('battles','insert',rec);
   $('#btnSave').disabled=false;
-  if(error) return toast('保存に失敗: '+error.message,true);
+  if(!res.ok) return toast('保存に失敗: '+res.error.message,true);
   const wasEdit=!!EDIT_ID;
   await loadBattles(); clearForm(); renderAll();
-  toast(wasEdit?'更新しました':`保存しました（通算 ${BATTLES.length} 戦）`);
+  res.dropped.length ? warnDropped(res.dropped)
+    : toast(wasEdit?'更新しました':`保存しました（通算 ${BATTLES.length} 戦）`);
   window.scrollTo({top:0,behavior:'smooth'});
 };
 
@@ -968,12 +990,13 @@ $('#tSave').onclick=async ()=>{
   if(!name) return toast('構築名を入れてください',true);
   if(!S.tNew.length) return toast('ポケモンを入れてください',true);
   const isP = name===PRESET.name;
-  const {error}=await sb.from('teams').insert({user_id:USER.id,name,
+  const res = await dbWrite('teams','insert',{user_id:USER.id,name,
     members:S.tNew.map(m=>m.name), roster:S.tNew,
     plans:isP?PRESET.plans:{}, note:isP?PRESET.note:null});
-  if(error) return toast('保存に失敗: '+error.message,true);
+  if(!res.ok) return toast('保存に失敗: '+res.error.message,true);
   $('#tName').value=''; S.tNew.length=0; renderTNew();
-  await loadTeams(); renderAll(); toast('構築を保存しました');
+  await loadTeams(); renderAll();
+  res.dropped.length ? warnDropped(res.dropped) : toast('構築を保存しました');
 };
 
 function renderTeams(){
@@ -1003,8 +1026,9 @@ function renderTeams(){
   $$('#teamList [data-plan]').forEach(inp=>inp.addEventListener('change',async ()=>{
     const t=TEAMS.find(v=>v.id===inp.dataset.plan);if(!t)return;
     const plans={...(t.plans||{})};plans[inp.dataset.pi]=inp.value;
-    const {error}=await sb.from('teams').update({plans}).eq('id',t.id);
-    if(error)return toast('保存に失敗: '+error.message,true);
+    const res=await dbWrite('teams','update',{plans},t.id);
+    if(!res.ok)return toast('保存に失敗: '+res.error.message,true);
+    if(res.dropped.length) return warnDropped(res.dropped);
     t.plans=plans;toast('プランを保存しました');
   }));
   $$('#teamList [data-rk]').forEach(inp=>inp.addEventListener('change',async ()=>{
@@ -1014,8 +1038,9 @@ function renderTeams(){
     if(k.startsWith('sp.')) { roster[i].sp=roster[i].sp||{}; roster[i].sp[k.slice(3)]=+inp.value||0; }
     else if(k.startsWith('mv')) { roster[i].moves=roster[i].moves||[]; roster[i].moves[+k.slice(2)]=inp.value; }
     else roster[i][k]=inp.value;
-    const {error}=await sb.from('teams').update({roster}).eq('id',t.id);
-    if(error)return toast('保存に失敗: '+error.message,true);
+    const res=await dbWrite('teams','update',{roster},t.id);
+    if(!res.ok)return toast('保存に失敗: '+res.error.message,true);
+    if(res.dropped.length) return warnDropped(res.dropped);
     t.roster=roster; renderTeams(); toast('保存しました');
   }));
 }
