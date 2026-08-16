@@ -56,6 +56,7 @@ function pkChip(name, opts){
 function autocomplete(inputSel, boxSel, source, onPick, opts){
   opts = opts||{};
   const inp=$(inputSel), box=$(boxSel); let hi=-1, items=[];
+  let composing=false, justComposed=false;   // 日本語入力（IME）の確定Enter対策
   const close=()=>{box.hidden=true;hi=-1;};
   const render=()=>{
     const q=inp.value.trim();
@@ -70,11 +71,27 @@ function autocomplete(inputSel, boxSel, source, onPick, opts){
     box.querySelectorAll('div').forEach(d=> d.onmousedown=e=>{e.preventDefault();choose(+d.dataset.i);});
   };
   const choose=i=>{ const it=items[i]; if(!it)return; const n=typeof it==='string'?it:it.name; inp.value=''; close(); onPick(n); };
+
+  // IME: 変換中は候補確定の対象にしない。確定直後の1回目のEnterも読み飛ばす
+  inp.addEventListener('compositionstart', ()=>{ composing=true; });
+  inp.addEventListener('compositionend', ()=>{
+    composing=false; justComposed=true;
+    setTimeout(()=>{ justComposed=false; }, 80);
+    render();
+  });
+
   inp.addEventListener('input', render);
   inp.addEventListener('focus', render);
   inp.addEventListener('blur', ()=>setTimeout(close,120));
   inp.addEventListener('keydown', e=>{
-    if(box.hidden){ if(e.key==='Enter'){e.preventDefault(); const q=inp.value.trim(); if(q) onPick(q), inp.value='';} return; }
+    // 変換確定のEnter（isComposing / keyCode 229）はここで握りつぶす
+    if(composing || e.isComposing || e.keyCode===229) return;
+    if(e.key==='Enter' && justComposed){ e.preventDefault(); return; }
+
+    if(box.hidden){
+      if(e.key==='Enter'){ e.preventDefault(); const q=inp.value.trim(); if(q){ inp.value=''; onPick(q); } }
+      return;
+    }
     if(e.key==='ArrowDown'){e.preventDefault();hi=Math.min(hi+1,items.length-1);render();}
     else if(e.key==='ArrowUp'){e.preventDefault();hi=Math.max(hi-1,0);render();}
     else if(e.key==='Enter'){e.preventDefault(); choose(hi<0?0:hi);}
@@ -648,19 +665,30 @@ function calcNow(){
     <div class="small"><span class="badge ${r.eff>1?'ok':r.eff<1?'ng':'wn'}">${effTxt}</span></div>
     ${r.note.length?`<div class="small muted" style="margin-top:8px">${r.note.map(esc).join(' ／ ')}</div>`:''}`;
 }
-/* 逆算：実際の被弾%から、相手の攻撃側の想定を絞る */
+/* 逆算：受けたダメージの実数値から、相手の振り方・持ち物を絞る（くろこ流） */
+function syncRev(){
+  const max=+$('#revMax').value||0, now=$('#revNow').value, dmg=$('#revDmg').value;
+  if(max && now!=='' && dmg===''){ $('#revDmg').value = Math.max(0, max-(+now)); }
+  const d=+$('#revDmg').value||0;
+  $('#revPctShow').textContent = (max&&d) ? `＝ 最大HPの ${(d/max*100).toFixed(1)}%` : '';
+}
+['#revMax','#revNow'].forEach(s=>$(s).addEventListener('input',()=>{ $('#revDmg').value=''; syncRev(); }));
+$('#revDmg').addEventListener('input', syncRev);
+
 function reverseCalc(){
   const an=dmgState.a||$('#dA').value.trim(), dn=dmgState.d||$('#dD').value.trim(), mn=dmgState.move||$('#dMove').value.trim();
-  const target=parseFloat($('#revPct').value);
   const out=$('#revOut');
-  if(!PC.SPECIES[an]||!PC.SPECIES[dn]||!PC.MOVES[mn]||!target) { out.innerHTML='<div class="note w">攻撃側・技・防御側と、実際に減った%を入れてください。</div>'; return; }
+  syncRev();
+  const maxHp=+$('#revMax').value||0, dmg=+$('#revDmg').value||0;
+  if(!PC.SPECIES[an]||!PC.SPECIES[dn]||!PC.MOVES[mn]||!dmg||!maxHp){
+    out.innerHTML='<div class="note w">攻撃側・技・防御側と、最大HP・受けたダメージを入れてください。</div>'; return; }
+  const target = dmg/maxHp*100;
   const mv=PC.MOVES[mn];
   const atkKey=mv.cat==='物'?'a':'c', defKey=mv.cat==='物'?'b':'d';
   const D=sideStats(dn,$('#dDSide').value,defKey,$('#dDSpread').value);
-  const H=sideStats(dn,$('#dDSide').value,'h',$('#dDSpread').value==='none'?'none':'max');
-  const spreads=[['ぶっぱ＋補正','max'],['ぶっぱ（無補正）','hp'],['無振り','none']];
+  const spreads=[['攻撃ぶっぱ＋性格補正','max'],['攻撃ぶっぱ（無補正）','hp'],['攻撃無振り','none']];
   const items=['','いのちのたま','こだわりハチマキ','こだわりメガネ','たつじんのおび','タイプ強化アイテム'];
-  const cands=[];
+  const hit=[], miss=[];
   spreads.forEach(([label,kind])=>{
     const atk=PC.assumedStat(an,atkKey,kind);
     items.forEach(it=>{
@@ -668,19 +696,32 @@ function reverseCalc(){
       if(it==='こだわりメガネ'&&mv.cat!=='特')return;
       const r=PC.calcDamage({
         attacker:{name:an,atkStat:atk,types:PC.SPECIES[an].types,ability:'',item:it,rank:0,hpRatio:1},
-        defender:{name:dn,defStat:D.val,hp:H.val,types:PC.SPECIES[dn].types,ability:$('#dDAbil').value,item:$('#dDItem').value,rank:0,hpRatio:1},
+        defender:{name:dn,defStat:D.val,hp:maxHp,types:PC.SPECIES[dn].types,ability:$('#dDAbil').value,item:$('#dDItem').value,rank:0,hpRatio:1},
         move:mv, field:{weather:$('#dWeather').value}, flags:{}
       });
       if(r.error||r.eff===0) return;
-      if(target>=r.pctMin-0.6 && target<=r.pctMax+0.6)
-        cands.push({label:`${label} ／ ${it||'持ち物なし'}`, range:`${r.pctMin.toFixed(1)}〜${r.pctMax.toFixed(1)}%`, atk});
+      const row={label, item:it||'持ち物なし', range:`${r.min}〜${r.max}（${r.pctMin.toFixed(1)}〜${r.pctMax.toFixed(1)}%）`, atk};
+      (dmg>=r.min && dmg<=r.max) ? hit.push(row) : miss.push(row);
     });
   });
-  out.innerHTML = cands.length
-    ? `<div class="note g small">${cands.length}通りに絞れました。</div>
-       <table style="margin-top:8px"><tr><th>相手の想定</th><th>ダメージ幅</th><th class="num">実数値</th></tr>
-       ${cands.map(c=>`<tr><td>${esc(c.label)}</td><td class="small muted">${c.range}</td><td class="num">${c.atk}</td></tr>`).join('')}</table>`
-    : `<div class="note w">該当する組み合わせが見つかりませんでした。特性（かたいツメ・テクニシャン等）や天候、能力ランクが絡んでいる可能性があります。</div>`;
+
+  // 「否定できたもの」＝どの振り方でもこの数字が出せなかった持ち物 / 振り方
+  const hitItems=new Set(hit.map(h=>h.item)), hitSpreads=new Set(hit.map(h=>h.label));
+  const allItems=new Set(miss.concat(hit).map(h=>h.item)), allSpreads=new Set(miss.concat(hit).map(h=>h.label));
+  const deniedItems=[...allItems].filter(i=>!hitItems.has(i));
+  const deniedSpreads=[...allSpreads].filter(s=>!hitSpreads.has(s));
+
+  out.innerHTML = hit.length
+    ? `<div class="note g small">受けた <b>${dmg}</b>（${target.toFixed(1)}%）から、<b>${hit.length}通り</b>に絞れました。</div>
+       <table style="margin-top:8px"><tr><th>相手の想定</th><th>持ち物</th><th>この場合のダメージ</th><th class="num">実数値</th></tr>
+       ${hit.map(c=>`<tr><td>${esc(c.label)}</td><td>${esc(c.item)}</td><td class="small muted">${esc(c.range)}</td><td class="num">${c.atk}</td></tr>`).join('')}</table>
+       ${(deniedItems.length||deniedSpreads.length)?`<div class="note r small" style="margin-top:10px">
+          <b>この時点で否定できたもの</b><br>
+          ${deniedItems.length?`持ち物：${deniedItems.map(esc).join('・')} ではない<br>`:''}
+          ${deniedSpreads.length?`振り方：${deniedSpreads.map(esc).join('・')} ではない`:''}
+       </div>`:''}
+       <div class="small muted" style="margin-top:8px">絞り切れないときは、次に食らったダメージでもう一度かけると更に減ります。分かったことは「判明した相手の型」欄に残しておくと次戦で効きます。</div>`
+    : `<div class="note w">該当する組み合わせが見つかりませんでした。特性（かたいツメ・テクニシャン・てきおうりょく等）、天候、能力ランク、急所が絡んでいる可能性があります。防御側の「耐久の想定」を変えて試してください。</div>`;
 }
 
 /* =========================================================

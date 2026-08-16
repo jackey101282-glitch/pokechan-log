@@ -365,11 +365,17 @@ tr.bad .bar>i{background:var(--lose)}
   <div class="card"><h2>結果</h2><div id="dmgOut"><p class="hint">攻撃側・技・防御側を入れると計算します。</p></div></div>
   <div class="card">
     <h2>逆算：相手の型を割り出す</h2>
-    <p class="hint">「相手の攻撃を食らったときの実際の減り%」を入れると、耐久振り・持ち物の候補を絞ります。くろこ流の毎ターンのダメ計を機械化したものです。</p>
-    <div class="row">
-      <div><label class="f">実際に減った割合（%）</label><input type="number" id="revPct" placeholder="43.5" step="0.1"></div>
-      <div style="flex:0 0 120px"><label class="f">&nbsp;</label><button class="btn blue btn-full" id="btnRev">逆算する</button></div>
+    <p class="hint">くろこ流：<b>暗算せず、受けたダメージを電卓で引く。</b>そこから相手の振り方と持ち物を絞り込みます。数字を入れると「これは持っていない」まで出します。</p>
+    <div class="row" style="align-items:flex-end">
+      <div><label class="f">自分の最大HP</label><input type="number" id="revMax" placeholder="202"></div>
+      <div style="flex:0 0 22px;text-align:center;padding-bottom:10px;color:var(--muted)">−</div>
+      <div><label class="f">残ったHP</label><input type="number" id="revNow" placeholder="150"></div>
+      <div style="flex:0 0 22px;text-align:center;padding-bottom:10px;color:var(--muted)">=</div>
+      <div><label class="f">受けたダメージ</label><input type="number" id="revDmg" placeholder="52"></div>
     </div>
+    <div class="small muted" style="margin-top:6px" id="revPctShow"></div>
+    <div style="height:10px"></div>
+    <button class="btn blue btn-full" id="btnRev">相手の型を絞り込む</button>
     <div id="revOut" style="margin-top:12px"></div>
   </div>
 </section>
