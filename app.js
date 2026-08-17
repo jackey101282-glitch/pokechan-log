@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '3';
+const APP_VERSION = '4';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -574,28 +574,87 @@ function renderSuggest(){
   if(btn) btn.onclick=()=>apply(res.top[0].members);
 }
 
+/* ---------- 初手の順位づけと、崩れた時の逃げ道 ---------- */
+/** myName が oppName に不利なとき、どうすべきか */
+function escapeFor(myName, oppName, picks, rc){
+  const cands = picks.filter(p=>p!==myName).map(p=>{
+    const m = rc.find(r=>r.label===p) || {name:p};
+    return {p, mu:PC.matchup(m,{name:effOpp(oppName)})};
+  }).filter(x=>x.mu);
+  const safe = cands.filter(x=>!x.mu.danger).sort((a,b)=>b.mu.score-a.mu.score);
+  const me = rc.find(r=>r.label===myName) || {name:myName};
+  const mine = PC.matchup(me,{name:effOpp(oppName)});
+  if(safe.length && (!mine || safe[0].mu.score > mine.score + 0.4))
+    return {type:'switch', to:safe[0].p, mu:safe[0].mu};
+  // 引き先も無い＝耐えて殴るしかない。何発で落ちるかを出す
+  return {type:'stay', mu:mine};
+}
+/** 予想先発の確率で重みづけして、初手の良さを順位づけする */
+function leadRanking(picks, oppList, rc, battles){
+  const pred = PC.predictLead(oppList, battles);
+  return picks.map(n=>{
+    const m = rc.find(r=>r.label===n) || {name:n};
+    let ev=0, worst=99, dangers=[];
+    pred.forEach(p=>{
+      const mu = PC.matchup(m,{name:effOpp(p.name)});
+      if(!mu) return;
+      ev += p.pct * mu.score;
+      if(mu.score < worst) worst = mu.score;
+      if(mu.danger) dangers.push({opp:p.name, mu, pct:p.pct});
+    });
+    const vsLead = pred[0] ? PC.matchup(m,{name:effOpp(pred[0].name)}) : null;
+    return {name:n, ev, worst, dangers, vsLead, lead:pred[0]};
+  }).sort((a,b)=> b.ev - a.ev);
+}
+
 /* ---------- 初手チェック ---------- */
 function renderLead(){
   const el=$('#leadOut'); const roster=currentRoster();
   if(!S.myPick.length || !S.opp.length){ el.innerHTML=''; return; }
-  const checks=PC.leadCheck(S.myPick, S.opp, rosterForCalc(roster, S.mega));
   const rc = rosterForCalc(roster, S.mega);
-  el.innerHTML = `<div class="small muted" style="margin-bottom:6px">初手チェック — 「有利な初手を探す」のではなく「崩れる初手を消す」（くろこ流）</div>`
-    + checks.map(c=>{
-        const mine = rc.find(r=>r.name===c.name) || {name:c.name};
-        const detail = S.opp.map(o=>{
-          const mu = PC.matchup(mine,{name:o}); if(!mu) return '';
-          const mark = mu.danger ? '✕' : (mu.winsRace ? '○' : '△');
-          return `<span style="display:inline-block;margin:2px 8px 2px 0">${mark} ${esc(o)}
-            <span class="muted">(${Math.round(mu.myDmg*100)}% / 被${Math.round(mu.opDmg*100)}%${mu.faster?' 先制':''})</span></span>`;
-        }).join('');
-        return `<div style="padding:8px 0;border-bottom:1px solid var(--line2)">
-          <div class="small">${c.safe?'<span class="badge ok">初手OK</span>':'<span class="badge ng">初手NG</span>'}
-            <b style="margin-left:6px">${esc(c.name)}</b>
-            ${c.danger.length?`<span class="muted"> — ${esc(c.danger.join('、'))}に崩される</span>`:'<span class="muted"> — 崩れる対面なし</span>'}</div>
-          <div class="small" style="margin-top:4px">${detail}</div></div>`;
+  const size = $('#fRule').value==='double'?4:3;
+  const targets = (S.opp.length>=size)
+    ? PC.predictPicks(S.opp, BATTLES, rc, size, META_TOP).picks
+    : S.opp;
+  const rank = leadRanking(S.myPick, targets, rc, BATTLES);
+  if(!rank.length){ el.innerHTML=''; return; }
+
+  const marks = ['①','②','③','④'];
+  el.innerHTML = `<div class="small muted" style="margin-bottom:8px">
+      選んだ${S.myPick.length}体のうち、<b>どれを初手に置くか</b>の順位です。相手の先発予想の確率で重みづけしています。</div>`
+    + rank.map((r,i)=>{
+        const grade = r.dangers.length===0 ? ['ok','安全'] :
+                      (r.dangers.length<=1 ? ['wn','ほぼ安全'] : ['ng','リスク高']);
+        const lead = r.vsLead;
+        return `<div style="padding:10px 0;border-bottom:1px solid var(--line2)">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <b style="font-size:15px">${marks[i]||''} ${esc(r.name)}</b>
+            <span class="badge ${grade[0]}">${grade[1]}</span>
+            ${i===0?'<span class="badge ok">これを置く</span>':''}
+          </div>
+          ${lead&&r.lead?`<div class="small" style="margin-top:5px">
+             予想先発 <b>${esc(r.lead.name)}</b>（${Math.round(r.lead.pct*100)}%）に
+             ${Math.round(lead.myDmg*100)}% / 被${Math.round(lead.opDmg*100)}%${lead.faster?' 先制':''}
+             ${lead.danger?'<span class="badge ng">不利</span>':(lead.winsRace?'<span class="badge ok">先に落とせる</span>':'<span class="badge wn">押し切れない</span>')}
+           </div>`:''}
+          ${r.dangers.length ? `<div style="margin-top:7px">
+             ${r.dangers.map(d=>{
+               const esc2=escapeFor(r.name, d.opp, S.myPick, rc);
+               const plan = esc2.type==='switch'
+                 ? `<b>${esc(esc2.to)}に引く</b> <span class="muted">(${Math.round(esc2.mu.myDmg*100)}% / 被${Math.round(esc2.mu.opDmg*100)}%${esc2.mu.faster?' 先制':''})</span>`
+                 : (esc2.mu && esc2.mu.opHits>=3
+                     ? `<b>引き先なし。${esc2.mu.opHits}発は耐えるので殴り返す</b> <span class="muted">(${Math.round(esc2.mu.myDmg*100)}%)</span>`
+                     : `<b>引き先なし。切るしかない</b> <span class="muted">（${esc2.mu?esc2.mu.opHits:'?'}発で落ちる）</span>`);
+               return `<div class="small" style="padding:3px 0">
+                 <span class="badge ng" style="font-size:10px">危険</span>
+                 ${esc(d.opp)} <span class="muted">(${Math.round(d.mu.myDmg*100)}% / 被${Math.round(d.mu.opDmg*100)}%)</span>
+                 <span class="muted"> → </span>${plan}</div>`;
+             }).join('')}</div>` : `<div class="small muted" style="margin-top:5px">崩される対面なし</div>`}
+        </div>`;
       }).join('')
-    + `<div class="small muted" style="margin-top:8px">数値は「自分が与える割合 / 受ける割合」。相手は<b>ぶっぱ想定</b>、自分は登録した実数値で計算しています。</div>`;
+    + `<div class="small muted" style="margin-top:8px">
+        危険対面は「必ず負ける」ではなく「そのまま居座ると崩される」の意味です。
+        数値は「与える割合 / 受ける割合」、相手は<b>ぶっぱ想定</b>で計算しています。</div>`;
 }
 
 /* ---------- ターンログ ---------- */
