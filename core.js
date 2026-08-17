@@ -631,6 +631,27 @@ function buildMatrix(myRoster, oppNames){
   return myRoster.map(m=> oppNames.map(o=> matchup(m, {name:o})));
 }
 
+/** その駒の打点が物理寄りか特殊寄りか。登録した技から判定し、無ければ実数値のA/Cで。
+ *  選出が片方に寄り切ると、鬼火・いかく／ひかりのかべ・チョッキ 1枚でまとめて止まる。 */
+function offenseCat(mine){
+  const mvs = (mine.moves||[]).map(m=>MOVES[m]).filter(m=>m && m.power && m.cat!=='変');
+  if(mvs.length){
+    const p = mvs.filter(m=>m.cat==='物').length;
+    if(p && p<mvs.length) return 'both';
+    return p ? '物' : '特';
+  }
+  const st = mine.stats || (SPECIES[mine.name] ? {a:SPECIES[mine.name].base.a, c:SPECIES[mine.name].base.c} : null);
+  if(!st) return 'both';
+  return st.a >= st.c ? '物' : '特';
+}
+/** 並びの打点が片寄っていれば '物理' / '特殊' を返す。割れていれば null */
+function offenseBias(entries){
+  const k = entries.map(offenseCat);
+  if(k.every(x=>x==='物')) return '物理';
+  if(k.every(x=>x==='特')) return '特殊';
+  return null;
+}
+
 /** 選出3体を提案（相手6体をできるだけ「見れる」組み合わせを貪欲に探す） */
 function suggestPicks(myRoster, oppNames, size){
   size = size || 3;
@@ -660,9 +681,11 @@ function suggestPicks(myRoster, oppNames, size){
       TYPES.forEach(t=>{ if(effectiveness(t, st.types) >= 2) weak[t] = (weak[t]||0)+1; });
     });
     const shared = Object.entries(weak).filter(([,v])=> v>=size).map(([t])=>t);
-    const penalty = shared.length * 1.2;
+    // 打点が物理／特殊のどちらかに寄り切った並びは、相手の1枚でまとめて止まる
+    const bias = offenseBias(c.map(i=> myRoster[i]));
+    const penalty = shared.length * 1.2 + (bias ? 0.8 : 0);
     return { members:c.map(i=> myRoster[i].label || myRoster[i].name), cover, total: total - penalty,
-             worst, uncovered, sharedWeak: shared };
+             worst, uncovered, sharedWeak: shared, bias };
   }).sort((a,b)=> b.cover - a.cover || b.total - a.total);
 
   return { top: scored.slice(0,10), matrix: mat };
@@ -720,7 +743,7 @@ global.PC = {
   assumedSpreads, spreadStats, attackerLikeness, matchupVs, SP_TOTAL, SP_MAX,
   MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
   predictPicks, backtestPicks,
-  rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck,
+  rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
   bestOffense, bestThreat, immuneType,
   similarBattles, observedMoves
 };

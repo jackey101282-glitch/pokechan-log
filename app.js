@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '6';
+const APP_VERSION = '7';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -465,6 +465,8 @@ function renderLeadPredict(){
         <span class="muted">（もう片方はメガ前の数値で計算しています）</span></div>`:''}
       ${bp.blind.length?`<div class="small muted" style="margin-top:6px">予想が外れて出てくると厳しい：${esc(bp.blind.join('、'))}</div>`:''}
       ${myPlan&&myPlan.sharedWeak.length?`<div class="small" style="margin-top:6px"><span class="badge ng">全員 ${esc(myPlan.sharedWeak.join('・'))} に弱い</span></div>`:''}
+      ${myPlan&&myPlan.bias?`<div class="small" style="margin-top:6px"><span class="badge ng">3体とも${esc(myPlan.bias)}アタッカー</span>
+        <span class="muted">${myPlan.bias==='物理'?'おにび・いかく・リフレクター':'ひかりのかべ・とつげきチョッキ'}1枚でまとめて止められます</span></div>`:''}
       <button class="btn sm" id="btnApplyPlan" style="margin-top:9px">この選出にする</button>
       ${bp.all.length>1?`<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">他の候補も見る</summary>
         ${bp.all.slice(1).map((alt,k)=>`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line2)">
@@ -1057,7 +1059,22 @@ function diagnose(){
   if(Object.values(opp).some(v=>v.n>=4 && v.w/v.n<0.35)) on.add('badMatchup');
   // 今の入力に未遭遇の相手がいる
   if(S.opp.some(n=>!opp[n])) on.add('unknownOpp');
+  // 6匹のうち、ほとんど選出していない枠がある＝実質5匹で戦っている
+  if(deadSlots().length) on.add('deadSlot');
   return on;
+}
+/** いまの構築で、ほとんど選出していない枠 [{name,n,total}] */
+function deadSlots(teamId){
+  const t = teamId ? TEAMS.find(x=>x.id===teamId) : currentTeam();
+  if(!t) return [];
+  const roster = (t.roster&&t.roster.length) ? t.roster : (t.members||[]).map(n=>({name:n}));
+  if(roster.length<4) return [];
+  const tb = BATTLES.filter(b=>b.team_id===t.id && (b.my_pick||[]).length);
+  if(tb.length<15) return [];                     // 母数が少ないうちは判定しない
+  const cnt={}; roster.forEach(m=>cnt[m.name]=0);
+  tb.forEach(b=>(b.my_pick||[]).forEach(p=>{ if(p in cnt) cnt[p]++; }));
+  return Object.entries(cnt).filter(([,n])=> n/tb.length < 0.08)
+    .map(([name,n])=>({name, n, total:tb.length}));
 }
 function renderAdvice(){
   const on = diagnose();
@@ -1169,6 +1186,9 @@ function renderFeedback(B,bad,mg,combo){
   const comboArr=Object.entries(combo).map(([p,v])=>({p,...v})).filter(x=>x.n>=4);
   const best=comboArr.sort((a,b)=>(b.w/b.n)-(a.w/a.n))[0];
   if(best && best.w/best.n>=0.6) out.push(['g',`勝ちパターンは <b>${esc(best.p)}</b>（${best.n}戦 ${pct(best.w,best.n)}%）。この形に持ち込める並びを見つけたら迷わず選出してよさそうです。`]);
+  const dead = deadSlots($('#sTeam').value || undefined);
+  if(dead.length) out.push(['r',`${dead.map(d=>`<b>${esc(d.name)}</b>（${d.total}戦中 ${d.n}回）`).join('、')} をほとんど選出していません。
+    <b>この枠は実質いないのと同じ</b>です。「どの並びに対して出すつもりの枠か」を言葉にできないなら、入れ替える判断材料になります（相談タブの「一度も選出しない枠」参照）。`]);
   const noReason=B.filter(b=>!b.reason).length;
   if(B.length>=10 && noReason/B.length>0.3) out.push(['w',`勝因/敗因が空の試合が ${noReason} 件あります。<b>ここを書いた試合だけが復習に使えます</b>。1文でいいので必ず残しましょう。`]);
   const noTurn=B.filter(b=>!(b.turns||[]).length).length;
