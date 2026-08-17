@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '4';
+const APP_VERSION = '5';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -288,26 +288,41 @@ function rosterForCalc(roster, megaChoice){
 }
 /** この構築が持つメガ枠。複数あればどれを切るかで結果が変わる */
 function megaSlotsOf(roster){ return roster.filter(m=>PC.isMegaForm(m.name)).map(m=>m.name); }
-/** メガの切り方を総当たりして、いちばん良い選出を返す */
-function bestPlan(roster, targets, size){
+/** メガの切り方を総当たりして、いちばん良い選出を返す。
+ *  第一基準＝予想した相手3体への強さ、第二基準＝予想が外れた時に相手6体をどれだけ見れるか。 */
+function bestPlan(roster, targets, size, allOpp){
   const slots = megaSlotsOf(roster);
   const choices = slots.length>1 ? slots : [null];
-  let best=null;
+  const pool = [];
   choices.forEach(ch=>{
     const rc = rosterForCalc(roster, ch);
     const sug = PC.suggestPicks(rc, targets, Math.min(size, rc.length));
-    const top = sug.top[0]; if(!top) return;
-    // 選んだメガが選出に入っていない案は、メガを切る意味がないので除外
-    if(ch && !top.members.includes(ch)) return;
-    const score = top.cover*100 + top.total;
-    if(!best || score>best.score) best={score, plan:top, mega:ch, rc, all:sug.top};
+    sug.top.forEach(c=>{
+      // 選んだメガが選出に入っていない案は、メガを切る意味がないので除外
+      if(ch && !c.members.includes(ch)) return;
+      // 予想が外れた場合の保険：相手6体のうち何体を見れるか
+      let backup = 0, blind = [];
+      (allOpp||targets).forEach(o=>{
+        const ok = c.members.some(n=>{
+          const m = rc.find(r=>r.label===n) || {name:n};
+          const mu = PC.matchup(m,{name:effOpp(o)});
+          return mu && mu.winsRace;
+        });
+        ok ? backup++ : blind.push(o);
+      });
+      pool.push({plan:c, mega:ch, rc, backup, blind});
+    });
   });
-  if(!best){
+  if(!pool.length){
     const rc = rosterForCalc(roster, null);
     const sug = PC.suggestPicks(rc, targets, Math.min(size, rc.length));
-    best={score:0, plan:sug.top[0], mega:null, rc, all:sug.top};
+    return {plan:sug.top[0], mega:null, rc, backup:0, blind:[], all:sug.top.map(p=>({plan:p,rc,backup:0,blind:[]}))};
   }
-  return best;
+  pool.sort((a,b)=> b.plan.cover-a.plan.cover || b.backup-a.backup || b.plan.total-a.plan.total);
+  // 同じ並びが重複しないように畳む
+  const seen=new Set(), uniq=[];
+  pool.forEach(p=>{ const k=[...p.plan.members].sort().join('|'); if(seen.has(k))return; seen.add(k); uniq.push(p); });
+  return {...uniq[0], all:uniq.slice(0,3)};
 }
 function currentRoster(){
   const t=currentTeam(); if(!t) return [];
@@ -331,6 +346,8 @@ function renderOpp(){
     renderOpp(); saveDraft();
   });
   $('#oppCount').textContent = `${S.opp.length}/6`;
+  // 予想は最初に1回だけ立てて、以降は全員が同じものを見る
+  safe('予想', computePrediction, null);
   // 1か所こけても後ろを巻き込まない。黙って空にせず、その場に理由を出す
   safe('quick', renderQuick, null);
   safe('team',  renderMyTeamChips, null);
@@ -375,15 +392,31 @@ function renderQuick(){
   });
 }
 
+/* 予想は1回だけ計算して、画面のどこからも同じものを参照する。
+   （別々に計算し直すと、②の先発と初手チェックの先発が食い違う） */
+let PRED = null;
+function computePrediction(){
+  const roster=currentRoster();
+  if(S.opp.length<3 || roster.length<3){ PRED=null; return; }
+  const size = $('#fRule').value==='double' ? 4 : 3;
+  // 相手はこちらのメガの切り方を知らないので、予想はメガ未確定の状態で立てる
+  const neutral = rosterForCalc(roster, null);
+  const pp   = PC.predictPicks(S.opp, BATTLES, neutral, size, META_TOP);
+  const lead = PC.predictLead(pp.picks, BATTLES);
+  const bp   = bestPlan(roster, pp.picks, size, S.opp);
+  S.predLead = lead[0] ? lead[0].name : null;
+  PRED = { size, neutral, pp, picks:pp.picks, lead, bp };
+}
+
 /* 読み：相手の3体 → その中の先発 → こちらの3体 → こちらの初手 */
 function renderLeadPredict(){
   const card=$('#cardLead');
   const roster=currentRoster();
-  if(S.opp.length<3 || roster.length<3){ card.hidden=true; return; }
+  if(!PRED || S.opp.length<3 || roster.length<3){ card.hidden=true; return; }
   card.hidden=false;
 
-  const size = $('#fRule').value==='double' ? 4 : 3;
-  const rc = rosterForCalc(roster, S.mega);
+  const size = PRED.size;
+  const rc = PRED.neutral;
 
   // 的中率（先発は保存値と実績を照合、選出は過去ログの時系列で検証）
   const doneLead = BATTLES.filter(b=> b.pred_lead && (b.turns||[])[0] && b.turns[0].oppMon);
@@ -394,28 +427,14 @@ function renderLeadPredict(){
   if(doneLead.length) accParts.push(`先発の的中 ${pct(hitLead,doneLead.length)}%`);
   $('#leadAcc').textContent = accParts.join(' ／ ');
 
-  // ① 相手の選出3体
-  const pp = PC.predictPicks(S.opp, BATTLES, rc, size, META_TOP);
-  const theirPicks = pp.picks;
-
-  // ② その3体の中での先発
-  const lead = PC.predictLead(theirPicks, BATTLES);
-  S.predLead = lead[0] ? lead[0].name : null;
-
-  // ③ その3体に対するこちらの3体（メガをどちらに切るかも一緒に決める）
-  const bp = bestPlan(roster, theirPicks, size);
+  const { pp, picks:theirPicks, lead, bp } = PRED;
   const myPlan = bp.plan;
   const planRc = bp.rc;
-
-  // ④ 相手の先発に対するこちらの初手
   const myMembers = myPlan ? myPlan.members : planRc.map(m=>m.label);
-  const leadAns = myMembers.map(n=>{
-    const m = planRc.find(r=>r.label===n) || {name:n};
-    return {n, mu:PC.matchup(m,{name:S.predLead})};
-  }).filter(x=>x.mu).sort((a,b)=>{
-    if(a.mu.danger!==b.mu.danger) return a.mu.danger?1:-1;
-    return b.mu.score-a.mu.score;
-  })[0];
+
+  // ④ 初手は、下の「初手チェック」と同じ関数で決める（食い違わないように）
+  const rank4 = leadRanking(myMembers, theirPicks, planRc, BATTLES);
+  const leadAns = rank4[0] ? {n:rank4[0].name, mu:rank4[0].vsLead} : null;
 
   $('#predictOut').innerHTML = `
     <div class="pick-card best">
@@ -437,32 +456,45 @@ function renderLeadPredict(){
 
     <div class="pick-card">
       <div class="hd"><b>③ こちらの選出</b>
-        <span class="badge ${myPlan&&myPlan.cover>=size?'ok':'wn'}">${myPlan?`予想3体中 ${myPlan.cover}体に有利`:''}</span></div>
+        <span class="badge ${myPlan&&myPlan.cover>=size?'ok':'wn'}">${myPlan?`予想3体中 ${myPlan.cover}体に有利`:''}</span>
+        <span class="badge ${bp.backup>=S.opp.length-1?'ok':(bp.backup>=S.opp.length-2?'wn':'ng')}">予想が外れても ${bp.backup}/${S.opp.length}体</span></div>
       <div class="pklist">${myMembers.map(n=>pkChip(n,{cls:bp.mega===n?'sel':''})).join('')}</div>
       ${bp.mega?`<div class="small" style="margin-top:6px"><span class="badge ok">メガは ${esc(bp.mega)} に切る</span>
         <span class="muted">（もう片方はメガ前の数値で計算しています）</span></div>`:''}
+      ${bp.blind.length?`<div class="small muted" style="margin-top:6px">予想が外れて出てくると厳しい：${esc(bp.blind.join('、'))}</div>`:''}
       ${myPlan&&myPlan.sharedWeak.length?`<div class="small" style="margin-top:6px"><span class="badge ng">全員 ${esc(myPlan.sharedWeak.join('・'))} に弱い</span></div>`:''}
       <button class="btn sm" id="btnApplyPlan" style="margin-top:9px">この選出にする</button>
+      ${bp.all.length>1?`<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">他の候補も見る</summary>
+        ${bp.all.slice(1).map((alt,k)=>`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line2)">
+          <div class="small muted">候補${k+2}　予想3体中 ${alt.plan.cover}体／外れても ${alt.backup}/${S.opp.length}体</div>
+          <div class="pklist">${alt.plan.members.map(n=>pkChip(n,{cls:'tapp',data:`data-alt='${esc(JSON.stringify({m:alt.plan.members,g:alt.mega}))}'`})).join('')}</div>
+        </div>`).join('')}</details>`:''}
     </div>
 
     <div class="pick-card">
-      <div class="hd"><b>④ こちらの初手</b></div>
+      <div class="hd"><b>④ この3体のうち、初手はこれ</b></div>
       ${leadAns ? `<div class="pklist">${pkChip(leadAns.n,{cls:leadAns.mu.danger?'':'sel'})}</div>
         <div class="small" style="margin-top:7px">
           対 <b>${esc(S.predLead)}</b> ：${Math.round(leadAns.mu.myDmg*100)}% / 被${Math.round(leadAns.mu.opDmg*100)}%${leadAns.mu.faster?' 先制':''}
-          ${leadAns.mu.danger?' <span class="badge ng">安全な初手がありません</span>':(leadAns.mu.winsRace?' <span class="badge ok">先に落とせる</span>':' <span class="badge wn">押し切れない</span>')}
-        </div>` : '<p class="hint">初手の候補が出せませんでした。</p>'}
+          ${leadAns.mu.danger?' <span class="badge ng">ここも不利。置いたら早めに引く前提</span>':(leadAns.mu.winsRace?' <span class="badge ok">先に落とせる</span>':' <span class="badge wn">押し切れない</span>')}
+        </div>
+        <div class="small muted" style="margin-top:5px">③の3体の中から選んでいます。危険対面ごとの引き先は、下の「初手チェック」に出ます。</div>`
+        : '<p class="hint">初手の候補が出せませんでした。</p>'}
     </div>
 
     <div class="small muted">相手の型は「ぶっぱ想定」で計算しています。あくまで初手を決めるための目安です。</div>`;
 
-  const b=$('#btnApplyPlan');
-  if(b) b.onclick=()=>{
-    setArr(S.myPick, myMembers);
-    if(bp.mega && myMembers.includes(bp.mega)) S.mega = bp.mega;
+  const apply=(members, mega)=>{
+    setArr(S.myPick, members);
+    S.mega = (mega && members.includes(mega)) ? mega : null;
     renderPickers(); renderTurns(); renderGuide(); saveDraft();
-    toast(bp.mega?`選出に反映（メガは ${bp.mega}）`:'選出に反映しました');
+    toast(S.mega?`選出に反映（メガは ${S.mega}）`:'選出に反映しました');
   };
+  const b=$('#btnApplyPlan');
+  if(b) b.onclick=()=>apply(myMembers, bp.mega);
+  $$('#predictOut [data-alt]').forEach(c=> c.onclick=()=>{
+    const a=JSON.parse(c.dataset.alt); apply(a.m, a.g);
+  });
 }
 
 /* 相手1体ごとに「自分の選出の誰を当てるべきか」 */
@@ -525,53 +557,21 @@ function toggle(a,v){const i=a.indexOf(v);i<0?a.push(v):a.splice(i,1);}
 $('#fMega').addEventListener('change',()=>{S.mega=$('#fMega').value||null;saveDraft();});
 $('#fTeam').onchange=()=>{setArr(S.myPick);renderMyTeamChips();renderPickers();renderSuggest();saveDraft();};
 
-/* ---------- 選出提案 ---------- */
+/* ---------- 似た並びとの過去実績 ----------
+   選出の提案は「読みと選出」カードに一本化した。ここは実績だけを出す。 */
 function renderSuggest(){
-  const out=$('#suggestOut'); const roster=currentRoster();
-  if(S.opp.length<3 || roster.length<3){
-    out.innerHTML='<p class="hint">相手を3匹以上入れると、タイプ相性から選出候補を出します。</p>'; return;
-  }
-  const size = $('#fRule').value==='double'? 4 : 3;
-  const bp = bestPlan(roster, S.opp, size);
-  const res = { top: bp.all };
-  let html = (megaSlotsOf(roster).length>1 && bp.mega)
-    ? `<div class="note b small" style="margin-bottom:10px">この構築はメガ枠が
-        <b>${esc(megaSlotsOf(roster).join(' / '))}</b> の2つあります。1バトルで切れるのは1体だけなので、
-        <b>${esc(bp.mega)}</b> をメガにする前提で計算しました。もう片方はメガ前の数値です。</div>` : '';
-  html += res.top.map((c,i)=>`
-    <div class="pick-card ${i===0?'best':''}">
-      <div class="hd">${i===0?'<b>おすすめ</b>':'候補'+(i+1)}
-        <span class="badge ${c.cover>=S.opp.length-1?'ok':(c.cover>=S.opp.length-2?'wn':'ng')}">相手${S.opp.length}体中 ${c.cover}体に有利</span>
-        ${c.sharedWeak.length?`<span class="badge ng">全員 ${c.sharedWeak.join('・')} に弱い</span>`:''}
-      </div>
-      <div class="pklist">${c.members.map(n=>pkChip(n,{cls:'tapp',data:`data-set='${esc(JSON.stringify(c.members))}'`})).join('')}</div>
-      ${c.uncovered.length?`<div class="small muted" style="margin-top:7px">見れない相手：${esc(c.uncovered.join('、'))}</div>`:''}
-    </div>`).join('');
-  html += `<button class="btn sm" id="btnApplyPick">おすすめをそのまま選出にする</button>`;
-
-  // 類似パーティの過去戦績
-  const sim = PC.similarBattles(BATTLES, S.opp, 3);
-  if(sim.length){
-    const agg={};
-    sim.forEach(x=>{const k=[...(x.b.my_pick||[])].sort().join(' / ')||'(未記録)';
-      agg[k]=agg[k]||{w:0,n:0}; agg[k].n++; if(x.b.result==='win')agg[k].w++;});
-    const rows=Object.entries(agg).sort((a,b)=>b[1].n-a[1].n)
-      .map(([k,v])=>`<tr class="${v.w/v.n<0.5?'bad':''}"><td>${esc(k)}<div class="bar"><i style="width:${pct(v.w,v.n)}%"></i></div></td><td class="num">${v.n}</td><td class="num">${pct(v.w,v.n)}%</td></tr>`).join('');
-    html += `<div style="margin-top:14px"><div class="small muted" style="margin-bottom:6px">似た並び（3体以上一致）と戦った ${sim.length} 戦の実績</div>
-      <table><tr><th>選出</th><th class="num">戦</th><th class="num">勝率</th></tr>${rows}</table></div>`;
-  } else {
-    html += `<div class="note b small" style="margin-top:14px">似た並びとの対戦履歴はまだありません。記録が溜まると、ここに「勝てた選出・負けた選出」が出ます。</div>`;
-  }
-  out.innerHTML = html;
-  const apply=(members)=>{
-    setArr(S.myPick, members);
-    if(bp.mega && members.includes(bp.mega)) S.mega = bp.mega;   // 切るメガも一緒に反映
-    renderPickers(); renderTurns(); renderGuide(); saveDraft();
-    toast(bp.mega?`選出に反映（メガは ${bp.mega}）`:'選出に反映しました');
-  };
-  out.querySelectorAll('[data-set]').forEach(c=> c.onclick=()=>apply(JSON.parse(c.dataset.set)));
-  const btn=$('#btnApplyPick');
-  if(btn) btn.onclick=()=>apply(res.top[0].members);
+  const card=$('#cardSuggest'), out=$('#suggestOut');
+  const sim = S.opp.length>=3 ? PC.similarBattles(BATTLES, S.opp, 3) : [];
+  if(!sim.length){ card.hidden=true; out.innerHTML=''; return; }
+  card.hidden=false;
+  const agg={};
+  sim.forEach(x=>{const k=[...(x.b.my_pick||[])].sort().join(' / ')||'(未記録)';
+    agg[k]=agg[k]||{w:0,n:0}; agg[k].n++; if(x.b.result==='win')agg[k].w++;});
+  const rows=Object.entries(agg).sort((a,b)=>b[1].n-a[1].n)
+    .map(([k,v])=>`<tr class="${v.w/v.n<0.5?'bad':''}"><td>${esc(k)}<div class="bar"><i style="width:${pct(v.w,v.n)}%"></i></div></td><td class="num">${v.n}</td><td class="num">${pct(v.w,v.n)}%</td></tr>`).join('');
+  out.innerHTML = `<h2>似た並びと戦った実績<span class="sub">3体以上一致・${sim.length}戦</span></h2>
+    <p class="hint">実際に勝てた選出・負けた選出です。上の提案より、こちらの数字を優先してよい場面があります。</p>
+    <table><tr><th>選出</th><th class="num">戦</th><th class="num">勝率</th></tr>${rows}</table>`;
 }
 
 /* ---------- 初手の順位づけと、崩れた時の逃げ道 ---------- */
@@ -612,10 +612,8 @@ function renderLead(){
   const el=$('#leadOut'); const roster=currentRoster();
   if(!S.myPick.length || !S.opp.length){ el.innerHTML=''; return; }
   const rc = rosterForCalc(roster, S.mega);
-  const size = $('#fRule').value==='double'?4:3;
-  const targets = (S.opp.length>=size)
-    ? PC.predictPicks(S.opp, BATTLES, rc, size, META_TOP).picks
-    : S.opp;
+  // 予想は共有のものを使う。ここで計算し直すと「読み」と食い違う
+  const targets = (PRED && PRED.picks.length) ? PRED.picks : S.opp;
   const rank = leadRanking(S.myPick, targets, rc, BATTLES);
   if(!rank.length){ el.innerHTML=''; return; }
 

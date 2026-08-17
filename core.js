@@ -556,7 +556,7 @@ function suggestPicks(myRoster, oppNames, size){
              worst, uncovered, sharedWeak: shared };
   }).sort((a,b)=> b.cover - a.cover || b.total - a.total);
 
-  return { top: scored.slice(0,3), matrix: mat };
+  return { top: scored.slice(0,10), matrix: mat };
 }
 
 /** 初手に置いてはいけない対面を洗い出す（くろこの原則②） */
