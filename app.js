@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '2';
+const APP_VERSION = '3';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -267,12 +267,47 @@ function initAutocompletes(){
   });
 }
 function currentTeam(){ return TEAMS.find(t=>t.id===$('#fTeam').value); }
-/** 相性計算に渡す形（実数値・技・特性・持ち物つき） */
-function rosterForCalc(roster){
-  return roster.map(m=>({
-    name:m.name, stats:PC.realStats(m.name, m.sp, m.nature),
-    moves:(m.moves||[]).filter(Boolean), ability:m.ability||'', item:m.item||''
-  }));
+/** 相性計算に渡す形。
+ *  1バトルでメガシンカできるのは1体だけなので、メガ枠が複数ある構築では
+ *  「選ばなかった方」をメガ前の姿として計算する（メガの数値で二重取りしない）。 */
+function rosterForCalc(roster, megaChoice){
+  const megaSlots = roster.filter(m=>PC.isMegaForm(m.name)).map(m=>m.name);
+  return roster.map(m=>{
+    const demote = PC.isMegaForm(m.name) && megaSlots.length>1 && megaChoice && megaChoice!==m.name;
+    const calcName = demote ? PC.toBase(m.name) : m.name;
+    return {
+      label:m.name,                    // 表示・選出の照合はこちら
+      name:calcName,                   // 計算に使う姿
+      demoted:demote,
+      stats:PC.realStats(calcName, m.sp, m.nature),
+      moves:(m.moves||[]).filter(Boolean),
+      ability: demote ? '' : (m.ability||''),
+      item:    demote ? '' : (m.item||'')
+    };
+  }).filter(m=>m.stats);
+}
+/** この構築が持つメガ枠。複数あればどれを切るかで結果が変わる */
+function megaSlotsOf(roster){ return roster.filter(m=>PC.isMegaForm(m.name)).map(m=>m.name); }
+/** メガの切り方を総当たりして、いちばん良い選出を返す */
+function bestPlan(roster, targets, size){
+  const slots = megaSlotsOf(roster);
+  const choices = slots.length>1 ? slots : [null];
+  let best=null;
+  choices.forEach(ch=>{
+    const rc = rosterForCalc(roster, ch);
+    const sug = PC.suggestPicks(rc, targets, Math.min(size, rc.length));
+    const top = sug.top[0]; if(!top) return;
+    // 選んだメガが選出に入っていない案は、メガを切る意味がないので除外
+    if(ch && !top.members.includes(ch)) return;
+    const score = top.cover*100 + top.total;
+    if(!best || score>best.score) best={score, plan:top, mega:ch, rc, all:sug.top};
+  });
+  if(!best){
+    const rc = rosterForCalc(roster, null);
+    const sug = PC.suggestPicks(rc, targets, Math.min(size, rc.length));
+    best={score:0, plan:sug.top[0], mega:null, rc, all:sug.top};
+  }
+  return best;
 }
 function currentRoster(){
   const t=currentTeam(); if(!t) return [];
@@ -348,7 +383,7 @@ function renderLeadPredict(){
   card.hidden=false;
 
   const size = $('#fRule').value==='double' ? 4 : 3;
-  const rc = rosterForCalc(roster);
+  const rc = rosterForCalc(roster, S.mega);
 
   // 的中率（先発は保存値と実績を照合、選出は過去ログの時系列で検証）
   const doneLead = BATTLES.filter(b=> b.pred_lead && (b.turns||[])[0] && b.turns[0].oppMon);
@@ -367,14 +402,15 @@ function renderLeadPredict(){
   const lead = PC.predictLead(theirPicks, BATTLES);
   S.predLead = lead[0] ? lead[0].name : null;
 
-  // ③ その3体に対するこちらの3体
-  const sug = PC.suggestPicks(rc, theirPicks, Math.min(size, rc.length));
-  const myPlan = sug.top[0];
+  // ③ その3体に対するこちらの3体（メガをどちらに切るかも一緒に決める）
+  const bp = bestPlan(roster, theirPicks, size);
+  const myPlan = bp.plan;
+  const planRc = bp.rc;
 
   // ④ 相手の先発に対するこちらの初手
-  const myMembers = myPlan ? myPlan.members : rc.map(m=>m.name);
+  const myMembers = myPlan ? myPlan.members : planRc.map(m=>m.label);
   const leadAns = myMembers.map(n=>{
-    const m = rc.find(r=>r.name===n) || {name:n};
+    const m = planRc.find(r=>r.label===n) || {name:n};
     return {n, mu:PC.matchup(m,{name:S.predLead})};
   }).filter(x=>x.mu).sort((a,b)=>{
     if(a.mu.danger!==b.mu.danger) return a.mu.danger?1:-1;
@@ -402,7 +438,9 @@ function renderLeadPredict(){
     <div class="pick-card">
       <div class="hd"><b>③ こちらの選出</b>
         <span class="badge ${myPlan&&myPlan.cover>=size?'ok':'wn'}">${myPlan?`予想3体中 ${myPlan.cover}体に有利`:''}</span></div>
-      <div class="pklist">${myMembers.map(n=>pkChip(n,{})).join('')}</div>
+      <div class="pklist">${myMembers.map(n=>pkChip(n,{cls:bp.mega===n?'sel':''})).join('')}</div>
+      ${bp.mega?`<div class="small" style="margin-top:6px"><span class="badge ok">メガは ${esc(bp.mega)} に切る</span>
+        <span class="muted">（もう片方はメガ前の数値で計算しています）</span></div>`:''}
       ${myPlan&&myPlan.sharedWeak.length?`<div class="small" style="margin-top:6px"><span class="badge ng">全員 ${esc(myPlan.sharedWeak.join('・'))} に弱い</span></div>`:''}
       <button class="btn sm" id="btnApplyPlan" style="margin-top:9px">この選出にする</button>
     </div>
@@ -419,7 +457,12 @@ function renderLeadPredict(){
     <div class="small muted">相手の型は「ぶっぱ想定」で計算しています。あくまで初手を決めるための目安です。</div>`;
 
   const b=$('#btnApplyPlan');
-  if(b) b.onclick=()=>{ setArr(S.myPick, myMembers); renderPickers(); renderTurns(); renderGuide(); saveDraft(); toast('選出に反映しました'); };
+  if(b) b.onclick=()=>{
+    setArr(S.myPick, myMembers);
+    if(bp.mega && myMembers.includes(bp.mega)) S.mega = bp.mega;
+    renderPickers(); renderTurns(); renderGuide(); saveDraft();
+    toast(bp.mega?`選出に反映（メガは ${bp.mega}）`:'選出に反映しました');
+  };
 }
 
 /* 相手1体ごとに「自分の選出の誰を当てるべきか」 */
@@ -429,10 +472,10 @@ function renderGuide(){
   const mine = S.myPick.length ? S.myPick : currentRoster().map(m=>m.name);
   if(!targets.length || !mine.length){ card.hidden=true; return; }
   card.hidden=false;
-  const rc = rosterForCalc(currentRoster());
+  const rc = rosterForCalc(currentRoster(), S.mega);
   out.innerHTML = targets.map(o=>{
     const rows = mine.map(n=>{
-      const m = rc.find(r=>r.name===n) || {name:n};
+      const m = rc.find(r=>r.label===n) || {name:n};
       return {n, mu:PC.matchup(m,{name:effOpp(o)})};
     }).filter(x=>x.mu).sort((a,b)=> b.mu.score - a.mu.score);
     if(!rows.length) return '';
@@ -469,10 +512,13 @@ function renderPickers(){
     : '<span class="pk ghost">「構築」タブで自分の6匹を登録してください</span>';
   me.querySelectorAll('.tapp').forEach(c=> c.onclick=()=>{toggle(S.myPick,c.dataset.p);renderPickers();renderTurns();renderLead();renderGuide();saveDraft();});
 
+  // メガにできる枠だけを候補にする（1バトル1体まで）
+  const megaable = S.myPick.filter(p=> PC.isMegaForm(p) || PC.canMega(p));
   const keep=$('#fMega').value;
-  $('#fMega').innerHTML='<option value="">（切らなかった／未記録）</option>'+S.myPick.map(p=>`<option>${esc(p)}</option>`).join('');
-  if(S.myPick.includes(keep)) $('#fMega').value=keep;
-  else if(S.mega && S.myPick.includes(S.mega)) $('#fMega').value=S.mega;
+  $('#fMega').innerHTML='<option value="">（切らなかった／未記録）</option>'+megaable.map(p=>`<option>${esc(p)}</option>`).join('');
+  if(megaable.includes(keep)) $('#fMega').value=keep;
+  else if(S.mega && megaable.includes(S.mega)) $('#fMega').value=S.mega;
+  else { $('#fMega').value=''; if(S.mega && !megaable.includes(S.mega)) S.mega=null; }
   renderLead(); renderGuide();
 }
 function toggle(a,v){const i=a.indexOf(v);i<0?a.push(v):a.splice(i,1);}
@@ -486,9 +532,13 @@ function renderSuggest(){
     out.innerHTML='<p class="hint">相手を3匹以上入れると、タイプ相性から選出候補を出します。</p>'; return;
   }
   const size = $('#fRule').value==='double'? 4 : 3;
-  const withStats = rosterForCalc(roster);
-  const res = PC.suggestPicks(withStats, S.opp, Math.min(size, roster.length));
-  let html = res.top.map((c,i)=>`
+  const bp = bestPlan(roster, S.opp, size);
+  const res = { top: bp.all };
+  let html = (megaSlotsOf(roster).length>1 && bp.mega)
+    ? `<div class="note b small" style="margin-bottom:10px">この構築はメガ枠が
+        <b>${esc(megaSlotsOf(roster).join(' / '))}</b> の2つあります。1バトルで切れるのは1体だけなので、
+        <b>${esc(bp.mega)}</b> をメガにする前提で計算しました。もう片方はメガ前の数値です。</div>` : '';
+  html += res.top.map((c,i)=>`
     <div class="pick-card ${i===0?'best':''}">
       <div class="hd">${i===0?'<b>おすすめ</b>':'候補'+(i+1)}
         <span class="badge ${c.cover>=S.opp.length-1?'ok':(c.cover>=S.opp.length-2?'wn':'ng')}">相手${S.opp.length}体中 ${c.cover}体に有利</span>
@@ -513,20 +563,23 @@ function renderSuggest(){
     html += `<div class="note b small" style="margin-top:14px">似た並びとの対戦履歴はまだありません。記録が溜まると、ここに「勝てた選出・負けた選出」が出ます。</div>`;
   }
   out.innerHTML = html;
-  out.querySelectorAll('[data-set]').forEach(c=> c.onclick=()=>{
-    setArr(S.myPick, JSON.parse(c.dataset.set)); renderPickers(); renderTurns(); saveDraft();
-    toast('選出に反映しました');
-  });
+  const apply=(members)=>{
+    setArr(S.myPick, members);
+    if(bp.mega && members.includes(bp.mega)) S.mega = bp.mega;   // 切るメガも一緒に反映
+    renderPickers(); renderTurns(); renderGuide(); saveDraft();
+    toast(bp.mega?`選出に反映（メガは ${bp.mega}）`:'選出に反映しました');
+  };
+  out.querySelectorAll('[data-set]').forEach(c=> c.onclick=()=>apply(JSON.parse(c.dataset.set)));
   const btn=$('#btnApplyPick');
-  if(btn) btn.onclick=()=>{ setArr(S.myPick,res.top[0].members); renderPickers(); renderTurns(); saveDraft(); toast('選出に反映しました'); };
+  if(btn) btn.onclick=()=>apply(res.top[0].members);
 }
 
 /* ---------- 初手チェック ---------- */
 function renderLead(){
   const el=$('#leadOut'); const roster=currentRoster();
   if(!S.myPick.length || !S.opp.length){ el.innerHTML=''; return; }
-  const checks=PC.leadCheck(S.myPick, S.opp, rosterForCalc(roster));
-  const rc = rosterForCalc(roster);
+  const checks=PC.leadCheck(S.myPick, S.opp, rosterForCalc(roster, S.mega));
+  const rc = rosterForCalc(roster, S.mega);
   el.innerHTML = `<div class="small muted" style="margin-bottom:6px">初手チェック — 「有利な初手を探す」のではなく「崩れる初手を消す」（くろこ流）</div>`
     + checks.map(c=>{
         const mine = rc.find(r=>r.name===c.name) || {name:c.name};
@@ -555,7 +608,17 @@ function fieldAt(i){
   }
   return {my,op};
 }
-const ACTS=[['move','技'],['switch','交代'],['protect','まもる'],['mega','メガシンカ'],['other','その他']];
+/* メガシンカは「行動」ではなく、技や交代と同じターンに同時に起きる。
+   なので行動タイプから外し、独立したチェックにしている。 */
+const ACTS=[['move','技'],['switch','交代'],['protect','まもる'],['other','その他']];
+function normAct(a){                     // 旧データ（type:'mega'）を読み替える
+  a = a || {type:'move'};
+  if(a.type==='mega'){ return {type:'move', move:a.move||'', mega:true, megaTo:a.to||''}; }
+  return a;
+}
+/** メガは1バトル1回きり。他のターンで既に切っていたら、そのターンは選べない */
+function myMegaLocked(i){ return S.turns.some((t,j)=> j!==i && t.myAct && t.myAct.mega); }
+function oppMegaLocked(i){ return S.turns.some((t,j)=> j!==i && t.oppAct && t.oppAct.mega); }
 function renderTurns(){
   const list=$('#turnList');
   if(!S.myPick.length){
@@ -566,6 +629,7 @@ function renderTurns(){
   list.innerHTML = S.turns.map((t,i)=>{
     const f=fieldAt(i);
     const myMon=t.myMon||f.my, opMon=t.oppMon||f.op;
+    t.myAct = normAct(t.myAct); t.oppAct = normAct(t.oppAct);
     const myMoves=(currentRoster().find(r=>r.name===myMon)||{}).moves||[];
     const mySel = myMoves.filter(Boolean);
     return `<div class="turn">
@@ -588,6 +652,10 @@ function renderTurns(){
           : t.myAct.type==='switch'
           ? `<select data-t="${i}" data-k="myTo"><option value="">誰に交代？</option>${S.myPick.filter(p=>p!==myMon).map(p=>`<option ${t.myAct.to===p?'selected':''}>${esc(p)}</option>`).join('')}</select>`
           : ''}
+        ${(PC.isMegaForm(myMon)||PC.canMega(myMon))
+          ? `<label class="mgchk ${t.myAct.mega?'on':''}" ${myMegaLocked(i)?'style="opacity:.4"':''}>
+               <input type="checkbox" data-t="${i}" data-k="myMega" ${t.myAct.mega?'checked':''} ${myMegaLocked(i)?'disabled':''}>
+               このターンにメガ</label>` : ''}
       </div>
       <div class="side"><span class="lb op">相手</span>
         <select data-t="${i}" data-k="opType">${ACTS.map(a=>`<option value="${a[0]}" ${t.oppAct.type===a[0]?'selected':''}>${a[1]}</option>`).join('')}</select>
@@ -595,11 +663,14 @@ function renderTurns(){
           ? `<input type="text" data-t="${i}" data-k="opMove" value="${esc(t.oppAct.move||'')}" placeholder="使ってきた技" list="mvlist">`
           : t.oppAct.type==='switch'
           ? `<select data-t="${i}" data-k="opTo"><option value="">誰に交代？</option>${oppChoices.filter(p=>p!==opMon).map(p=>`<option ${t.oppAct.to===p?'selected':''}>${esc(p)}</option>`).join('')}</select>`
-          : t.oppAct.type==='mega'
-          ? (PC.megaFormsOf(opMon).length
-              ? `<select data-t="${i}" data-k="opMegaTo"><option value="">どれになった？</option>${PC.megaFormsOf(opMon).map(m=>`<option ${t.oppAct.to===m?'selected':''}>${esc(m)}</option>`).join('')}</select>`
-              : `<span class="small muted">${esc(opMon)}はメガシンカできません</span>`)
           : ''}
+        ${PC.megaFormsOf(opMon).length
+          ? `<label class="mgchk ${t.oppAct.mega?'on':''}" ${oppMegaLocked(i)?'style="opacity:.4"':''}>
+               <input type="checkbox" data-t="${i}" data-k="opMega" ${t.oppAct.mega?'checked':''} ${oppMegaLocked(i)?'disabled':''}>
+               メガ</label>
+             ${t.oppAct.mega && PC.megaFormsOf(opMon).length>1
+               ? `<select data-t="${i}" data-k="opMegaTo"><option value="">どれ？</option>${PC.megaFormsOf(opMon).map(m=>`<option ${t.oppAct.megaTo===m?'selected':''}>${esc(m)}</option>`).join('')}</select>`
+               : ''}` : ''}
       </div>
       ${t.oppAct.type==='move' && obsHint(opMon) ? `<div class="small muted">よく使ってくる技：${obsHint(opMon)}</div>`:''}
     </div>`;
@@ -614,7 +685,17 @@ function renderTurns(){
     if(k==='myType'){t.myAct={type:v};} else if(k==='opType'){t.oppAct={type:v};}
     else if(k==='myMove')t.myAct.move=v; else if(k==='myTo')t.myAct.to=v;
     else if(k==='opMove')t.oppAct.move=v; else if(k==='opTo')t.oppAct.to=v;
-    else if(k==='opMegaTo'){ t.oppAct.to=v; S.oppMega=v||null; }
+    else if(k==='myMega'){
+      t.myAct.mega = el.checked;
+      S.mega = el.checked ? (t.myMon || fieldAt(i).my) : null;
+    }
+    else if(k==='opMega'){
+      t.oppAct.mega = el.checked;
+      const forms = PC.megaFormsOf(t.oppMon || fieldAt(i).op);
+      t.oppAct.megaTo = el.checked ? (forms.length===1 ? forms[0] : (t.oppAct.megaTo||'')) : '';
+      S.oppMega = t.oppAct.megaTo || null;
+    }
+    else if(k==='opMegaTo'){ t.oppAct.megaTo=v; S.oppMega=v||null; }
     else if(k==='myMon') t.myMon=v;
     else if(k==='oppMon') t.oppMon=v;
     // バトル中に判明した相手は、そのまま「相手の選出」に積み上がる
@@ -624,10 +705,9 @@ function renderTurns(){
       if(!S.oppPick.includes(n)) S.oppPick.push(n);
     });
     // 相手がメガを解除する記録は無いので、mega行動を消したら判明状態も戻す
-    if(k==='opType' && v!=='mega'){
-      const stillMega = S.turns.some(x=>x.oppAct&&x.oppAct.type==='mega'&&x.oppAct.to);
-      if(!stillMega) S.oppMega=null;
-    }
+    // 記録から消えたら、判明状態も戻す
+    S.oppMega = (S.turns.find(x=>x.oppAct&&x.oppAct.mega&&x.oppAct.megaTo)||{}).oppAct?.megaTo || null;
+    S.mega    = (S.turns.find(x=>x.myAct&&x.myAct.mega) ? (S.turns.find(x=>x.myAct&&x.myAct.mega).myMon||S.mega) : S.mega);
     renderTurns(); renderOpp(); renderPickers(); saveDraft();
   }));
   const f=fieldAt(S.turns.length);

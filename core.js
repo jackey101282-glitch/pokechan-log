@@ -552,7 +552,7 @@ function suggestPicks(myRoster, oppNames, size){
     });
     const shared = Object.entries(weak).filter(([,v])=> v>=size).map(([t])=>t);
     const penalty = shared.length * 1.2;
-    return { members:c.map(i=>myRoster[i].name), cover, total: total - penalty,
+    return { members:c.map(i=> myRoster[i].label || myRoster[i].name), cover, total: total - penalty,
              worst, uncovered, sharedWeak: shared };
   }).sort((a,b)=> b.cover - a.cover || b.total - a.total);
 
