@@ -137,13 +137,79 @@ function realStats(name, sp, nature){
     s: statOther(sc.base.s, sp2.s, nm.s)
   };
 }
-/** 相手の型が不明なときの想定値。kind: 'max'(補正+32振り) / 'none'(無振り) / 'hp'(H32) */
+/** 相手の型が不明なときの想定値。kind: 'max'(補正+32振り) / 'none'(無振り) / 'hp'(H32)
+ *  ※単一の能力を見るとき用。複数の能力を同時に'max'にすると
+ *    SP合計66の上限を超えた「存在しない個体」になるので、
+ *    相性判定には下の assumedSpreads() を使うこと。 */
 function assumedStat(name, key, kind){
   const sc = SPECIES[name]; if(!sc) return null;
   if(key==='h') return statHP(sc.base.h, kind==='none'?0:32);
   const sp = (kind==='none') ? 0 : 32;
   const nm = (kind==='max') ? 1.1 : 1;
   return statOther(sc.base[key], sp, nm);
+}
+
+/* ---------- 相手の型の想定（SP合計66・1能力32が上限） ----------
+   本作のSPは「合計66・1能力32」が上限（01_ゲーム基礎仕様）。
+   6能力すべてを32振りにするのは物理的に不可能なので、
+   現実にありうる2通りだけを想定し、両方で判定する。
+
+   ・攻撃型：攻撃32(+性格補正) / S32 / 余り2をHへ
+   ・耐久型：H32 / B17 / D17（補正は種族値の高い防御側）
+
+   ふとん氏の実構築6匹（A32/B2/S32、H32/A2/B17/D15 など）とも整合する。
+   ここを「全能力ぶっぱ」で見積もると相手の耐久を最大4割過大評価し、
+   「押し切れない」という誤った結論が出るため、実戦の判断が歪む。 */
+const SP_TOTAL = 66, SP_MAX = 32;
+
+function spreadStats(name, sp, mod){
+  const sc = SPECIES[name]; if(!sc) return null;
+  return {
+    h: statHP(sc.base.h, sp.h),
+    a: statOther(sc.base.a, sp.a, mod.a),
+    b: statOther(sc.base.b, sp.b, mod.b),
+    c: statOther(sc.base.c, sp.c, mod.c),
+    d: statOther(sc.base.d, sp.d, mod.d),
+    s: statOther(sc.base.s, sp.s, mod.s)
+  };
+}
+
+/** 種族値から「攻撃型らしさ」を 0〜1 で返す。どちらの想定を主に見せるかの判断だけに使う */
+function attackerLikeness(name){
+  const sc = SPECIES[name]; if(!sc) return 0.5;
+  const b = sc.base;
+  const atkiness = Math.max(b.a, b.c) + b.s * 0.8;
+  const definess = (b.h + (b.b + b.d) / 2) * 0.9;
+  return 1 / (1 + Math.exp(-(atkiness - definess) / 15));
+}
+
+/** 相手1体について、ありうる型（実数値つき）を返す。
+ *  攻撃型は「攻撃に補正」と「素早さに補正（最速）」で行動順が変わるので分けて持つ。
+ *  ふとん氏の6匹でも 攻撃補正3 : 素早さ補正2 に割れている。 */
+function assumedSpreads(name){
+  const sc = SPECIES[name]; if(!sc) return [];
+  const b = sc.base;
+  const phys   = b.a >= b.c;
+  const atkKey = phys ? 'a' : 'c', dumpKey = phys ? 'c' : 'a';
+  const A = phys ? 'A' : 'C';
+
+  const aSp  = {h:2,a:0,b:0,c:0,d:0,s:SP_MAX};  aSp[atkKey] = SP_MAX;
+  const aMod = {a:1,b:1,c:1,d:1,s:1};           aMod[atkKey] = 1.1; aMod[dumpKey] = 0.9;
+  const sMod = {a:1,b:1,c:1,d:1,s:1.1};         sMod[dumpKey] = 0.9;
+
+  const defKey = b.b >= b.d ? 'b' : 'd';
+  const dSp  = {h:SP_MAX,a:0,b:17,c:0,d:17,s:0};
+  const dMod = {a:1,b:1,c:1,d:1,s:1};           dMod[defKey] = 1.1; dMod[dumpKey] = 0.9;
+
+  const w = attackerLikeness(name);
+  return [
+    { kind:'atk',  label:`攻撃型（${A}32/S32・${A}補正）`, physical:phys,
+      stats:spreadStats(name, aSp, aMod), weight:w * 0.6 },
+    { kind:'fast', label:`最速型（${A}32/S32・S補正）`,    physical:phys,
+      stats:spreadStats(name, aSp, sMod), weight:w * 0.4 },
+    { kind:'def',  label:'耐久型（H32/B17/D17）',          physical:phys,
+      stats:spreadStats(name, dSp, dMod), weight:1 - w }
+  ].filter(s=>s.stats);
 }
 
 /* ---------- ランク補正 ---------- */
@@ -433,14 +499,11 @@ function immuneType(ability){ return IMMUNE_BY_ABILITY[ability] || null; }
    相手側は型不明なので「ぶっぱ想定（H32/耐久32/攻撃32＋補正）」で見積もる。 */
 const REP_POWER = 90;   // 相手のタイプ一致技の代表威力
 
-/** 自分の最大打点（相手のHPに対する割合 0〜1）と技名 */
-function bestOffense(mine, oppName){
+/** 自分の最大打点（相手のHPに対する割合 0〜1）と技名。opp は assumedSpreads() の1要素 */
+function bestOffense(mine, oppName, opp){
   const os = SPECIES[oppName]; if(!os) return {rate:0, move:null};
-  const hp = assumedStat(oppName,'h','max');
-  const myStats = mine.stats || {
-    a: assumedStat(mine.name,'a','max'), c: assumedStat(mine.name,'c','max'),
-    s: assumedStat(mine.name,'s','max')
-  };
+  const hp = opp.stats.h;
+  const myStats = mine.stats || spreadStats(mine.name, {h:2,a:32,b:0,c:32,d:0,s:32}, {a:1,b:1,c:1,d:1,s:1});
   const moves = (mine.moves||[]).map(m=>MOVES[m]).filter(m=>m && m.power && m.cat!=='変');
   // 技が未登録ならタイプ一致の代表技で見積もる
   const cands = moves.length ? moves
@@ -448,7 +511,7 @@ function bestOffense(mine, oppName){
   let best={rate:0, move:null};
   cands.forEach(mv=>{
     const atk = mv.cat==='物' ? myStats.a : myStats.c;
-    const def = mv.cat==='物' ? assumedStat(oppName,'b','max') : assumedStat(oppName,'d','max');
+    const def = mv.cat==='物' ? opp.stats.b : opp.stats.d;
     const r = calcDamage({
       attacker:{name:mine.name, atkStat:atk, types:SPECIES[mine.name].types, ability:mine.ability||'', item:mine.item||'', rank:0, hpRatio:1},
       defender:{name:oppName, defStat:def, hp, types:os.types, ability:'', item:'', rank:0, hpRatio:1},
@@ -460,22 +523,19 @@ function bestOffense(mine, oppName){
   });
   return best;
 }
-/** 相手の最大打点（自分のHPに対する割合） */
-function bestThreat(oppName, mine){
+/** 相手の最大打点（自分のHPに対する割合）。opp は assumedSpreads() の1要素 */
+function bestThreat(oppName, mine, opp){
   const os = SPECIES[oppName], ms = SPECIES[mine.name];
   if(!os || !ms) return {rate:0, type:null};
-  const myStats = mine.stats || {
-    h: assumedStat(mine.name,'h','max'), b: assumedStat(mine.name,'b','max'), d: assumedStat(mine.name,'d','max')
-  };
+  const myStats = mine.stats || spreadStats(mine.name, {h:32,a:0,b:17,c:0,d:17,s:0}, {a:1,b:1,c:1,d:1,s:1});
   const imm = immuneType(mine.ability);
-  const oa = assumedStat(oppName,'a','max'), oc = assumedStat(oppName,'c','max');
+  const physical = opp.stats.a >= opp.stats.c;
   let best={rate:0, type:null};
   os.types.forEach(t=>{
     if(t === imm) return;                       // 特性で無効化
-    const physical = oa >= oc;
     const mv = {name:'（'+t+'技）', type:t, cat: physical?'物':'特', power:REP_POWER, contact:false};
     const r = calcDamage({
-      attacker:{name:oppName, atkStat: physical?oa:oc, types:os.types, ability:'', item:'', rank:0, hpRatio:1},
+      attacker:{name:oppName, atkStat: physical?opp.stats.a:opp.stats.c, types:os.types, ability:'', item:'', rank:0, hpRatio:1},
       defender:{name:mine.name, defStat: physical?myStats.b:myStats.d, hp:myStats.h,
                 types:ms.types, ability:mine.ability||'', item:mine.item||'', rank:0, hpRatio:1},
       move:mv, field:{}, flags:{}
@@ -487,17 +547,14 @@ function bestThreat(oppName, mine){
   return best;
 }
 
-/** 自分1体 vs 相手1体 の相性を採点 */
-function matchup(mine, theirs){
-  const ms = SPECIES[mine.name], ts = SPECIES[theirs.name];
-  if(!ms || !ts) return null;
-
-  const myS = mine.stats ? mine.stats.s : assumedStat(mine.name,'s','max');
-  const opS = assumedStat(theirs.name,'s','max');
+/** 自分1体 × 相手の想定1通り を採点 */
+function matchupVs(mine, oppName, opp){
+  const myS = mine.stats ? mine.stats.s : spreadStats(mine.name,{h:2,a:0,b:0,c:0,d:0,s:32},{a:1,b:1,c:1,d:1,s:1}).s;
+  const opS = opp.stats.s;
   const faster = myS > opS;
 
-  const off = bestOffense(mine, theirs.name);       // 自分→相手 のダメージ割合
-  const thr = bestThreat(theirs.name, mine);        // 相手→自分 のダメージ割合
+  const off = bestOffense(mine, oppName, opp);      // 自分→相手 のダメージ割合
+  const thr = bestThreat(oppName, mine, opp);       // 相手→自分 のダメージ割合
 
   // 何発で落とせるか / 落とされるか
   const myHits = off.rate>0 ? Math.ceil(1/off.rate) : 99;
@@ -507,14 +564,66 @@ function matchup(mine, theirs){
   const winsRace = myHits < opHits || (myHits === opHits && faster);
 
   // スコア：発数差 ＋ 速さ ＋ 打点の厚み
-  let score = (opHits - myHits) * 0.9 + (faster ? 0.35 : -0.2) + (off.rate - thr.rate) * 1.1;
+  const score = (opHits - myHits) * 0.9 + (faster ? 0.35 : -0.2) + (off.rate - thr.rate) * 1.1;
 
   // 明確に不利＝初手に置いてはいけない対面
   const danger = (!winsRace && thr.rate >= 0.5) || (opHits <= 2 && myHits >= 4);
 
-  return { faster, myS, opS, score, winsRace, danger,
+  return { kind:opp.kind, label:opp.label, weight:opp.weight,
+           faster, myS, opS, score, winsRace, danger,
            myDmg:off.rate, myMove:off.move, myHits,
            opDmg:thr.rate, opType:thr.type, opHits };
+}
+
+/* 同じ (自分の個体 × 相手) の組み合わせは何度も出てくるので結果を使い回す */
+const _muCache = new Map();
+function _muKey(mine, oppName){
+  const st = mine.stats ? [mine.stats.h,mine.stats.a,mine.stats.b,mine.stats.c,mine.stats.d,mine.stats.s].join('.') : '-';
+  return [mine.name, st, (mine.moves||[]).join('/'), mine.ability||'', mine.item||'', oppName].join('|');
+}
+
+/** 自分1体 vs 相手1体。相手の型は「攻撃型」「耐久型」の2通りで見て、
+ *  主想定（種族値から見てありそうな方）の結論を返しつつ、
+ *  もう一方と結論が割れたら split=true で知らせる。 */
+function matchup(mine, theirs){
+  const ms = SPECIES[mine.name], ts = SPECIES[theirs.name];
+  if(!ms || !ts) return null;
+  const key = _muKey(mine, theirs.name);
+  const hit = _muCache.get(key); if(hit) return hit;
+
+  const spreads = assumedSpreads(theirs.name);
+  if(!spreads.length) return null;
+  const views = spreads.map(sp=> matchupVs(mine, theirs.name, sp));
+
+  // 主想定＝ありそうな方。表示する結論はこちらに合わせる
+  const primary = views.reduce((a,b)=> b.weight > a.weight ? b : a);
+  const other   = views.find(v=> v !== primary) || primary;
+
+  // 型が割れると結論が変わるか
+  const split = views.some(v=> v.winsRace !== primary.winsRace)
+             || views.some(v=> v.danger   !== primary.danger);
+
+  const wsum = views.reduce((s,v)=> s + v.weight, 0) || 1;
+  const wavg = f => views.reduce((s,v)=> s + v.weight * f(v), 0) / wsum;
+
+  const out = {
+    ...primary,
+    // 行動順は外すと致命的なので、いちばん速い型を基準にする（全部より速い時だけ「先制」）
+    faster: views.every(v=>v.faster),
+    fasterAny: views.some(v=>v.faster),
+    opS: Math.max(...views.map(v=>v.opS)),
+    score: wavg(v=>v.score),
+    myDmg: wavg(v=>v.myDmg),
+    opDmg: wavg(v=>v.opDmg),
+    myDmgLo: Math.min(...views.map(v=>v.myDmg)), myDmgHi: Math.max(...views.map(v=>v.myDmg)),
+    opDmgLo: Math.min(...views.map(v=>v.opDmg)), opDmgHi: Math.max(...views.map(v=>v.opDmg)),
+    split, views, primary, other,
+    // 「どの型でも勝てる／どの型でも負ける」は選出の判断に直結するので別に持つ
+    winsAll:  views.every(v=>v.winsRace),
+    dangerAll:views.every(v=>v.danger)
+  };
+  _muCache.set(key, out);
+  return out;
 }
 
 /** 自分6 × 相手6 のマトリクス */
@@ -608,6 +717,7 @@ function observedMoves(battles){
 global.PC = {
   TYPES, TYPE_COLOR, TYPE_ICON, CHART, NATURES, SPECIES, MOVES,
   loadData, effectiveness, statHP, statOther, natureMods, realStats, assumedStat,
+  assumedSpreads, spreadStats, attackerLikeness, matchupVs, SP_TOTAL, SP_MAX,
   MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck,

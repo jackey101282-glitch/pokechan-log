@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '5';
+const APP_VERSION = '6';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -300,6 +300,8 @@ function bestPlan(roster, targets, size, allOpp){
     sug.top.forEach(c=>{
       // 選んだメガが選出に入っていない案は、メガを切る意味がないので除外
       if(ch && !c.members.includes(ch)) return;
+      // メガ枠が1枚だけの構築でも、それが選出に入るなら「そこに切る」と明示する
+      const mega = ch || (slots.length===1 && c.members.includes(slots[0]) ? slots[0] : null);
       // 予想が外れた場合の保険：相手6体のうち何体を見れるか
       let backup = 0, blind = [];
       (allOpp||targets).forEach(o=>{
@@ -310,7 +312,7 @@ function bestPlan(roster, targets, size, allOpp){
         });
         ok ? backup++ : blind.push(o);
       });
-      pool.push({plan:c, mega:ch, rc, backup, blind});
+      pool.push({plan:c, mega, rc, backup, blind});
     });
   });
   if(!pool.length){
@@ -473,16 +475,18 @@ function renderLeadPredict(){
 
     <div class="pick-card">
       <div class="hd"><b>④ この3体のうち、初手はこれ</b></div>
-      ${leadAns ? `<div class="pklist">${pkChip(leadAns.n,{cls:leadAns.mu.danger?'':'sel'})}</div>
+      ${leadAns ? (()=>{ const v=verdict(leadAns.mu), sn=splitNote(leadAns.mu); return `
+        <div class="pklist">${pkChip(leadAns.n,{cls:leadAns.mu.dangerAll?'':'sel'})}</div>
         <div class="small" style="margin-top:7px">
-          対 <b>${esc(S.predLead)}</b> ：${Math.round(leadAns.mu.myDmg*100)}% / 被${Math.round(leadAns.mu.opDmg*100)}%${leadAns.mu.faster?' 先制':''}
-          ${leadAns.mu.danger?' <span class="badge ng">ここも不利。置いたら早めに引く前提</span>':(leadAns.mu.winsRace?' <span class="badge ok">先に落とせる</span>':' <span class="badge wn">押し切れない</span>')}
+          対 <b>${esc(S.predLead)}</b> ：${muNums(leadAns.mu)}${leadAns.mu.faster?' 先制':''}
+          <span class="badge ${v.cls}">${esc(v.txt)}</span>
         </div>
-        <div class="small muted" style="margin-top:5px">③の3体の中から選んでいます。危険対面ごとの引き先は、下の「初手チェック」に出ます。</div>`
+        ${sn?`<div class="small muted" style="margin-top:5px">${esc(sn)}</div>`:''}
+        <div class="small muted" style="margin-top:5px">③の3体の中から選んでいます。危険対面ごとの引き先は、下の「初手チェック」に出ます。</div>`; })()
         : '<p class="hint">初手の候補が出せませんでした。</p>'}
     </div>
 
-    <div class="small muted">相手の型は「ぶっぱ想定」で計算しています。あくまで初手を決めるための目安です。</div>`;
+    <div class="small muted">相手の型は<b>攻撃型／最速型／耐久型</b>の3通り（SP合計66の範囲内）で計算し、幅で出しています。あくまで初手を決めるための目安です。</div>`;
 
   const apply=(members, mega)=>{
     setArr(S.myPick, members);
@@ -495,6 +499,36 @@ function renderLeadPredict(){
   $$('#predictOut [data-alt]').forEach(c=> c.onclick=()=>{
     const a=JSON.parse(c.dataset.alt); apply(a.m, a.g);
   });
+}
+
+/* ---------- 相性の見せ方 ----------
+   相手の型は「攻撃型／最速型／耐久型」の3通りで見ている（SP合計66の制約内）。
+   点の数字は嘘になるので幅で出し、型によって結論が変わる対面は「型次第」と書く。 */
+function dmgRange(lo,hi){
+  const a=Math.round(lo*100), b=Math.round(hi*100);
+  if(b===0) return '無効';
+  if(a>=100) return '100%+';          // 一撃で落ちる。それ以上の桁は読む意味がない
+  const bb = Math.min(b,999);
+  return a===bb ? `${a}%` : `${a}〜${bb}%`;
+}
+function muNums(mu){
+  return `${dmgRange(mu.myDmgLo,mu.myDmgHi)} / 被${dmgRange(mu.opDmgLo,mu.opDmgHi)}`;
+}
+function verdict(mu){
+  if(mu.winsAll)   return {cls:'ok', mark:'◎', txt:'どの型でも先に落とせる'};
+  if(mu.dangerAll) return {cls:'ng', mark:'✕', txt:'どの型でも不利'};
+  if(mu.split)     return {cls:'wn', mark:'△', txt:'相手の型次第'};
+  return mu.winsRace ? {cls:'ok', mark:'○', txt:'先に落とせる'}
+       : mu.danger   ? {cls:'ng', mark:'✕', txt:'不利'}
+                     : {cls:'wn', mark:'△', txt:'押し切れない'};
+}
+/** 型が割れたとき「どの型なら勝てて、どの型だと負けるか」を一言で */
+function splitNote(mu){
+  if(!mu.split || !mu.views) return '';
+  const ok = mu.views.filter(v=>v.winsRace && !v.danger).map(v=>v.label);
+  const ng = mu.views.filter(v=>!v.winsRace || v.danger).map(v=>v.label);
+  if(!ok.length || !ng.length) return '';
+  return `${ok.join('・')}なら勝てるが、${ng.join('・')}だと負ける`;
 }
 
 /* 相手1体ごとに「自分の選出の誰を当てるべきか」 */
@@ -514,15 +548,16 @@ function renderGuide(){
     return `<div class="mg">
       <div class="op">${typeChips(o)} ${esc(o)}</div>
       ${rows.slice(0,3).map((r,i)=>{
-        const cls = r.mu.danger ? 'c' : (r.mu.winsRace ? 'a' : 'b');
-        const mark = r.mu.danger ? '✕' : (r.mu.winsRace ? '◎' : '△');
+        const v = verdict(r.mu);
+        const cls = v.cls==='ng' ? 'c' : (v.cls==='ok' ? 'a' : 'b');
         return `<div class="ans">
-          <span class="rk ${cls}">${mark}</span>
+          <span class="rk ${cls}">${v.mark}</span>
           <b>${esc(r.n)}</b>
-          ${i===0 && !r.mu.danger ? '<span class="badge ok">当てるならここ</span>' : ''}
+          ${i===0 && !r.mu.dangerAll ? '<span class="badge ok">当てるならここ</span>' : ''}
           ${r.mu.faster?'<span class="badge wn">先制</span>':''}
+          ${r.mu.split?'<span class="badge wn">型次第</span>':''}
           ${r.mu.myMove?`<span class="small muted">${esc(r.mu.myMove)}</span>`:''}
-          <span class="num">${Math.round(r.mu.myDmg*100)}% / 被${Math.round(r.mu.opDmg*100)}%</span>
+          <span class="num">${muNums(r.mu)}</span>
         </div>`;
       }).join('')}
     </div>`;
@@ -581,7 +616,9 @@ function escapeFor(myName, oppName, picks, rc){
     const m = rc.find(r=>r.label===p) || {name:p};
     return {p, mu:PC.matchup(m,{name:effOpp(oppName)})};
   }).filter(x=>x.mu);
-  const safe = cands.filter(x=>!x.mu.danger).sort((a,b)=>b.mu.score-a.mu.score);
+  // 引き先は「どの型でも安全」を優先する。型次第の引き先は次善
+  const safe = cands.filter(x=>!x.mu.danger)
+    .sort((a,b)=> (b.mu.winsAll?1:0)-(a.mu.winsAll?1:0) || (a.mu.split?1:0)-(b.mu.split?1:0) || b.mu.score-a.mu.score);
   const me = rc.find(r=>r.label===myName) || {name:myName};
   const mine = PC.matchup(me,{name:effOpp(oppName)});
   if(safe.length && (!mine || safe[0].mu.score > mine.score + 0.4))
@@ -600,7 +637,8 @@ function leadRanking(picks, oppList, rc, battles){
       if(!mu) return;
       ev += p.pct * mu.score;
       if(mu.score < worst) worst = mu.score;
-      if(mu.danger) dangers.push({opp:p.name, mu, pct:p.pct});
+      // 主想定で安全でも、ありうる型のどれかで崩されるなら出す（「型次第」として区別表示）
+      if((mu.views||[]).some(v=>v.danger)) dangers.push({opp:p.name, mu, pct:p.pct});
     });
     const vsLead = pred[0] ? PC.matchup(m,{name:effOpp(pred[0].name)}) : null;
     return {name:n, ev, worst, dangers, vsLead, lead:pred[0]};
@@ -621,9 +659,14 @@ function renderLead(){
   el.innerHTML = `<div class="small muted" style="margin-bottom:8px">
       選んだ${S.myPick.length}体のうち、<b>どれを初手に置くか</b>の順位です。相手の先発予想の確率で重みづけしています。</div>`
     + rank.map((r,i)=>{
-        const grade = r.dangers.length===0 ? ['ok','安全'] :
-                      (r.dangers.length<=1 ? ['wn','ほぼ安全'] : ['ng','リスク高']);
-        const lead = r.vsLead;
+        // 「何体に不利か」ではなく「不利な相手が先発してくる確率」で危険度を出す
+        const riskP  = r.dangers.filter(d=>d.mu.dangerAll).reduce((s,d)=>s+d.pct,0);
+        const maybeP = r.dangers.filter(d=>!d.mu.dangerAll).reduce((s,d)=>s+d.pct,0);
+        const grade = riskP>=0.35 ? ['ng',`リスク高（不利な先発 ${Math.round(riskP*100)}%）`]
+                    : riskP>0     ? ['wn',`危険対面あり（${Math.round(riskP*100)}%）`]
+                    : maybeP>0    ? ['wn','相手の型次第']
+                                  : ['ok','安全'];
+        const lead = r.vsLead, lv = lead?verdict(lead):null;
         return `<div style="padding:10px 0;border-bottom:1px solid var(--line2)">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <b style="font-size:15px">${marks[i]||''} ${esc(r.name)}</b>
@@ -632,27 +675,30 @@ function renderLead(){
           </div>
           ${lead&&r.lead?`<div class="small" style="margin-top:5px">
              予想先発 <b>${esc(r.lead.name)}</b>（${Math.round(r.lead.pct*100)}%）に
-             ${Math.round(lead.myDmg*100)}% / 被${Math.round(lead.opDmg*100)}%${lead.faster?' 先制':''}
-             ${lead.danger?'<span class="badge ng">不利</span>':(lead.winsRace?'<span class="badge ok">先に落とせる</span>':'<span class="badge wn">押し切れない</span>')}
-           </div>`:''}
+             ${muNums(lead)}${lead.faster?' 先制':''}
+             <span class="badge ${lv.cls}">${esc(lv.txt)}</span>
+           </div>
+           ${splitNote(lead)?`<div class="small muted" style="margin-top:3px;padding-left:2px">${esc(splitNote(lead))}</div>`:''}`:''}
           ${r.dangers.length ? `<div style="margin-top:7px">
              ${r.dangers.map(d=>{
                const esc2=escapeFor(r.name, d.opp, S.myPick, rc);
                const plan = esc2.type==='switch'
-                 ? `<b>${esc(esc2.to)}に引く</b> <span class="muted">(${Math.round(esc2.mu.myDmg*100)}% / 被${Math.round(esc2.mu.opDmg*100)}%${esc2.mu.faster?' 先制':''})</span>`
+                 ? `<b>${esc(esc2.to)}に引く</b> <span class="muted">(${muNums(esc2.mu)}${esc2.mu.faster?' 先制':''})</span>`
                  : (esc2.mu && esc2.mu.opHits>=3
-                     ? `<b>引き先なし。${esc2.mu.opHits}発は耐えるので殴り返す</b> <span class="muted">(${Math.round(esc2.mu.myDmg*100)}%)</span>`
+                     ? `<b>引き先なし。${esc2.mu.opHits}発は耐えるので殴り返す</b> <span class="muted">(${dmgRange(esc2.mu.myDmgLo,esc2.mu.myDmgHi)})</span>`
                      : `<b>引き先なし。切るしかない</b> <span class="muted">（${esc2.mu?esc2.mu.opHits:'?'}発で落ちる）</span>`);
                return `<div class="small" style="padding:3px 0">
-                 <span class="badge ng" style="font-size:10px">危険</span>
-                 ${esc(d.opp)} <span class="muted">(${Math.round(d.mu.myDmg*100)}% / 被${Math.round(d.mu.opDmg*100)}%)</span>
+                 <span class="badge ${d.mu.dangerAll?'ng':'wn'}" style="font-size:10px">${d.mu.dangerAll?'危険':'型次第'}</span>
+                 ${esc(d.opp)} <span class="muted">(${muNums(d.mu)})</span>
                  <span class="muted"> → </span>${plan}</div>`;
              }).join('')}</div>` : `<div class="small muted" style="margin-top:5px">崩される対面なし</div>`}
         </div>`;
       }).join('')
     + `<div class="small muted" style="margin-top:8px">
         危険対面は「必ず負ける」ではなく「そのまま居座ると崩される」の意味です。
-        数値は「与える割合 / 受ける割合」、相手は<b>ぶっぱ想定</b>で計算しています。</div>`;
+        数値は「与える割合 / 受ける割合」。相手の型は<b>攻撃型・最速型・耐久型の3通り</b>（SP合計66の範囲）で計算し、
+        その幅を出しています。<b>「型次第」は相手の振り方次第で結論がひっくり返る対面</b>なので、
+        1発もらってから「ダメージ計算」タブの逆算で型を絞ってください。</div>`;
 }
 
 /* ---------- ターンログ ---------- */
