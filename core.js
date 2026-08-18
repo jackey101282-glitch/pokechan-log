@@ -494,6 +494,47 @@ function predictLead(oppNames, battles){
   return rows.map(r=>({...r, pct: r.score/total})).sort((a,b)=> b.pct - a.pct);
 }
 
+/* ---------- 相手の特性 ----------
+   出典: 02_環境分析_レギュMB.md の使用率TOP25表（yakkun 2026/08/13）＋ GameWith個別ページ。
+   ここが空だったせいで、選出判定が相手の特性を完全に無視していた。
+   実戦で「カイリュー・ブリジュラス・ミミッキュ・シャンデラが重い」という体感と、
+   ツールの「◎対処できる」判定がズレていた原因。 */
+const OPP_ABILITY = {
+  'ガブリアス':['すながくれ','さめはだ'], 'アシレーヌ':['げきりゅう','うるおいボイス'],
+  'マスカーニャ':['しんりょく','へんげんじざい'], 'ブリジュラス':['じきゅうりょく','がんじょう','すじがねいり'],
+  'ミミッキュ':['ばけのかわ'], 'カバルドン':['すなおこし','すなのちから'],
+  'メガギャラドス':['かたやぶり'], 'メガカイリュー':['マルチスケイル'], 'カイリュー':['せいしんりょく','マルチスケイル'],
+  'メガメタグロス':['かたいツメ'], 'メタグロス':['クリアボディ'], 'メガマフォクシー':['ふゆう'],
+  'メガリザードンY':['ひでり'], 'メガハッサム':['テクニシャン'],
+  'アーマーガア':['プレッシャー','きんちょうかん','ミラーアーマー'],
+  'イダイトウ♂':['すいすい','てきおうりょく','かたやぶり'], 'イダイトウ♀':['すいすい','てきおうりょく','かたやぶり'],
+  'キラフロル':['どくげしょう','ふしょく'], 'サザンドラ':['ふゆう'],
+  'メガゲッコウガ':['へんげんじざい'], 'メガゲンガー':['かげふみ'],
+  'ダイケンキ(ヒスイ)':['げきりゅう','きれあじ'], 'メガライチュウY':['ノーガード'],
+  'ギルガルド(シールド)':['バトルスイッチ'], 'ギルガルド(ブレード)':['バトルスイッチ'],
+  'サーフゴー':['おうごんのからだ'], 'ウルガモス':['ほのおのからだ','むしのしらせ'],
+  'メガバシャーモ':['かそく'], 'ドドゲザン':['まけんき','そうだいしょう','プレッシャー'],
+  'メガフラエッテ':['フェアリーオーラ'],
+  'シャンデラ':['もらいび','ほのおのからだ','すりぬけ'],     // すりぬけ＝みがわり/壁を無視
+  'メガシャンデラ':['もらいび','ほのおのからだ','すりぬけ'],
+  'ヌメルゴン(ヒスイ)':['ぬめぬめ','そうしょく','シェルアーマー'],
+  'イルカマン(マイティ)':['マイティチェンジ'], 'マニューラ':['プレッシャー','わるいてぐせ'],
+  'メガユキノオー':['ゆきふらし'], 'ユキノオー':['ゆきふらし'], 'バイバニラ':['ゆきふらし','アイスボディ']
+};
+/** その相手が持ちうる特性のうち、防御面でいちばん厄介なものを1つ返す */
+const DEF_ABILITY_RANK = ['ばけのかわ','マルチスケイル','がんじょう','ハードロック','フィルター','プリズムアーマー',
+                          'ふゆう','もらいび','ちょすい','よびみず','かんそうはだ','ちくでん','ひらいしん','でんきエンジン','そうしょく'];
+function worstDefAbility(name){
+  const list = OPP_ABILITY[name] || [];
+  for(const a of DEF_ABILITY_RANK) if(list.includes(a)) return a;
+  return '';
+}
+/** 1発は耐えてしまう特性（実質、こちらの必要打数が1増える） */
+function survivesOneHit(name){
+  const list = OPP_ABILITY[name] || [];
+  return list.includes('ばけのかわ') || list.includes('がんじょう');
+}
+
 /* ---------- 特性によるタイプ無効 ---------- */
 const IMMUNE_BY_ABILITY = {
   'ふゆう':'じめん','もらいび':'ほのお','ちょすい':'みず','よびみず':'みず','かんそうはだ':'みず',
@@ -511,6 +552,8 @@ const REP_POWER = 90;   // 相手のタイプ一致技の代表威力
 function bestOffense(mine, oppName, opp){
   const os = SPECIES[oppName]; if(!os) return {rate:0, move:null};
   const hp = opp.stats.h;
+  const oppAb = worstDefAbility(oppName);          // 相手の特性（マルチスケイル等）
+  const oppImm = immuneType(oppAb);                // ふゆう・もらいび等で無効化されるタイプ
   const myStats = mine.stats || spreadStats(mine.name, {h:2,a:32,b:0,c:32,d:0,s:32}, {a:1,b:1,c:1,d:1,s:1});
   const moves = (mine.moves||[]).map(m=>MOVES[m]).filter(m=>m && m.power && m.cat!=='変');
   // 技が未登録ならタイプ一致の代表技で見積もる
@@ -518,11 +561,12 @@ function bestOffense(mine, oppName, opp){
     : SPECIES[mine.name].types.map(t=>({name:'（'+t+'技）', type:t, cat: (myStats.a>=myStats.c?'物':'特'), power:REP_POWER, contact:false}));
   let best={rate:0, move:null};
   cands.forEach(mv=>{
+    if(mv.type === oppImm) return;                  // 相手の特性でタイプごと無効
     const atk = mv.cat==='物' ? myStats.a : myStats.c;
     const def = mv.cat==='物' ? opp.stats.b : opp.stats.d;
     const r = calcDamage({
       attacker:{name:mine.name, atkStat:atk, types:SPECIES[mine.name].types, ability:mine.ability||'', item:mine.item||'', rank:0, hpRatio:1},
-      defender:{name:oppName, defStat:def, hp, types:os.types, ability:'', item:'', rank:0, hpRatio:1},
+      defender:{name:oppName, defStat:def, hp, types:os.types, ability:oppAb, item:'', rank:0, hpRatio:1},
       move:mv, field:{}, flags:{}
     });
     if(r.error || r.eff===0) return;
@@ -565,8 +609,10 @@ function matchupVs(mine, oppName, opp){
   const thr = bestThreat(oppName, mine, opp);       // 相手→自分 のダメージ割合
 
   // 何発で落とせるか / 落とされるか
-  const myHits = off.rate>0 ? Math.ceil(1/off.rate) : 99;
+  let myHits = off.rate>0 ? Math.ceil(1/off.rate) : 99;
   const opHits = thr.rate>0 ? Math.ceil(1/thr.rate) : 99;
+  // ばけのかわ／がんじょうは1発を確実に無効化する＝必要打数が1増える
+  if(myHits<99 && survivesOneHit(oppName)) myHits += 1;
 
   // 先に落とせるか（同じ発数なら速い方が勝ち）
   const winsRace = myHits < opHits || (myHits === opHits && faster);
@@ -749,6 +795,7 @@ global.PC = {
   TYPES, TYPE_COLOR, TYPE_ICON, CHART, NATURES, SPECIES, MOVES,
   loadData, effectiveness, statHP, statOther, natureMods, realStats, assumedStat,
   assumedSpreads, spreadStats, attackerLikeness, matchupVs, SP_TOTAL, SP_MAX,
+  OPP_ABILITY, worstDefAbility, survivesOneHit,
   MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
