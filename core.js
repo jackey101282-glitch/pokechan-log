@@ -277,6 +277,11 @@ function calcDamage(o){
   if(o.field && o.field.weather==='すなあらし' && mv.cat==='特' && defTypes.includes('いわ')){
     defMod*=1.5; notes.push('砂嵐でいわのD ×1.5');
   }
+  // ゆき：こおりタイプの物理防御が1.5倍（第9世代準拠）。
+  // 画面の天候メニューに「ゆき」があるのにここで処理していなかった＝選んでも結果が変わらないバグ
+  if(o.field && o.field.weather==='ゆき' && mv.cat==='物' && defTypes.includes('こおり')){
+    defMod*=1.5; notes.push('ゆきでこおりのB ×1.5');
+  }
   def = Math.floor(def * defMod);
 
   // 基礎ダメージ（Lv50）
@@ -309,7 +314,10 @@ function calcDamage(o){
   if(dab==='ハードロック'||dab==='フィルター'||dab==='プリズムアーマー'){
     if(eff>1){ otherMod*=0.75; notes.push(dab+' ×0.75'); }
   }
-  if(o.field && ((o.field.reflect && mv.cat==='物') || (o.field.lightscreen && mv.cat==='特'))){
+  // オーロラベールは物理・特殊の両方を半減する（リフレクター＋ひかりのかべを1枚で兼ねる）
+  if(o.field && o.field.auroraveil){
+    otherMod*=0.5; notes.push('オーロラベール ×0.5');
+  } else if(o.field && ((o.field.reflect && mv.cat==='物') || (o.field.lightscreen && mv.cat==='特'))){
     otherMod*=0.5; notes.push((mv.cat==='物'?'リフレクター':'ひかりのかべ')+' ×0.5');
   }
   if(o.defender.item==='オボンのみ') notes.push('※オボンのみは計算に含めていません');
