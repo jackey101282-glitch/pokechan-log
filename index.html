@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="9">
+<meta name="app-version" content="10">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -217,6 +217,7 @@ tr.bad .bar>i{background:var(--lose)}
   </div>
   <div class="tabs">
     <button class="tab on" data-tab="rec">対戦</button>
+    <button class="tab" data-tab="vs">対面</button>
     <button class="tab" data-tab="dmg">ダメージ計算</button>
     <button class="tab" data-tab="advice">相談</button>
     <button class="tab" data-tab="stat">分析</button>
@@ -315,6 +316,22 @@ tr.bad .bar>i{background:var(--lose)}
 </section>
 
 <!-- ---------- ダメージ計算 ---------- -->
+<!-- ---------- 対面（1対1の即答） ---------- -->
+<section id="tab-vs" hidden>
+  <div id="vsOut"></div>
+  <div class="card">
+    <h2>いま向き合っている相手<span class="sub">構築から自分の駒を選んで、相手を入れる</span></h2>
+    <p class="hint">タイプ相性・通る技・通らない技・気をつけること を一度に出します。相手の型は<b>攻撃型／最速型／耐久型</b>の3通りで計算しています。</p>
+    <div><label class="f">自分</label><div id="vsMine" class="pklist"></div></div>
+    <div style="height:12px"></div>
+    <div class="row" style="align-items:flex-end">
+      <div><label class="f">相手</label><div class="sug"><input type="text" id="vsOpp" autocomplete="off" placeholder="ポケモン名"><div class="sugbox" id="vsOppSug" hidden></div></div></div>
+      <button class="btn ghost sm" id="vsClear" style="flex:0 0 auto">クリア</button>
+    </div>
+    <div id="vsQuick" class="quick" style="margin-top:10px"></div>
+  </div>
+</section>
+
 <section id="tab-dmg" hidden>
   <div class="card">
     <h2>攻撃側</h2>
@@ -473,12 +490,12 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=9"></script>
-<script src="./data/species.js?v=9"></script>
-<script src="./data/moves.js?v=9"></script>
-<script src="./data/principles.js?v=9"></script>
-<script src="./core.js?v=9"></script>
+<script src="./supabase-config.js?v=10"></script>
+<script src="./data/species.js?v=10"></script>
+<script src="./data/moves.js?v=10"></script>
+<script src="./data/principles.js?v=10"></script>
+<script src="./core.js?v=10"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=9"></script>
+<script src="./app.js?v=10"></script>
 </body>
 </html>

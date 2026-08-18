@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '9';
+const APP_VERSION = '10';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -203,7 +203,7 @@ async function enterApp(user){
     document.body.appendChild(dl);
   });
   await Promise.all([loadTeams(), loadBattles()]);
-  initAutocompletes(); initDamageUI();
+  initAutocompletes(); initDamageUI(); initVsUI();
   restoreDraft(); renderAll();
 }
 /* DBにまだ無い列があっても保存を落とさない。
@@ -241,7 +241,8 @@ async function loadBattles(){
 /* ---------- タブ ---------- */
 $$('.tab').forEach(b=> b.onclick=()=>{
   $$('.tab').forEach(x=>x.classList.toggle('on',x===b));
-  ['rec','dmg','advice','stat','hist','team'].forEach(t=> $('#tab-'+t).hidden=(t!==b.dataset.tab));
+  // タブを増やしたときに書き換え漏れが起きないよう、セクションはDOMから拾う
+  $$('main section[id^="tab-"]').forEach(sec=> sec.hidden = (sec.id !== 'tab-'+b.dataset.tab));
   if(b.dataset.tab==='stat') renderStats();
   if(b.dataset.tab==='hist') renderHist();
   if(b.dataset.tab==='advice') renderAdvice();
@@ -592,7 +593,7 @@ function renderPickers(){
 }
 function toggle(a,v){const i=a.indexOf(v);i<0?a.push(v):a.splice(i,1);}
 $('#fMega').addEventListener('change',()=>{S.mega=$('#fMega').value||null;saveDraft();});
-$('#fTeam').onchange=()=>{setArr(S.myPick);renderMyTeamChips();renderPickers();renderSuggest();saveDraft();};
+$('#fTeam').onchange=()=>{setArr(S.myPick);renderMyTeamChips();renderPickers();renderSuggest();saveDraft();VS.mine=null;safe('対面',()=>{renderVsPickers();renderVs();},'#vsOut');};
 
 /* ---------- 似た並びとの過去実績 ----------
    選出の提案は「読みと選出」カードに一本化した。ここは実績だけを出す。 */
@@ -903,6 +904,148 @@ $('#btnSave').onclick=async ()=>{
     : toast(wasEdit?'更新しました':`保存しました（通算 ${BATTLES.length} 戦）`);
   window.scrollTo({top:0,behavior:'smooth'});
 };
+
+/* =========================================================
+   対面 — 1対1の即答
+   「このタイプ何に弱いんだっけ」を毎回調べなくていいようにする画面。
+   自分の登録実数値 × 相手の3想定 で、通る技・通らない技・注意点を出す。
+   ========================================================= */
+let VS = { mine:null, opp:'' };
+
+function initVsUI(){
+  autocomplete('#vsOpp','#vsOppSug', oppSpeciesSource, n=>{
+    VS.opp = n; $('#vsOpp').value = n; renderVs();
+  });
+  $('#vsClear').onclick = ()=>{ VS.opp=''; $('#vsOpp').value=''; renderVs(); };
+}
+
+/** 自分の駒の選択チップと、よく当たる相手のクイックボタン */
+function renderVsPickers(){
+  const roster = currentRoster();
+  const me = $('#vsMine');
+  if(!roster.length){ me.innerHTML = '<span class="pk ghost">「構築」タブで6匹を登録してください</span>'; return; }
+  if(!VS.mine || !roster.some(m=>m.name===VS.mine)) VS.mine = roster[0].name;
+  me.innerHTML = roster.map(m=>pkChip(m.name,{cls:'tapp '+(VS.mine===m.name?'sel':''),data:`data-v="${esc(m.name)}"`})).join('');
+  me.querySelectorAll('.tapp').forEach(c=> c.onclick=()=>{ VS.mine=c.dataset.v; renderVsPickers(); renderVs(); });
+
+  const seen={};
+  BATTLES.forEach(b=>(b.opp_team||[]).forEach(n=>seen[n]=(seen[n]||0)+1));
+  const hist=Object.entries(seen).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([n])=>n);
+  const list = hist.length>=6 ? hist : META_TOP.slice(0,8);
+  $('#vsQuick').innerHTML = list.map(n=>
+    `<button class="qb ${VS.opp===n?'dim':''}" data-vq="${esc(n)}">${typeChips(n)}${esc(n)}</button>`).join('');
+  $$('#vsQuick [data-vq]').forEach(b=> b.onclick=()=>{ VS.opp=b.dataset.vq; $('#vsOpp').value=b.dataset.vq; renderVs(); });
+}
+
+function renderVs(){
+  const out=$('#vsOut');
+  const roster=currentRoster();
+  if(!VS.mine || !VS.opp || !PC.SPECIES[VS.opp] || !roster.length){
+    out.innerHTML=''; return;
+  }
+  const rc = rosterForCalc(roster, S.mega);
+  const me = rc.find(r=>r.label===VS.mine) || {name:VS.mine};
+  const opp = effOpp(VS.opp);
+  const mu = PC.matchup(me,{name:opp});
+  if(!mu){ out.innerHTML='<div class="note w">計算できませんでした。</div>'; return; }
+  const os = PC.SPECIES[opp], ms = PC.SPECIES[me.name];
+  const v = verdict(mu);
+
+  /* ① こちらの技が何倍で通るか（登録した技があればそれ、無ければ全タイプ） */
+  const oppAb = PC.worstDefAbility(opp);
+  const immT  = PC.immuneType(oppAb);
+  const myMoves = (me.moves||[]).map(n=>PC.MOVES[n]).filter(Boolean);
+  const moveRows = myMoves.map(m=>{
+    // 変化技はタイプ相性で無効化されない（ゴーストにアンコールは通る）ので相性判定から外す
+    if(m.cat==='変') return {m, status:true, e:1, blocked:false, dmg:''};
+    const e = PC.effectiveness(m.type, os.types);
+    const blocked = (m.type===immT);
+    let dmg='';
+    if(m.power && m.cat!=='変' && !blocked && e>0){
+      const sp=PC.assumedSpreads(opp);
+      const p=sp.map(x=>{
+        const r=PC.calcDamage({
+          attacker:{name:me.name,atkStat:m.cat==='物'?me.stats.a:me.stats.c,types:ms.types,ability:me.ability||'',item:me.item||'',rank:0,hpRatio:1},
+          defender:{name:opp,defStat:m.cat==='物'?x.stats.b:x.stats.d,hp:x.stats.h,types:os.types,ability:oppAb,item:'',rank:0,hpRatio:1},
+          move:m,field:{},flags:{}});
+        return (r.error||r.eff===0)?0:(r.min+r.max)/2/x.stats.h*100;
+      });
+      dmg = dmgRange(Math.min(...p)/100, Math.max(...p)/100);
+    }
+    return {m,e,blocked,dmg};
+  }).sort((a,b)=> (a.status?1:0)-(b.status?1:0) || b.e-a.e);
+
+  /* ② 相手のタイプ技がこちらに何倍か（18タイプ全部。危ないものだけ強調） */
+  const myImm = PC.immuneType(me.ability);
+  const inc = PC.TYPES.map(t=>({t, e: (t===myImm?0:PC.effectiveness(t, ms.types))}))
+                      .filter(x=>x.e>=2).sort((a,b)=>b.e-a.e);
+  const safe = PC.TYPES.map(t=>({t, e:(t===myImm?0:PC.effectiveness(t, ms.types))}))
+                       .filter(x=>x.e<=0.5);
+
+  /* ③ 気をつけること */
+  const warn=[];
+  if(oppAb) warn.push(`相手の特性 <b>${esc(oppAb)}</b>${immT?`（<b>${esc(immT)}技が無効</b>）`:''}`);
+  if(PC.survivesOneHit(opp)) warn.push('<b>1発は必ず耐えてくる</b>（ばけのかわ／がんじょう）。連続技か2発で崩す');
+  const my4 = inc.filter(x=>x.e>=4);
+  if(my4.length) warn.push(`<b>${my4.map(x=>x.t).join('・')}が4倍</b>。先制技でも落ちる`);
+  if(!mu.faster && mu.fasterAny) warn.push('相手の型次第で<b>抜かれる</b>。最速想定なら後手');
+  else if(!mu.faster) warn.push('<b>相手の方が速い</b>');
+  if(mu.split) warn.push(`<b>相手の型で結論が変わる</b>：${esc(splitNote(mu)||'型を絞ってから動く')}`);
+  const atkRows = moveRows.filter(r=>!r.status);
+  if(atkRows.length && atkRows.every(r=>r.e<1 || r.blocked)) warn.push('<b>こちらの攻撃技が全部半減以下</b>。殴り合っても勝てない');
+
+  /* ④ 引き先 */
+  const others = roster.map(m=>m.name).filter(n=>n!==VS.mine);
+  const esc2 = others.map(n=>{
+    const m2 = rc.find(r=>r.label===n) || {name:n};
+    return {n, mu:PC.matchup(m2,{name:opp})};
+  }).filter(x=>x.mu && !x.mu.danger)
+    .sort((a,b)=> (b.mu.winsAll?1:0)-(a.mu.winsAll?1:0) || b.mu.score-a.mu.score).slice(0,3);
+
+  out.innerHTML = `
+  <div class="card">
+    <div class="hd" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      ${pkChip(VS.mine,{})}<span class="muted">vs</span>${pkChip(opp,{})}
+      <span class="badge ${v.cls}" style="margin-left:auto">${esc(v.txt)}</span>
+    </div>
+    <div style="font-size:20px;font-weight:800">${muNums(mu)}</div>
+    <div class="small muted">与える割合 / 受ける割合　・　素早さ ${mu.myS} vs ${mu.opS}　${mu.faster?'<b>先制できる</b>':(mu.fasterAny?'型次第で先制':'<b>後手</b>')}</div>
+  </div>
+
+  ${warn.length?`<div class="card" style="border-color:var(--red);background:var(--redsoft)">
+    <h2 style="margin-bottom:8px">気をつけること</h2>
+    ${warn.map(w=>`<div class="small" style="padding:3px 0">・${w}</div>`).join('')}
+  </div>`:''}
+
+  <div class="card">
+    <h2>こちらの技<span class="sub">通るもの／通らないもの</span></h2>
+    ${moveRows.length ? moveRows.map(r=>{
+      const cls = r.status ? 'wn' : (r.blocked||r.e===0) ? 'ng' : r.e>=2 ? 'ok' : r.e<1 ? 'ng' : 'wn';
+      const lbl = r.status ? '変化技' : r.blocked ? `特性で無効` : r.e===0 ? '無効' : r.e>=4?'4倍':r.e===2?'こうかバツグン':r.e===1?'等倍':r.e===0.5?'いまひとつ':'かなりいまひとつ';
+      return `<div class="ans">
+        <span class="badge ${cls}">${lbl}</span>
+        <b>${esc(r.m.name)}</b>
+        <span class="small muted">${esc(r.m.type)}・${esc(r.m.cat)}${r.m.power?'・威力'+r.m.power:''}</span>
+        <span class="num">${r.dmg||'—'}</span></div>`;
+    }).join('') : '<p class="hint">「構築」タブでこの駒の技を登録すると、技ごとの通り方が出ます。</p>'}
+  </div>
+
+  <div class="card">
+    <h2>受ける側<span class="sub">${esc(VS.mine)} の弱点</span></h2>
+    <div class="small" style="margin-bottom:6px"><b>刺さるタイプ</b></div>
+    <div class="pklist">${inc.length?inc.map(x=>`<span class="pk"><span class="badge ${x.e>=4?'ng':'wn'}">${x.e}倍</span>${typeIcon(x.t)}<b>${esc(x.t)}</b></span>`).join(''):'<span class="small muted">2倍以上のタイプなし</span>'}</div>
+    <div class="small" style="margin:10px 0 6px"><b>効きにくいタイプ</b></div>
+    <div class="pklist">${safe.map(x=>`<span class="pk"><span class="badge ok">${x.e===0?'無効':x.e+'倍'}</span>${typeIcon(x.t)}${esc(x.t)}</span>`).join('')||'<span class="small muted">なし</span>'}</div>
+    <div class="small muted" style="margin-top:8px">相手（${esc(opp)}）はタイプ一致で <b>${os.types.join('・')}</b> を撃ってきます。</div>
+  </div>
+
+  ${esc2.length?`<div class="card">
+    <h2>厳しいときの引き先</h2>
+    ${esc2.map(x=>`<div class="ans">
+      <span class="badge ${x.mu.winsAll?'ok':'wn'}">${x.mu.winsAll?'安全':'型次第'}</span>
+      <b>${esc(x.n)}</b><span class="num">${muNums(x.mu)}${x.mu.faster?' 先制':''}</span></div>`).join('')}
+  </div>`:''}`;
+}
 
 /* =========================================================
    ダメージ計算
@@ -1379,6 +1522,7 @@ function fillTeamSelects(){
 }
 function renderAll(){
   fillTeamSelects(); renderOpp(); renderTeams(); renderHist(); renderStats();
+  safe('対面', ()=>{ renderVsPickers(); renderVs(); }, '#vsOut');
   if(!$('#mvlist2')){const dl2=document.createElement('datalist');dl2.id='mvlist2';
     dl2.innerHTML=MOVE_NAMES.map(m=>`<option value="${esc(m)}">`).join('');document.body.appendChild(dl2);}
 }
