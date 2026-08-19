@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="26">
+<meta name="app-version" content="27">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -359,6 +359,10 @@ tr.bad .bar>i{background:var(--lose)}
   <details id="btInputWrap" open>
     <summary class="cardsum">相手6体を入れる<span class="sub">タップして開閉</span></summary>
     <div class="card">
+      <label class="f">タイプで探す<span class="muted">（見せ合い画面のタイプアイコンを見て押す。名前が分からなくてもOK）</span></label>
+      <div id="btTypePick" class="quick"></div>
+      <div id="btTypeOut" class="quick" style="margin-top:6px"></div>
+      <div style="height:12px"></div>
       <label class="f">名前で探す（1〜2文字でOK。出てきたら押すだけ）</label>
       <input type="text" id="btSearch" placeholder="らい／アーマ／ガブ …" autocomplete="off">
       <div id="btSearchOut" class="quick" style="margin-top:6px"></div>
@@ -617,14 +621,14 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=26"></script>
-<script src="./data/species.js?v=26"></script>
-<script src="./data/moves.js?v=26"></script>
-<script src="./data/principles.js?v=26"></script>
-<script src="./data/usage.js?v=26"></script>
-<script src="./data/teams.js?v=26"></script>
-<script src="./core.js?v=26"></script>
+<script src="./supabase-config.js?v=27"></script>
+<script src="./data/species.js?v=27"></script>
+<script src="./data/moves.js?v=27"></script>
+<script src="./data/principles.js?v=27"></script>
+<script src="./data/usage.js?v=27"></script>
+<script src="./data/teams.js?v=27"></script>
+<script src="./core.js?v=27"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=26"></script>
+<script src="./app.js?v=27"></script>
 </body>
 </html>

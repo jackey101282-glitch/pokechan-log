@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '26';
+const APP_VERSION = '27';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -995,6 +995,41 @@ function initBtUI(){
     if(added) toast(`${added}体を足しました（いま${BT.opp.length}/6）`);
     else toast('新しく足せるポケモンがありませんでした', true);
   };
+  /* タイプで探す。見せ合い画面では相手の名前は出ないが、タイプアイコンは必ず出る。
+     2タイプ選べば候補は数体まで落ちるので、名前を知らなくても入力できる。
+     出典: app/data/species.js（全313種のタイプ）＋ 使用率順（app/data/usage.js）。 */
+  BT.tsel = BT.tsel || [];
+  const btTypeRender = ()=>{
+    $('#btTypePick').innerHTML = PC.TYPES.map(t=>{
+      const on = BT.tsel.includes(t);
+      return `<button class="qb mini ${on?'on':'off'}" data-bt="${t}"
+        style="${on?`border-color:${PC.TYPE_COLOR[t]};background:${PC.TYPE_COLOR[t]}22`:''}">
+        <i style="background:${PC.TYPE_COLOR[t]};width:15px;height:15px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;margin-right:3px">${typeIcon(t)}</i>${t}</button>`;
+    }).join('');
+    $$('#btTypePick [data-bt]').forEach(b=> b.onclick=()=>{
+      const t=b.dataset.bt, i=BT.tsel.indexOf(t);
+      if(i>=0) BT.tsel.splice(i,1); else { BT.tsel.push(t); if(BT.tsel.length>2) BT.tsel.shift(); }
+      btTypeRender();
+    });
+    const out = $('#btTypeOut');
+    if(!BT.tsel.length){ out.innerHTML=''; return; }
+    // 選んだタイプを「全部持っている」種を出す。使用率順→なければ図鑑順
+    const rank = n =>{ const u = PC.oppUsage(n); return u ? u.r : 999; };
+    const hit = Object.keys(PC.SPECIES)
+      .filter(n=> !BT.opp.includes(n) && BT.tsel.every(t=> PC.SPECIES[n].types.includes(t)))
+      .sort((a,b)=> rank(a)-rank(b) || a.length-b.length).slice(0,14);
+    out.innerHTML = hit.length
+      ? `<div class="small muted" style="width:100%">${BT.tsel.join('・')} を持つ ${hit.length}体（使用率順）</div>`
+        + hit.map(n=>`<button class="qb mini" data-bto="${esc(n)}">${typeDots(n)}${esc(n)}${rank(n)<999?`<span class="muted"> ${rank(n)}位</span>`:''}</button>`).join('')
+      : '<span class="small muted">この組み合わせのポケモンはいません</span>';
+    $$('#btTypeOut [data-bto]').forEach(b=> b.onclick=()=>{
+      if(BT.opp.length>=6) return toast('6匹までです',true);
+      BT.opp.push(b.dataset.bto); BT.tsel=[];
+      btCompute(); btRender();
+    });
+  };
+  btTypeRender();
+
   /* 名前で探して即タップ。候補に無いポケモンを入れるとき、
      フルネームを打ってから「足す」を押すのは遅すぎる（選出は90秒）。 */
   const btSearchRender = ()=>{
