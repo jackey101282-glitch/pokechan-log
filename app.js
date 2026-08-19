@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '39';
+const APP_VERSION = '40';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1227,7 +1227,7 @@ function btRender(){
         }).join('')}</tr>`;
     }).join('')}</table></div>`;
   $$('#btGrid [data-bo]').forEach(tr=> tr.onclick=()=>{
-    BT.sel=tr.dataset.bo; BT.me=null; btNowRender();
+    BT.sel=tr.dataset.bo; btNowRender();   // ★自分の選択は変えない（上と同じ理由）
     const w=$('#btInputWrap'); if(w) w.open=false;
     const n=$('#btNow'); if(n) n.scrollIntoView({block:'start'});   // smooth は試合中の待ち時間になるので使わない
   });
@@ -1346,6 +1346,10 @@ function btNowRender(){
       ${c.to?`<div class="small" style="margin-top:6px">引くなら → <b>${esc((mine.find(x=>x.name===c.to.name)||{}).disp || c.to.name)}</b>（${c.to.c.mark} ${esc(c.to.c.why)}）</div>`:''}
       ${swIn?`<div class="small" style="margin-top:6px">${esc(swIn.name)}に交代されたら → <b>${swIn.c.mark} ${esc(swIn.c.head)}</b>${swIn.c.to?`（${esc(swIn.c.to.name)}へ）`:''}</div>`:''}
     </div>
+    ${(c.todo&&c.todo.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-color:var(--blue);background:var(--bluesoft)">
+      <div class="small" style="font-weight:800;margin-bottom:4px">引く前にやること</div>
+      ${c.todo.map(d=>`<div class="small" style="margin:3px 0">・${d.t}</div>`).join('')}
+    </div>`:''}
     <div class="small" style="margin-top:10px">
       ${c.detail.map(d=>`<div style="margin:3px 0;color:${d.k==='bad'?'var(--red)':d.k==='good'?'var(--grn)':d.k==='warn'?'var(--org)':d.k==='role'?'var(--blue)':'inherit'}">・${d.t}</div>`).join('')}
     </div>`:''}
@@ -1371,7 +1375,11 @@ function btNowRender(){
   btSpeak();
 
   $$('#btNow [data-btopp]').forEach(b=> b.onclick=()=>{
-    BT.sel=b.dataset.btopp; BT.me=null;
+    /* ★相手を変えても自分の選択は変えない（社長の指摘 2026-08-20）。
+       以前は BT.me=null にして「その相手にいちばん強い駒」を勝手に選び直していた。
+       画面には「殴る」と出ているのに、出ているのは場にいない別の駒、という事故が起きて
+       実際に負けている。自動選択は最初の1回だけ（BT.me が未設定のとき）に限る。 */
+    BT.sel=b.dataset.btopp;
     const pb=$('.planbox'); if(pb) pb.open=false;          // 試合が始まったら選出カードは畳む
     const iw=$('#btInputWrap'); if(iw) iw.open=false;
     btNowRender();
@@ -1439,6 +1447,13 @@ function btBoardCard(st){
           ${chip('ステルスロック','myRocks',1,!!st.myRocks)}
           ${chip('まきびし','mySpikes',1,!!st.mySpikes)}
           ${chip('おいかぜ','myTailwind',1,!!st.myTailwind)}</div></div>
+      <!-- ★自分が撒いた側。これが無いと「もう撒いたのか」が分からず、
+           「引く前にステルスロックを置け」と言い続けてしまう（社長の要望 2026-08-20） -->
+      <div class="hpwrap"><span class="small muted" style="min-width:96px">相手の場</span>
+        <div class="quick">
+          ${chip('ステルスロック','opRocks',1,!!st.opRocks)}
+          ${chip('まきびし','opSpikes',1,!!st.opSpikes)}
+          ${chip('どくびし','opTSpikes',1,!!st.opTSpikes)}</div></div>
       ${n?`<button class="btn ghost sm" data-bbreset="1" style="margin-top:8px">盤面をリセット</button>`:''}
     </div></details>`;
 }

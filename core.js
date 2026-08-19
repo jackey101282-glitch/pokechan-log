@@ -1326,7 +1326,9 @@ function callIt(mine, oppName, opts){
   const diesNow = (rd && rd.left) ? rd.left.diesNext : (pOHKO>=SURE_RATE);
   if(mu.noOffense && !mu.wallsAll){
     // 打点が無く、しかも受けられもしない＝いる意味がない
-    head='引く'; cls='ng'; mark='✕'; why=`打点が無い（最大でも${mu.myHits}発かかる）`;
+    head='引く'; cls='ng'; mark='✕';
+    why = mu.myDmg>0 ? `打点が無い（最大でも${mu.myHits}発かかる）`
+                     : `技がまったく通らない（無効・または効果が薄い）`;
   }else if(myHits<=1 && mu.fasterAny && !(diesNow && !mu.faster)){
     head='殴る'; cls='ok'; mark='◎'; why=`${mu.myMove}で先に落とせる`;
   }else if(pOHKO >= SURE_RATE){
@@ -1363,7 +1365,66 @@ function callIt(mine, oppName, opts){
                  : `${myHits}発で落とせる。負ける型が無い`;
   }
 
-  return { head, cls, mark, why, detail, mu, read:rd, myHits, pLose, pOHKO,
+  /* ---- この対面で「やること」 ----
+     社長の指摘（2026-08-20）：
+     「3対3のゲームなのに、この対面をどう倒すかに寄りすぎている。
+       今は相性が悪いけど最低限これだけはやって引いた方がいい、
+       ステルスロックはせめて撒いてから交代した方がいい、
+       一発これ食らわしたら次これが一撃で入る、
+       多分相手はこれを打ってくるからそれだけ受けて交代した方がいい、が欲しい」
+     → 勝てない対面でも「何を残して引くか」を出す。試合中に読むので最大3件。 */
+  const myMoves = new Set(mine.moves||[]);
+  const todo = [];
+  // この相手の攻撃を1発は耐えるか。耐えないなら「引く前に何かする」は成立しない
+  const survives = !diesNow && pOHKO < SURE_RATE;
+
+  // ① 未設置の設置技。撒いてから引くのが3対3では最大の仕事
+  const PLACED = { 'ステルスロック': st&&st.opRocks, 'まきびし': st&&st.opSpikes,
+                   'どくびし': st&&st.opTSpikes, 'ねばねばネット': st&&st.opSticky };
+  if(survives){
+    const yet = ['ステルスロック','まきびし','どくびし','ねばねばネット']
+      .filter(m=> myMoves.has(m) && !PLACED[m]);
+    if(yet.length) todo.push({k:'do', t:`<b>${yet[0]}</b> を置いてから引ける（この相手の攻撃は耐える）`});
+  }
+
+  // ② 引く前に入れられる状態異常・妨害
+  if(survives){
+    const st2 = ['キノコのほうし','おにび','どくどく','でんじは','ちょうはつ','アンコール','あくび']
+      .filter(m=> myMoves.has(m));
+    if(st2.length && todo.length<3) todo.push({k:'do', t:`<b>${st2[0]}</b> を入れてから引ける`});
+  }
+
+  /* ③ 「1発入れれば次が一撃圏」。控えの打点と、いま入るこちらのダメージを突き合わせる。
+        ★1発入れるには「こちらが速い」か「相手の攻撃を耐える」かのどちらかが要る。
+          先に落とされる対面で「1発入れれば」と言うのは、そのまま無償で1体失う指示になる。 */
+  if(mu.myDmgLo > 0 && opts.roster && (mu.faster || survives)){
+    const after = 1 - mu.myDmgLo;                       // 低乱数で殴った後の相手の残り（保守的に見る）
+    const reach = (opts.roster||[]).filter(r=> r.name!==mine.name).map(r=>{
+      const m2 = matchup(r, {name:oppName, known, st});
+      return m2 ? {name:r.name, hi:m2.myDmgHi, move:m2.myMove} : null;
+    }).filter(x=> x && x.hi>0 && x.hi<1 && x.hi>=after)
+      .sort((a,b)=> b.hi-a.hi)[0];
+    if(reach && todo.length<3)
+      todo.push({k: survives?'good':'bad',
+        t:`いま1発入れれば、<b>${reach.name}</b>の<b>${reach.move}</b>が一撃圏（相手を${Math.round(reach.hi*100)}%以下にすればよい）`
+          + (survives ? '' : '　<b>※こちらは落ちる。1体と引き換え</b>')});
+  }
+
+  // ④ 引く判定のとき、いちばん飛んでくる技を受けてから引けるか
+  if((head==='引く'||head==='居座らない'||head==='様子見') && survives && todo.length<3){
+    const top = (rows||[]).filter(r=>r.rateOf>=20).sort((a,b)=> b.rateOf-a.rateOf)[0];
+    if(top) todo.push({k:'info',
+      t:`いちばん来るのは <b>${top.move}</b>(${top.rateOf}%)。${pc(top.rateHi)}%なので<b>受けてから引ける</b>`});
+  }
+
+  // ⑤ 積み技。相手がこちらを落とすのに2発以上かかるなら積める
+  if(todo.length<3 && mu.opHits>=2 && survives){
+    const up = ['つるぎのまい','りゅうのまい','めいそう','わるだくみ','てっぺき','ビルドアップ','からをやぶる','ちょうのまい']
+      .filter(m=> myMoves.has(m))[0];
+    if(up) todo.push({k:'good', t:`<b>${up}</b> を積める（相手は落とすのに${mu.opHits}発かかる）`});
+  }
+
+  return { head, cls, mark, why, detail, todo, mu, read:rd, myHits, pLose, pOHKO,
            koMoves, badMoves, rows, immune: mu.immuneMoves||[],
            to: bench.length ? {name:bench[0].r.name, c:bench[0].c} : null,
            bench: bench.slice(0,3).map(x=>({name:x.r.name, c:x.c})) };
@@ -1385,7 +1446,7 @@ function actionNow(mine, oppName, roster, hpNow, field, known){
   let verdict, why;
   if(canKill && !(dies && !mu.faster)){ verdict='殴る'; why=`${mu.myMove||'最大打点'}で先に落とせる`; }
   else if(dies){ verdict='引く'; why= rd ? `次の${rd.left.worstMove}で落ちる（残り${rd.hpNow}）` : `${mu.opOHKOMove||'相手の技'}で一撃`; }
-  else if(mu.noOffense){ verdict='引く'; why=`打点が無い（最大でも${mu.myHits}発）`; }
+  else if(mu.noOffense){ verdict='引く'; why= mu.myDmg>0 ? `打点が無い（最大でも${mu.myHits}発）` : `技がまったく通らない`; }
   else if(mu.winsRace){ verdict='殴る'; why=`${mu.myHits}発 対 ${mu.opHits}発で勝てる`; }
   else { verdict='引く'; why=`${mu.opHits}発で落とされる`; }
 
