@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="41">
+<meta name="app-version" content="42">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -533,6 +533,18 @@ tr.bad .bar>i{background:var(--lose)}
   </div>
   <div class="card"><h2>基本</h2><div class="kpis" id="kpis"></div></div>
   <div class="card"><h2>今のあなたへのフィードバック</h2><div id="feedback"></div></div>
+  <!-- 2026-08-20 追加：負けた試合だけを見る。勝ちは分析しない（社長の方針） -->
+  <div class="card" style="border-color:var(--red)">
+    <h2>敗因の内訳<span class="sub">負けた試合だけ</span></h2>
+    <p class="hint">対戦タブの「試合が終わった」から数タップで溜まります。原因が偏っていれば、そこが次に直す場所です。</p>
+    <div id="loseCause"></div>
+  </div>
+  <div class="card" style="border-color:var(--red)">
+    <h2>やられている技<span class="sub">同じ技を使う相手にも効きます</span></h2>
+    <p class="hint">1回の負けを、その技を持つ環境全体への対策に広げます。<br>
+      「この技でやられた」を記録すると、<b>同じ技を採用している他のポケモン</b>を実使用率から逆に引いて出します。</p>
+    <div id="painMoves"></div>
+  </div>
   <div class="card">
     <h2>相手にいると勝てないポケモン<span class="sub">3戦以上</span></h2>
     <p class="hint">遭遇時の勝率が低い順＝構築の穴。ここが次に対策すべき相手です。</p>
@@ -639,15 +651,15 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=41"></script>
-<script src="./data/species.js?v=41"></script>
-<script src="./data/moves.js?v=41"></script>
-<script src="./data/principles.js?v=41"></script>
-<script src="./data/usage.js?v=41"></script>
-<script src="./data/teams.js?v=41"></script>
-<script src="./core.js?v=41"></script>
-<script src="./voice.js?v=41"></script>
+<script src="./supabase-config.js?v=42"></script>
+<script src="./data/species.js?v=42"></script>
+<script src="./data/moves.js?v=42"></script>
+<script src="./data/principles.js?v=42"></script>
+<script src="./data/usage.js?v=42"></script>
+<script src="./data/teams.js?v=42"></script>
+<script src="./core.js?v=42"></script>
+<script src="./voice.js?v=42"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=41"></script>
+<script src="./app.js?v=42"></script>
 </body>
 </html>

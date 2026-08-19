@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '41';
+const APP_VERSION = '42';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1203,7 +1203,82 @@ function btRender(){
       return t.length?`<details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">相手の変化技・妨害技（${t.length}件）</summary>
         <div class="small" style="margin-top:6px">${t.map(x=>'・'+x).join('<br>')}</div></details>`:'';})()}
   </div></details>
-  <button class="btn ghost btn-full" id="btToRec" style="margin-bottom:14px">試合が終わった → 記録に送る</button>`;
+  <button class="btn primary btn-full" id="btDone" style="margin-bottom:8px">試合が終わった</button>
+  <div id="btDoneBox" style="margin-bottom:14px"></div>
+  <button class="btn ghost btn-full" id="btToRec" style="margin-bottom:14px">くわしく書く（記録タブへ送る）</button>`;
+
+  /* ---------- 試合が終わったら、その場で数タップだけ残す ----------
+     社長の要望（2026-08-20）：
+     「一手ずつ全部記録するのは大変で続かない。勝った試合は分析いらない。
+       負けた試合の敗因が溜まればいい。相手6体・実際の選出・苦しめられた技・立ち回りが
+       ざっくり残れば、同じ技を使う他のポケモンにも対策できる」
+     → 勝ち=2タップ、負け=数タップ。記録タブへ移動させない（移動が最大のハードルだった）。 */
+  BT.done = BT.done || {};
+  const btDoneRender = ()=>{
+    const box = $('#btDoneBox'); if(!box) return;
+    const d = BT.done;
+    if(!d.open){ box.innerHTML=''; return; }
+    const chips = (arr, key, multi)=> arr.map(n=>{
+      const on = multi ? (d[key]||[]).includes(n) : d[key]===n;
+      return `<button class="qb mini ${on?'on':'off'}" data-dn="${key}" data-dv="${esc(n)}">${typeDots(n)}${esc(n)}</button>`;
+    }).join('');
+    const CAUSES = ['構築の相性','選出ミス','技の相性','プレイングミス','事故（急所・命中）','わからない'];
+    // やられた技の候補は、選んだ相手の実採用技をそのまま出す（打ち込ませない）
+    const mvs = d.painMon ? (PC.oppMoveChoices(d.painMon)||[]).slice(0,10) : [];
+    box.innerHTML = `<div class="card" style="border-color:var(--red)">
+      <div class="small" style="font-weight:800;margin-bottom:6px">結果</div>
+      <div class="quick">
+        <button class="qb ${d.result==='win'?'on':'off'}" data-dn="result" data-dv="win">勝ち</button>
+        <button class="qb ${d.result==='lose'?'on':'off'}" data-dn="result" data-dv="lose">負け</button>
+      </div>
+      <div class="small muted" style="margin-top:10px">相手が出してきた3体<span class="muted">（見えた分だけでOK）</span></div>
+      <div class="quick">${chips(BT.opp,'oppPick',true)}</div>
+      ${d.result==='lose' ? `
+        <div class="small" style="font-weight:800;margin-top:12px">なぜ負けたか</div>
+        <div class="quick">${CAUSES.map(c=>
+          `<button class="qb mini ${d.cause===c?'on':'off'}" data-dn="cause" data-dv="${esc(c)}">${esc(c)}</button>`).join('')}</div>
+        <div class="small muted" style="margin-top:10px">いちばんきつかった相手</div>
+        <div class="quick">${chips(BT.opp,'painMon',false)}</div>
+        ${mvs.length?`<div class="small muted" style="margin-top:10px">やられた技</div>
+          <div class="quick">${mvs.map(m=>
+            `<button class="qb mini ${d.painMove===m.name?'on':'off'}" data-dn="painMove" data-dv="${esc(m.name)}">${esc(m.name)}<span class="muted"> ${m.rate}%</span></button>`).join('')}</div>`:''}
+      ` : ''}
+      <div class="hpwrap" style="margin-top:12px">
+        <button class="btn primary" id="btDoneSave">この内容で保存</button>
+        <button class="btn ghost sm" id="btDoneCancel">やめる</button>
+      </div>
+      <div class="small muted" style="margin-top:6px">${d.result==='lose'?'空のままでも保存できます。分かるところだけで十分です':'勝ち試合は結果だけで十分です'}</div>
+    </div>`;
+    $$('#btDoneBox [data-dn]').forEach(b=> b.onclick=()=>{
+      const k=b.dataset.dn, v=b.dataset.dv;
+      if(k==='oppPick'){ const a=d.oppPick||[]; const i=a.indexOf(v);
+        if(i>=0) a.splice(i,1); else if(a.length<3) a.push(v); d.oppPick=a; }
+      else d[k] = (d[k]===v ? null : v);
+      if(k==='painMon') d.painMove=null;              // 相手を変えたら技の選択は捨てる
+      btDoneRender();
+    });
+    $('#btDoneCancel').onclick = ()=>{ BT.done={}; btDoneRender(); };
+    $('#btDoneSave').onclick = async ()=>{
+      if(!d.result) return toast('勝ち／負けを選んでください',true);
+      const rec={ user_id:USER.id, team_id:$('#fTeam').value||null, played_at:todayStr(),
+        season:$('#fSeason').value||null, rule:$('#fRule').value||'single', rank:$('#fRank').value||null,
+        opp_team:BT.opp, my_pick:BT.picks, opp_pick:d.oppPick||[], mega:BT.mega||null,
+        turns:[], result:d.result,
+        lose_cause:d.cause||null, pain_mon:d.painMon||null, pain_move:d.painMove||null,
+        reason:d.result==='lose' ? [d.cause,d.painMon&&`${d.painMon}がきつい`,d.painMove&&`${d.painMove}でやられた`]
+          .filter(Boolean).join(' / ') : null };
+      $('#btDoneSave').disabled=true;
+      const res = await dbWrite('battles','insert',rec);
+      $('#btDoneSave').disabled=false;
+      if(!res.ok) return toast('保存に失敗: '+res.error.message, true);
+      BT.done={}; await loadBattles(); renderAll();
+      res.dropped.length ? warnDropped(res.dropped)
+        : toast(`保存しました（通算 ${BATTLES.length} 戦）`);
+    };
+  };
+  const doneBtn = $('#btDone');
+  if(doneBtn) doneBtn.onclick = ()=>{ BT.done={open:true, oppPick:[]}; btDoneRender(); };
+  btDoneRender();
 
   /* 試合が終わったら、実戦タブで集めたもの（相手6体・選出・メガ枠・観測した技）を
      記録タブへそのまま渡す。ここを繋いでいなかったので、タップで記録した相手の技が
@@ -2054,6 +2129,38 @@ function renderStats(){
     <div class="kpi"><div class="k">勝率</div><div class="v">${pct(w,B.length)}<span style="font-size:14px">%</span></div><div class="s">${B.length<30?'30戦未満は参考値':'十分な母数'}</div></div>
     <div class="kpi"><div class="k">直近20戦</div><div class="v">${pct(rw,rec.length)}<span style="font-size:14px">%</span></div><div class="s">${rw}勝 ${rec.length-rw}敗</div></div>
     <div class="kpi"><div class="k">今日</div><div class="v">${td.length}<span style="font-size:14px">戦</span></div><div class="s">${tw}勝 ${td.length-tw}敗</div></div>`;
+
+  /* ---------- 敗因（負けた試合だけ） ----------
+     社長の方針（2026-08-20）：「相性で勝てる試合は分析いらない。負けた時は必ず原因がある」 */
+  const L = B.filter(b=>b.result==='lose');
+  const cz = {};
+  L.forEach(b=>{ if(b.lose_cause) cz[b.lose_cause]=(cz[b.lose_cause]||0)+1; });
+  const czArr = Object.entries(cz).sort((a,b)=>b[1]-a[1]);
+  $('#loseCause').innerHTML = czArr.length
+    ? tbl(czArr.map(([c,n])=>`<tr><td>${esc(c)}<div class="bar b"><i style="width:${pct(n,L.length)}%"></i></div></td><td class="num">${n}</td><td class="num">${pct(n,L.length)}%</td></tr>`),
+        [{t:'敗因'},{t:'件数',num:1},{t:'割合',num:1}])
+    : `<div class="small muted">まだありません。負けた試合のあと、対戦タブの「試合が終わった」で ${L.length?'敗因を選ぶと':'記録すると'}ここに溜まります</div>`;
+
+  /* やられた技 → 同じ技を持つ他のポケモンへ広げる。ここが「1回の負けを環境対策に変える」部分 */
+  const pm = {};
+  L.forEach(b=>{ if(b.pain_move) { pm[b.pain_move]=pm[b.pain_move]||{n:0, by:{}};
+    pm[b.pain_move].n++; if(b.pain_mon) pm[b.pain_move].by[b.pain_mon]=(pm[b.pain_move].by[b.pain_mon]||0)+1; } });
+  const pmArr = Object.entries(pm).sort((a,b)=>b[1].n-a[1].n);
+  $('#painMoves').innerHTML = pmArr.length
+    ? pmArr.map(([mv,v])=>{
+        const others = (PC.whoElseHas ? PC.whoElseHas(mv) : []).filter(x=> !v.by[x.name]).slice(0,8);
+        const met = new Set(); B.forEach(b=>(b.opp_team||[]).forEach(n=>met.add(n)));
+        return `<div class="mg">
+          <div class="op"><b>${esc(mv)}</b><span class="muted"> ${v.n}回やられている</span></div>
+          <div class="small">やられた相手：${Object.entries(v.by).map(([n,c])=>`${esc(n)}${c>1?`(${c}回)`:''}`).join('・')||'—'}</div>
+          ${others.length?`<div class="small" style="margin-top:6px">
+            <b>同じ技を持つ他の相手</b>（採用率順）：${others.map(x=>
+              `${esc(x.name)}<span class="muted"> ${x.rate}%${met.has(x.name)?'・遭遇あり':''}</span>`).join('、')}
+            <div class="muted" style="margin-top:2px">この並びが来たら同じ負け方をします。対戦タブで先に確認してください</div></div>`
+           :'<div class="small muted" style="margin-top:6px">この技を採用率10%以上で持つ他のポケモンは環境にいません</div>'}
+        </div>`;
+      }).join('')
+    : '<div class="small muted">まだありません。負けたときに「やられた技」を1タップ選ぶだけで溜まります</div>';
 
   const opp={};
   B.forEach(b=> new Set(b.opp_team||[]).forEach(p=>{opp[p]=opp[p]||{n:0,w:0};opp[p].n++;if(b.result==='win')opp[p].w++;}));

@@ -57,6 +57,11 @@ alter table public.battles add column if not exists mega      text;
 alter table public.battles add column if not exists opp_mega  text;  -- 相手がメガシンカした姿（バトル中に判明）
 alter table public.battles add column if not exists pred_lead text;  -- 先発予想（的中率の集計用）
 alter table public.battles add column if not exists turns jsonb not null default '[]';
+-- 2026-08-20 追加：敗因をざっくり残す（一手ずつの記録は続かないため）
+alter table public.battles add column if not exists lose_cause text;
+alter table public.battles add column if not exists pain_mon   text;
+alter table public.battles add column if not exists pain_move  text;
+alter table public.battles add column if not exists pain_my    text;
 
 create index if not exists battles_user_played_idx on public.battles (user_id, played_at desc, created_at desc);
 create index if not exists battles_team_idx        on public.battles (team_id);

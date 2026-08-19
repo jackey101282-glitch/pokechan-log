@@ -1455,6 +1455,21 @@ function actionNow(mine, oppName, roster, hpNow, field, known){
            bench: bench.slice(0,3).map(x=>({name:x.r.name, mu:x.mu})) };
 }
 
+/** ある技を「他にどのポケモンが持っているか」を実使用率から逆に引く。
+ *  社長の要望（2026-08-20）：
+ *  「この技でやられた、という記録が溜まったら、同じことをやってきそうな他のポケモンにも対策したい」
+ *  → 1回の負けを、その技を持つ環境全体への対策に広げるための引き当て。 */
+function whoElseHas(move, minRate){
+  minRate = (minRate==null) ? 10 : minRate;
+  const out = [];
+  Object.entries(USAGE_M5||{}).forEach(([name, u])=>{
+    (u.m||[]).forEach(m=>{
+      if(m[0]===move && m[1]>=minRate) out.push({name, rate:m[1], rank:u.r, cat:m[3], power:m[4]});
+    });
+  });
+  return out.sort((a,b)=> b.rate-a.rate);
+}
+
 /** 観測技が増えると同じ組み合わせでも結果が変わるので、キャッシュを捨てられるようにしておく */
 function clearMatchupCache(){ _muCache.clear(); }
 
@@ -1807,6 +1822,7 @@ function observedMoves(battles){
 
 global.PC = {
   TYPES, TYPE_COLOR, TYPE_ICON, CHART, NATURES, SPECIES, MOVES,
+  whoElseHas,
   loadData, effectiveness, statHP, statOther, natureMods, realStats, assumedStat,
   assumedSpreads, spreadStats, attackerLikeness, matchupVs, SP_TOTAL, SP_MAX,
   OPP_ABILITY, worstDefAbility, survivesOneHit, OPP_TRICKS, oppTricks,
