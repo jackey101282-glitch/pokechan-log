@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="24">
+<meta name="app-version" content="25">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -123,7 +123,8 @@ details[open] > .cardsum::after{content:'▴'}
 .pklist{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}
 /* 試合中用のコンパクト表示。タイプは小さい丸だけにして、1行に複数並ぶようにする */
 .dots{display:inline-flex;gap:3px;margin-right:5px}
-.dots i{width:9px;height:9px;border-radius:50%;display:inline-block}
+.dots i{width:17px;height:17px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center}
+.dots i svg{width:12px;height:12px;fill:#fff;display:block}
 .pk.mini{padding:4px 8px;font-size:13px;gap:3px}
 .quick .qb.mini{padding:5px 8px;font-size:13px;gap:3px}
 
@@ -577,14 +578,14 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=24"></script>
-<script src="./data/species.js?v=24"></script>
-<script src="./data/moves.js?v=24"></script>
-<script src="./data/principles.js?v=24"></script>
-<script src="./data/usage.js?v=24"></script>
-<script src="./data/teams.js?v=24"></script>
-<script src="./core.js?v=24"></script>
+<script src="./supabase-config.js?v=25"></script>
+<script src="./data/species.js?v=25"></script>
+<script src="./data/moves.js?v=25"></script>
+<script src="./data/principles.js?v=25"></script>
+<script src="./data/usage.js?v=25"></script>
+<script src="./data/teams.js?v=25"></script>
+<script src="./core.js?v=25"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=24"></script>
+<script src="./app.js?v=25"></script>
 </body>
 </html>

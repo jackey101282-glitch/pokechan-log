@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '24';
+const APP_VERSION = '25';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -68,11 +68,13 @@ function typeChips(name){
   return s.types.map(t=>
     `<span class="tp" style="background:${PC.TYPE_COLOR[t]||'#aaa'}">${typeIcon(t)}${t}</span>`).join(' ');
 }
-/** 小さい丸2つでタイプを示す。試合中の一覧は1行に何個も並べたいので、フルのタイプチップは使わない */
+/** タイプを「色つきアイコンだけ」で示す。
+ *  丸だけにしたら分かりづらいと指摘されたので（2026-08-19）、アイコンは必ず出す。
+ *  文字を落とすことで、1行に複数のポケモンが並ぶ幅を確保する。 */
 function typeDots(name){
   const s = PC.SPECIES[name]; if(!s) return '';
   return `<span class="dots">${s.types.map(t=>
-    `<i style="background:${PC.TYPE_COLOR[t]||'#aaa'}" title="${t}"></i>`).join('')}</span>`;
+    `<i style="background:${PC.TYPE_COLOR[t]||'#aaa'}" title="${t}">${typeIcon(t)}</i>`).join('')}</span>`;
 }
 function pkChip(name, opts){
   opts = opts||{};
@@ -295,13 +297,21 @@ function rosterForCalc(roster, megaChoice){
     };
   }).filter(m=>m.stats);
 }
+/** 表示名。メガ枠を別に切る駒は「メガ前の姿」で出す（メガできないのにメガ名で出すのは嘘） */
+function dispName(rc, label){
+  const r = (rc||[]).find(x=> x.label===label);
+  return r ? (r.disp || r.label) : label;
+}
 /** この構築が持つメガ枠。複数あればどれを切るかで結果が変わる */
 function megaSlotsOf(roster){ return roster.filter(m=>PC.isMegaForm(m.name)).map(m=>m.name); }
 /** メガの切り方を総当たりして、いちばん良い選出を返す。
  *  第一基準＝予想した相手3体への強さ、第二基準＝予想が外れた時に相手6体をどれだけ見れるか。 */
-function bestPlan(roster, targets, size, allOpp){
+function bestPlan(roster, targets, size, allOpp, fixedMega){
   const slots = megaSlotsOf(roster);
-  const choices = slots.length>1 ? slots : [null];
+  /* ★社長が手でメガ枠を決めているなら、その前提だけで選出を組む。
+     これをやっていなかったので「メガ=メガクチート なのに選出3体にクチートがいない」
+     という矛盾した提案が出ていた（2026-08-19 の指摘）。 */
+  const choices = fixedMega ? [fixedMega] : (slots.length>1 ? slots : [null]);
   const pool = [];
   choices.forEach(ch=>{
     const rc = rosterForCalc(roster, ch);
@@ -1027,10 +1037,11 @@ function btCompute(){
   const roster = currentRoster();
   if(!roster.length || !BT.opp.length){ BT.matrix=null; return; }
   const size = $('#fRule').value==='double' ? 4 : 3;
-  const bp = bestPlan(roster, BT.opp, size, BT.opp);
+  const bp = bestPlan(roster, BT.opp, size, BT.opp, BT.megaFixed);
   BT.picks = bp.plan ? bp.plan.members : roster.slice(0,size).map(m=>m.name);
-  // 社長が手でメガ枠を決めていたらそれを優先する（提案と違うメガを切ることは普通にある）
-  BT.mega  = BT.megaFixed || bp.mega;
+  BT.mega  = bp.mega;
+  // メガ枠が選出に入っていなければ、そのメガは切れない。嘘を出さないよう必ず外す
+  if(BT.mega && !BT.picks.includes(BT.mega)) BT.mega = null;
   // メガ枠を手で変えたら、その姿で全部計算し直す（bp.rc は提案時のもの）
   const rc = (BT.megaFixed ? rosterForCalc(roster, BT.mega) : (bp.rc || rosterForCalc(roster, BT.mega)));
   BT.matrix = {};
@@ -1092,7 +1103,7 @@ function btRender(){
   /* 選出は試合開始時に一度読むもの。試合中は「いまの対面」を見るので、折りたたんで高さを取らない。 */
   $('#btPlan').innerHTML = `<details open class="planbox">
     <summary class="cardsum" style="border-color:var(--red);background:var(--redsoft)">
-      <span>選出 <b>${BT.picks.map(esc).join(' / ')}</b>${BT.mega?`<span class="muted"> ・メガ=${esc(BT.mega)}</span>`:''}</span>
+      <span>選出 <b>${BT.picks.map(n=>esc(dispName(rc,n))).join(' / ')}</b>${BT.mega?`<span class="muted"> ・メガ=${esc(BT.mega)}</span>`:'<span class="muted"> ・メガは切らない</span>'}</span>
     </summary>
     <div class="card" style="border-color:var(--red);background:var(--redsoft)">
     ${(()=>{ const slots = megaSlotsOf(roster);
@@ -1118,7 +1129,7 @@ function btRender(){
       BT.opp.forEach(o=>{ (BT.matrix[o]||[]).forEach(c=>{
         if(BT.picks.includes(c.name) && c.call && c.call.pOHKO >= 25){
           const k = c.call.koMoves[0];
-          ko.push(`<b>${esc(c.name)}</b>は<b>${esc(o)}</b>の<b>${esc(k.move)}</b>`
+          ko.push(`<b>${esc(dispName(rc,c.name))}</b>は<b>${esc(o)}</b>の<b>${esc(k.move)}</b>`
                 + `<span class="muted">(${k.rateOf}%)</span>で一撃`
                 + `<span class="muted"> — 該当する型は約${c.call.pOHKO}%</span>`);
         }
