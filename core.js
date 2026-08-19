@@ -105,7 +105,49 @@ function loadData(){
       acc:   p[4]==='-' ? null : +p[4],
       pp:+p[5], contact: p[6]==='1' };
   });
+  Object.assign(USAGE, global.USAGE_M5 || {});
   buildMegaMap();
+}
+
+/* ---------- 相手の実データ（シーズンM-5 シングル使用率） ----------
+   出典: https://champs.pokedb.tokyo/pokemon/show/<id>?rule=0（app/data/usage.js）
+   ここが無かったせいで、相手の打点を「タイプ一致・威力90」で見積もっていた。
+   カイリューの最多採用技は かえんほうしゃ63.8% / りゅうせいぐん54.7% で、
+   どちらもタイプ一致・威力90ではない。2026-08-19 に3体を一撃で失った直接原因。 */
+const USAGE = {};
+/** 相手の使用率データ。メガは元の姿のデータを引く（メガカイリュー -> カイリュー） */
+function oppUsage(name){ return USAGE[name] || USAGE[BASE_OF[name]] || null; }
+/** 相手が実際に撃ってくる攻撃技（採用率つき）。無ければ null */
+function oppMoves(name, minRate){
+  const u = oppUsage(name); if(!u) return null;
+  const th = minRate==null ? 10 : minRate;
+  const list = u.m.filter(m=> m[3]!=='変' && m[4] > 0 && m[1] >= th)
+    .map(m=>({ name:m[0], rate:m[1], type:m[2], cat:m[3], power:m[4],
+               contact: (MOVES[m[0]] ? MOVES[m[0]].contact : false) }));
+  return list.length ? list : null;
+}
+/** 相手の持ち物のうち、その分類の打点をいちばん上げるもの（採用率 minRate% 以上）。
+ *  メガシンカ後はメガストーンを持っているので打点アイテムは無い。 */
+const OFFENSE_ITEMS = { 'こだわりハチマキ':'物', 'こだわりメガネ':'特', 'いのちのたま':'両', 'たつじんのおび':'両' };
+function oppOffenseItem(name, cat, minRate){
+  if(name.startsWith('メガ')) return '';
+  const u = oppUsage(name); if(!u) return '';
+  const th = minRate==null ? 25 : minRate;
+  let best='', rank=-1;
+  const power = { 'こだわりハチマキ':3, 'こだわりメガネ':3, 'いのちのたま':2, 'たつじんのおび':1 };
+  (u.i||[]).forEach(([it,rate])=>{
+    const k = OFFENSE_ITEMS[it]; if(!k || rate < th) return;
+    if(k!=='両' && k!==cat) return;
+    if(power[it] > rank){ rank = power[it]; best = it; }
+  });
+  return best;
+}
+/** こだわりスカーフの採用率(%)。行動順がひっくり返るので型の想定に足す */
+function oppScarfRate(name){
+  if(name.startsWith('メガ')) return 0;
+  const u = oppUsage(name); if(!u) return 0;
+  const hit = (u.i||[]).find(x=> x[0]==='こだわりスカーフ');
+  return hit ? hit[1] : 0;
 }
 
 /* ---------- 実数値計算 ----------
@@ -186,10 +228,27 @@ function attackerLikeness(name){
 /** 相手1体について、ありうる型（実数値つき）を返す。
  *  攻撃型は「攻撃に補正」と「素早さに補正（最速）」で行動順が変わるので分けて持つ。
  *  ふとん氏の6匹でも 攻撃補正3 : 素早さ補正2 に割れている。 */
+/** 相手が物理型か特殊型か。使用率のSP振り・性格の実データを最優先し、無ければ種族値で判断。
+ *  カイリューは種族値だとA134>C100で「物理」だが、実データは CS 51.6% / AS 10.5%、
+ *  性格も ひかえめ41.7% で明確に特殊。ここを種族値で決めていたのが誤判定の根にあった。 */
+function usagePhysical(name){
+  const u = oppUsage(name);
+  if(u){
+    let a=0, c=0;
+    (u.s||[]).forEach(([k,r])=>{ const t=k.split('+')[0]; if(t.includes('A')) a+=r; if(t.includes('C')) c+=r; });
+    if(a+c >= 10) return a >= c;
+    (u.n||[]).forEach(([k,r])=>{ const n=NATURES[k]; if(!n||!n[0]) return;
+      if(n[0]==='a'||n[1]==='c') a+=r; if(n[0]==='c'||n[1]==='a') c+=r; });
+    if(a+c >= 10) return a >= c;
+  }
+  const b = SPECIES[name].base;
+  return b.a >= b.c;
+}
+
 function assumedSpreads(name){
   const sc = SPECIES[name]; if(!sc) return [];
   const b = sc.base;
-  const phys   = b.a >= b.c;
+  const phys   = usagePhysical(name);
   const atkKey = phys ? 'a' : 'c', dumpKey = phys ? 'c' : 'a';
   const A = phys ? 'A' : 'C';
 
@@ -202,14 +261,34 @@ function assumedSpreads(name){
   const dMod = {a:1,b:1,c:1,d:1,s:1};           dMod[defKey] = 1.1; dMod[dumpKey] = 0.9;
 
   const w = attackerLikeness(name);
-  return [
+
+  /* 攻撃実数値は「技の分類ごと」に持つ。
+     相手の技は実データで見るので、特殊技を撃たれるならその相手はCに振っている個体である。
+     A32とC32を同時には振れないが、ここで見たいのは「その技を撃つ個体の打点」なので分けて持つのが正しい。 */
+  const inv = k => statOther(b[k], SP_MAX, 1.1);   // その能力に振った個体
+  const raw = k => statOther(b[k], 0, 1);          // 振っていない個体（耐久型）
+  const atkFull = { '物': inv('a'), '特': inv('c') };
+  const atkNone = { '物': raw('a'), '特': raw('c') };
+
+  const out = [
     { kind:'atk',  label:`攻撃型（${A}32/S32・${A}補正）`, physical:phys,
-      stats:spreadStats(name, aSp, aMod), weight:w * 0.6 },
+      stats:spreadStats(name, aSp, aMod), atk:atkFull, weight:w * 0.6 },
     { kind:'fast', label:`最速型（${A}32/S32・S補正）`,    physical:phys,
-      stats:spreadStats(name, aSp, sMod), weight:w * 0.4 },
+      stats:spreadStats(name, aSp, sMod), atk:atkFull, weight:w * 0.4 },
     { kind:'def',  label:'耐久型（H32/B17/D17）',          physical:phys,
-      stats:spreadStats(name, dSp, dMod), weight:1 - w }
+      stats:spreadStats(name, dSp, dMod), atk:atkNone, weight:1 - w }
   ].filter(s=>s.stats);
+
+  /* こだわりスカーフ（採用率15%以上）は行動順をひっくり返すので独立した型として持つ。
+     ガブリアスは19.7%がスカーフ。これを見ていないと「先に落とせる」が嘘になる。 */
+  const scarf = oppScarfRate(name);
+  if(scarf >= 15){
+    const st = spreadStats(name, aSp, sMod);
+    if(st){ out.push({ kind:'scarf', label:`スカーフ型（採用率${scarf}%）`, physical:phys,
+      stats:{...st, s: Math.floor(st.s * 1.5)}, atk:atkFull, item:'こだわりスカーフ',
+      weight: w * (scarf/100) }); }
+  }
+  return out;
 }
 
 /* ---------- ランク補正 ---------- */
@@ -607,28 +686,69 @@ function bestOffense(mine, oppName, opp){
   });
   return best;
 }
-/** 相手の最大打点（自分のHPに対する割合）。opp は assumedSpreads() の1要素 */
+/** 相手の最大打点（自分のHPに対する割合）。opp は assumedSpreads() の1要素
+ *
+ *  ★2026-08-19 全面書き直し。旧実装には致命的な2つの誤りがあった：
+ *    (1) 相手の「タイプ一致技」しか計算していなかった
+ *        → カイリュー(ドラゴン/ひこう)の ほのお技 を1度も計算していない。
+ *          実データではカイリューの最多採用技は かえんほうしゃ 63.8%。半数以上が持つ技を無視していた。
+ *    (2) 威力を一律90で見積もっていた
+ *        → りゅうせいぐん130 / だいもんじ110 / オーバーヒート130 を大幅に過小評価。
+ *    結果、メガクチートが受けるだいもんじを「28〜37%」と表示（実際は最大130%＝一撃死）。
+ *
+ *  いまは app/data/usage.js の実採用技をそのまま撃たせる。データが無い種だけ従来方式にフォールバック。
+ *  返り値の rate は平均乱数、rateHi は最大乱数（一撃で落ちるかの判定はこちらで見る）。 */
 function bestThreat(oppName, mine, opp){
   const os = SPECIES[oppName], ms = SPECIES[mine.name];
-  if(!os || !ms) return {rate:0, type:null};
+  if(!os || !ms) return {rate:0, rateHi:0, type:null, move:null};
   const myStats = mine.stats || spreadStats(mine.name, {h:32,a:0,b:17,c:0,d:17,s:0}, {a:1,b:1,c:1,d:1,s:1});
   const imm = immuneType(mine.ability);
-  const physical = opp.stats.a >= opp.stats.c;
-  let best={rate:0, type:null};
-  os.types.forEach(t=>{
-    if(t === imm) return;                       // 特性で無効化
-    const mv = {name:'（'+t+'技）', type:t, cat: physical?'物':'特', power:REP_POWER, contact:false};
+
+  const real = oppMoves(oppName);
+  let cands, estimated = false;
+  if(real){
+    cands = real;
+  }else{
+    // 実データが無い種：従来どおりタイプ一致・代表威力で見積もる（あくまで暫定値）
+    estimated = true;
+    const physical = opp.stats.a >= opp.stats.c;
+    cands = os.types.map(t=>({ name:'（'+t+'技）', type:t, cat: physical?'物':'特',
+                               power:REP_POWER, contact:false, rate:null }));
+  }
+
+  const atkOf = cat => (opp.atk && opp.atk[cat] != null) ? opp.atk[cat]
+                     : (cat==='物' ? opp.stats.a : opp.stats.c);
+
+  let best = {rate:0, rateHi:0, type:null, move:null, rateOf:null, item:''};
+  cands.forEach(mv=>{
+    if(mv.type === imm) return;                       // こちらの特性でタイプごと無効
+    const item = oppOffenseItem(oppName, mv.cat);     // 採用率25%以上の打点アイテムだけ乗せる
     const r = calcDamage({
-      attacker:{name:oppName, atkStat: physical?opp.stats.a:opp.stats.c, types:os.types, ability:'', item:'', rank:0, hpRatio:1},
-      defender:{name:mine.name, defStat: physical?myStats.b:myStats.d, hp:myStats.h,
+      attacker:{name:oppName, atkStat: atkOf(mv.cat), types:os.types, ability:'', item, rank:0, hpRatio:1},
+      defender:{name:mine.name, defStat: mv.cat==='物'?myStats.b:myStats.d, hp:myStats.h,
                 types:ms.types, ability:mine.ability||'', item:mine.item||'', rank:0, hpRatio:1},
       move:mv, field:{}, flags:{}
     });
     if(r.error || r.eff===0) return;
     const rate = ((r.min + r.max)/2) / myStats.h;
-    if(rate > best.rate) best = {rate, type:t};
+    // いちばん痛い技を採用。同率なら採用率の高い方
+    if(rate > best.rate + 1e-9 || (Math.abs(rate-best.rate)<1e-9 && (mv.rate||0) > (best.rateOf||0))){
+      best = { rate, rateHi: r.max / myStats.h, type:mv.type, move:mv.name,
+               rateOf: mv.rate, item };
+    }
   });
+  best.estimated = estimated;
   return best;
+}
+
+/** こちら側が「1発だけ耐える」手段を持っているか。
+ *  きあいのタスキ（HP満タンから）／ばけのかわ／がんじょう は、相手の必要打数を実質+1する。
+ *  ここを見ていないと、タスキゲッコウガやミミッキュが全部「一撃で落ちる」と出てしまう。 */
+function myOneHitGuard(mine){
+  if(mine.item === 'きあいのタスキ') return 'きあいのタスキ';
+  if(mine.ability === 'ばけのかわ')  return 'ばけのかわ';
+  if(mine.ability === 'がんじょう')  return 'がんじょう';
+  return '';
 }
 
 /** 自分1体 × 相手の想定1通り を採点 */
@@ -642,7 +762,11 @@ function matchupVs(mine, oppName, opp){
 
   // 何発で落とせるか / 落とされるか
   let myHits = off.rate>0 ? Math.ceil(1/off.rate) : 99;
-  const opHits = thr.rate>0 ? Math.ceil(1/thr.rate) : 99;
+  let opHits = thr.rate>0 ? Math.ceil(1/thr.rate) : 99;
+  // 相手の最大乱数で何発か。ここを見ていなかったので「2発耐える」が実際は一撃だった
+  let opHitsHi = thr.rateHi>0 ? Math.ceil(1/thr.rateHi) : 99;
+  const guard = myOneHitGuard(mine);
+  if(guard){ if(opHits<99) opHits += 1; if(opHitsHi<99) opHitsHi += 1; }
   // ばけのかわ／がんじょうは1発を確実に無効化する＝必要打数が1増える
   if(myHits<99 && survivesOneHit(oppName)) myHits += 1;
 
@@ -653,12 +777,16 @@ function matchupVs(mine, oppName, opp){
   const score = (opHits - myHits) * 0.9 + (faster ? 0.35 : -0.2) + (off.rate - thr.rate) * 1.1;
 
   // 明確に不利＝初手に置いてはいけない対面
-  const danger = (!winsRace && thr.rate >= 0.5) || (opHits <= 2 && myHits >= 4);
+  // 相手の最大乱数で一撃で落ちるなら、先制できても「1回でも読み負けたら終わり」なので危険扱い
+  const danger = (!winsRace && thr.rate >= 0.5) || (opHits <= 2 && myHits >= 4)
+              || (!guard && thr.rateHi >= 1.0 && myHits >= 2);
 
-  return { kind:opp.kind, label:opp.label, weight:opp.weight,
+  return { kind:opp.kind, label:opp.label, weight:opp.weight, oppItem:opp.item||'',
            faster, myS, opS, score, winsRace, danger,
            myDmg:off.rate, myMove:off.move, myHits,
-           opDmg:thr.rate, opType:thr.type, opHits };
+           opDmg:thr.rate, opDmgHi:thr.rateHi, opType:thr.type, opMove:thr.move,
+           opMoveRate:thr.rateOf, opMoveItem:thr.item, opEstimated:thr.estimated,
+           opHits, opHitsHi, guard };
 }
 
 /* 同じ (自分の個体 × 相手) の組み合わせは何度も出てくるので結果を使い回す */
@@ -702,7 +830,14 @@ function matchup(mine, theirs){
     myDmg: wavg(v=>v.myDmg),
     opDmg: wavg(v=>v.opDmg),
     myDmgLo: Math.min(...views.map(v=>v.myDmg)), myDmgHi: Math.max(...views.map(v=>v.myDmg)),
-    opDmgLo: Math.min(...views.map(v=>v.opDmg)), opDmgHi: Math.max(...views.map(v=>v.opDmg)),
+    opDmgLo: Math.min(...views.map(v=>v.opDmg)), opDmgHi: Math.max(...views.map(v=>v.opDmgHi)),
+    opMove: primary.opMove, opMoveRate: primary.opMoveRate, opEstimated: primary.opEstimated,
+    // 一撃で落とされうる型がひとつでもあるか（最大乱数基準）
+    // 一撃で落とされうるか（最大乱数基準）。タスキ・ばけのかわで耐えるなら false にする
+    opOHKO: !primary.guard && views.some(v=> v.opDmgHi >= 1.0),
+    opOHKOMove: (views.find(v=> v.opDmgHi >= 1.0)||{}).opMove || null,
+    opOHKORate: (views.find(v=> v.opDmgHi >= 1.0)||{}).opMoveRate,
+    guard: primary.guard,
     split, views, primary, other,
     // 「どの型でも勝てる／どの型でも負ける」は選出の判断に直結するので別に持つ
     winsAll:  views.every(v=>v.winsRace),
@@ -713,7 +848,8 @@ function matchup(mine, theirs){
      ここを見ていなかったせいで「ギャラドス vs ユキノオー(最大28%)」が▲、
      「ゲッコウガ vs ブラッキー(最大33%)」が◎と表示され、実戦で1戦落とした。 */
   out.noOffense = out.myDmgHi < 0.34;
-  out.noDefense = out.opDmgHi >= 1.0;        // 相手の最大打点で一撃で落ちる
+  out.noDefense = out.opDmgHi >= 1.0;        // 相手の最大打点(最大乱数)で一撃で落ちる
+  if(out.opOHKO){ out.winsAll = false; }     // 一撃で落とされうるなら「どの型でも勝てる」は嘘
   if(out.noOffense){ out.winsAll = false; }  // 打点が無いなら「勝てる」とは言わせない
   _muCache.set(key, out);
   return out;
@@ -966,7 +1102,7 @@ global.PC = {
   MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
-  bestOffense, bestThreat, immuneType,
+  bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
 };
 })(window);

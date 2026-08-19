@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '15';
+const APP_VERSION = '16';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -555,8 +555,19 @@ function dmgRange(lo,hi){
 function muNums(mu){
   return `${dmgRange(mu.myDmgLo,mu.myDmgHi)} / 被${dmgRange(mu.opDmgLo,mu.opDmgHi)}`;
 }
+/** 相手のいちばん痛い技を一言で。採用率つき（M-5 実データ） */
+function threatNote(mu){
+  if(!mu || !mu.opMove) return '';
+  const r = mu.opMoveRate!=null ? `（採用${mu.opMoveRate}%）` : '';
+  const est = mu.opEstimated ? ' <span class="muted">※使用率データなしの推定</span>' : '';
+  const g = mu.guard ? ` <span class="muted">${esc(mu.guard)}で1発は耐える</span>` : '';
+  return `相手の最大打点：<b>${esc(mu.opMove)}</b>${r} <b>${dmgRange(mu.opDmgLo,mu.opDmgHi)}</b>${est}${g}`;
+}
 function verdict(mu){
-  // 打点が無い対面は、他の指標が良くても勝てない。最優先で出す
+  // 一撃で落とされうる対面は、他が良くても置いてはいけない
+  if(mu.opOHKO) return {cls:'ng', mark:'✕',
+    txt:`${mu.opOHKOMove||'相手の技'}${mu.opOHKORate!=null?`（採用${mu.opOHKORate}%）`:''}で一撃で落ちる`};
+  // 打点が無い対面は、他の指標が良くても勝てない
   if(mu.noOffense) return {cls:'ng', mark:'✕', txt:`打点なし（最大でも${mu.myHits}発）`};
   if(mu.winsAll)   return {cls:'ok', mark:'◎', txt:'どの型でも先に落とせる'};
   if(mu.dangerAll) return {cls:'ng', mark:'✕', txt:'どの型でも不利'};
@@ -983,6 +994,9 @@ function btCompute(){
 
 /** 1対面の結論を1語で */
 function btAct(mu){
+  // ★一撃で落とされうる対面が最優先。2026-08-19、ここを出していなかったので
+  //   「28〜37%」の表示を信じて残し、だいもんじで一撃で失った
+  if(mu.opOHKO && !(mu.winsAll && mu.faster && mu.myHits<=1)) return {c:'ng', t:'一撃で落ちる'};
   if(mu.noOffense && mu.dangerAll) return {c:'ng', t:'すぐ引く'};
   if(mu.noOffense)                 return {c:'ng', t:'打点なし'};
   if(mu.dangerAll)                 return {c:'ng', t:'引く'};
@@ -1017,6 +1031,16 @@ function btRender(){
     <div class="small muted">選出</div>
     <div style="font-size:19px;font-weight:800">${BT.picks.map(esc).join(' ／ ')}</div>
     ${BT.mega?`<div class="small">メガは <b>${esc(BT.mega)}</b> に切る</div>`:''}
+    ${(()=>{ // ★一撃で落とされる対面。試合前にこれだけは頭に入れる
+      const ko=[];
+      BT.opp.forEach(o=>{ (BT.matrix[o]||[]).forEach(c=>{
+        if(BT.picks.includes(c.name) && c.mu.opOHKO){
+          const r = c.mu.opOHKORate!=null ? `<span class="muted">(採用${c.mu.opOHKORate}%)</span>` : '';
+          ko.push(`<b>${esc(c.name)}</b>は<b>${esc(o)}</b>の<b>${esc(c.mu.opOHKOMove||'')}</b>${r}で一撃`);
+        }
+      });});
+      return ko.length?`<div class="note r" style="margin-top:8px"><div class="small">${ko.map(x=>'・'+x).join('<br>')}</div></div>`:'';
+    })()}
     ${(()=>{const t=[];BT.opp.forEach(n=>PC.oppTricks(PC.toBase(n)).forEach(([mv,why])=>t.push(`<b>${esc(n)}</b>の<b>${esc(mv)}</b> — ${esc(why)}`)));
       return t.length?`<div class="small" style="margin-top:8px">${t.map(x=>'・'+x).join('<br>')}</div>`:'';})()}
   </div>`;
@@ -1055,12 +1079,18 @@ function btDetail(){
     </div>
     ${a?`<div class="note ${a.c==='ok'?'g':a.c==='ng'?'r':'w'}" style="margin:8px 0">
       <div style="font-size:18px;font-weight:800">${esc(best.name)} で ${esc(a.t)}</div>
-      <div class="small">${muNums(best.mu)}${best.mu.faster?' ／ 先制できる':' ／ 後手'}</div></div>`:''}
+      <div class="small">${muNums(best.mu)}${best.mu.faster?' ／ 先制できる':' ／ 後手'}</div>
+      <div class="small" style="margin-top:4px">${threatNote(best.mu)}</div></div>`:''}
+    ${(()=>{ // 一撃で落とされる駒を先に全部出す。ここが最重要
+      const ko = rows.filter(r=>r.mu.opOHKO);
+      return ko.length?`<div class="note r" style="margin:8px 0">
+        <b>一撃で落とされる：</b>${ko.map(r=>`${esc(r.name)}（${esc(r.mu.opOHKOMove||'')}${r.mu.opOHKORate!=null?' 採用'+r.mu.opOHKORate+'%':''}）`).join(' ／ ')}</div>`:'';
+    })()}
     ${PC.oppTricks(PC.toBase(o)).map(([mv,why])=>`<div class="small" style="color:var(--red)">・<b>${esc(mv)}</b>：${esc(why)}</div>`).join('')}
     <table style="margin-top:10px"><tr><th>自分</th><th>判断</th><th class="num">与 / 被</th></tr>
     ${rows.map(r=>{const ac=btAct(r.mu);
       return `<tr class="${BT.picks.includes(r.name)?'':'muted'}"><td>${esc(r.name)}${BT.picks.includes(r.name)?'':' <span class="small muted">(控え)</span>'}</td>
-      <td><span class="badge ${ac.c}">${ac.t}</span></td><td class="num small">${muNums(r.mu)}</td></tr>`;}).join('')}
+      <td><span class="badge ${ac.c}">${ac.t}</span>${r.mu.opMove?`<div class="small muted">被:${esc(r.mu.opMove)}</div>`:''}</td><td class="num small">${muNums(r.mu)}</td></tr>`;}).join('')}
     </table></div>`;
 }
 
@@ -1268,7 +1298,13 @@ function renderVs(){
     <div class="pklist">${inc.length?inc.map(x=>`<span class="pk"><span class="badge ${x.e>=4?'ng':'wn'}">${x.e}倍</span>${typeIcon(x.t)}<b>${esc(x.t)}</b></span>`).join(''):'<span class="small muted">2倍以上のタイプなし</span>'}</div>
     <div class="small" style="margin:10px 0 6px"><b>効きにくいタイプ</b></div>
     <div class="pklist">${safe.map(x=>`<span class="pk"><span class="badge ok">${x.e===0?'無効':x.e+'倍'}</span>${typeIcon(x.t)}${esc(x.t)}</span>`).join('')||'<span class="small muted">なし</span>'}</div>
-    <div class="small muted" style="margin-top:8px">相手（${esc(opp)}）はタイプ一致で <b>${os.types.join('・')}</b> を撃ってきます。</div>
+    ${(()=>{ // 相手が実際に撃ってくる技（M-5 使用率の実データ）。無い種だけタイプ一致で代用する
+      const mv = PC.oppMoves(opp);
+      if(!mv) return `<div class="small muted" style="margin-top:8px">相手（${esc(opp)}）は使用率データが無いため、タイプ一致 <b>${os.types.join('・')}</b> で見積もっています。</div>`;
+      const list = mv.slice().sort((a,b)=>b.rate-a.rate)
+        .map(m=>`${esc(m.name)}<span class="muted">(${m.rate}%・威${m.power})</span>`).join('　');
+      return `<div class="small" style="margin-top:8px">相手（${esc(opp)}）が実際に撃ってくる技<span class="muted">（M-5 採用率）</span><br>${list}</div>`;
+    })()}
   </div>
 
   ${esc2.length?`<div class="card">
