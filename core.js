@@ -757,6 +757,134 @@ function leadCheck(pickNames, oppNames, myRoster){
   });
 }
 
+/* ---------- 音声メモの解析 ----------
+   OSのキーボードの音声入力で喋った文章から、対戦記録を組み立てる。
+   語彙が「313種のポケモン名」という閉じた集合なので、
+   外部のAI(API)を呼ばなくても文字列照合だけで実用になる＝料金は一切かからない。
+   音声入力は名前を高確率で誤変換する（ガブリアス→ガブリエス、アーマーガア→アーマーガー 等）ので、
+   表記ゆれを吸収したうえで、確信が持てないものは uncertain として呼び出し側に返し、
+   画面側で必ず人が確認できるようにする。 */
+
+/** 照合用の正規化：カタカナ→ひらがな／小文字・濁点のゆれを潰す。長音は残す（潰すと別名と衝突する） */
+function normKana(s){
+  let t = String(s||'').replace(/[\u30a1-\u30f6]/g, c=>String.fromCharCode(c.charCodeAt(0)-0x60));
+  t = t.normalize('NFD').replace(/[\u3099\u309a]/g,'').normalize('NFC');
+  const small = {'ぁ':'あ','ぃ':'い','ぅ':'う','ぇ':'え','ぉ':'お','ゃ':'や','ゅ':'ゆ','ょ':'よ','っ':'つ','ゎ':'わ'};
+  return t.replace(/[ぁぃぅぇぉゃゅょっゎ]/g, c=>small[c]).replace(/[ｰ－—]/g,'ー');
+}
+function editDistance(a,b){
+  const m=a.length,n=b.length; if(!m) return n; if(!n) return m;
+  let prev=[...Array(n+1).keys()], cur=new Array(n+1);
+  for(let i=1;i<=m;i++){ cur[0]=i;
+    for(let j=1;j<=n;j++) cur[j]=Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1));
+    [prev,cur]=[cur,prev];
+  }
+  return prev[n];
+}
+let _normIndex=null;
+function speciesIndex(){
+  if(_normIndex) return _normIndex;
+  const out=[];
+  Object.keys(SPECIES).forEach(n=>{
+    out.push({name:n, key:normKana(n), alias:false});
+    // 「ギルガルド(シールド)」「イダイトウ♂」「ダイケンキ(ヒスイ)」など、
+    // 口では言わない添え字を落とした短い呼び方でも当たるようにする
+    const short = n.replace(/[（(].*?[）)]/g,'').replace(/[♂♀]/g,'').trim();
+    if(short && short!==n) out.push({name:n, key:normKana(short), alias:true});
+  });
+  _normIndex = out.sort((a,b)=> b.key.length-a.key.length);
+  return _normIndex;
+}
+
+/** 文章から出てきたポケモンを、原文の出現位置つきで拾う */
+function findSpeciesIn(text){
+  const raw = String(text||'');
+  const norm = normKana(raw);              // normKana は1文字→1文字なので添字が原文と一致する
+  const idx = speciesIndex();
+  const used = new Array(norm.length).fill(false);
+  const hits = [];
+  const free = (at,len)=>{ if(at<0||at+len>norm.length) return false;
+    for(let i=at;i<at+len;i++) if(used[i]) return false; return true; };
+  const take = (name,at,len,extra)=>{ for(let i=at;i<at+len;i++) used[i]=true;
+    hits.push(Object.assign({name,at},extra)); };
+
+  // ①完全一致（長い名前から。「メガ○○」が先に当たるので通常形と取り違えない）
+  idx.forEach(e=>{
+    if(e.key.length<3) return;
+    let from=0, at;
+    while((at=norm.indexOf(e.key,from))>=0){
+      if(free(at,e.key.length)) take(e.name,at,e.key.length,{exact:true, viaAlias:e.alias});
+      from=at+1;
+    }
+  });
+
+  // ②誤変換の救済：区切りに頼らず、名前ごとに窓をずらして総当たりで当てる
+  //   （「と」「の」を区切りにするとイダイトウ等が割れるため）
+  const cands=[];
+  idx.forEach(e=>{
+    const L=e.key.length; if(L<4) return;
+    const lim = L>=6 ? 2 : 1;
+    for(let w=Math.max(3,L-lim); w<=L+lim; w++){
+      for(let at=0; at+w<=norm.length; at++){
+        if(!free(at,w)) continue;
+        const seg=norm.slice(at,w+at);
+        if(/[\u4e00-\u9fff\u3000-\u303f、。,.\s]/.test(seg)) continue;   // 漢字や句読点をまたいだ窓は捨てる
+        const d=editDistance(seg,e.key);
+        if(d<=lim) cands.push({name:e.name, at, len:w, d, heard:seg, alias:e.alias});
+      }
+    }
+  });
+  cands.sort((x,y)=> x.d-y.d || y.len-x.len);       // 誤差が小さく、長く当たったものを優先
+  cands.forEach(c=>{ if(free(c.at,c.len)) take(c.name,c.at,c.len,{exact:false,dist:c.d,heard:c.heard,viaAlias:c.alias}); });
+
+  // ③「メガ」＋通常形 の言い落とし（例：メガライチュウ）はメガ形に寄せる
+  hits.forEach(h=>{
+    if(normKana(h.name).startsWith('めか')) return;
+    if(norm.slice(Math.max(0,h.at-2), h.at)!=='めか') return;
+    const forms = megaFormsOf(h.name);
+    if(forms.length===1){ h.heard=h.heard||('メガ'+h.name); h.name=forms[0]; h.note='「メガ」の後ろなのでメガ形にした'; }
+    else if(forms.length>1){ h.heard='メガ'+h.name; h.note='メガ形が複数あるので選び直してください（'+forms.join('／')+'）'; }
+  });
+  return hits.sort((a,b)=>a.at-b.at);
+}
+
+/** 音声メモ1件 → 対戦記録の下書き */
+function parseBattleText(text){
+  const raw = String(text||'');
+  const hits = findSpeciesIn(raw);
+
+  // 話題の切り替わり。漢字表記（相手／自分）も音声変換のひらがなも両方拾う
+  const marks=[];
+  const scan=(side,re)=>{ let m; const r=new RegExp(re.source,'g'); while((m=r.exec(raw))) marks.push({at:m.index,side}); };
+  scan('opp', /相手|あいて|向こう|むこう|敵|てき/);
+  scan('me',  /自分|じぶん|こっち|こちら|うち|僕|ぼく|俺|おれ|味方|みかた/);
+  marks.sort((a,b)=>a.at-b.at);
+  const sideAt = pos => { let side='opp'; for(const m of marks){ if(m.at<=pos) side=m.side; else break; } return side; };
+
+  const opp=[], mine=[];
+  hits.forEach(h=>{
+    const arr = sideAt(h.at)==='me' ? mine : opp;
+    if(!arr.some(x=>x.name===h.name)) arr.push(h);
+  });
+
+  // 勝敗（漢字・ひらがな両対応。「勝てなかった」を先に見る）
+  let result=null;
+  if(/勝っ|勝ち|勝利|かった|かち|とった|捲っ|まくっ/.test(raw)) result='win';
+  if(/負け|まけ|敗北|はいぼく|落とし|やられ|溶け/.test(raw)) result='lose';
+  if(/勝てな|かてな|勝てん|かてん/.test(raw)) result='lose';
+
+  // ポケモンが1匹も取れていない文で勝敗だけ付くと誤記録になる（例:「おいしかった」）
+  if(!hits.length) result = null;
+
+  return {
+    opp_team: opp.slice(0,6).map(h=>h.name),
+    my_pick:  mine.slice(0,4).map(h=>h.name),
+    result,
+    uncertain: hits.filter(h=>!h.exact||h.note).map(h=>({heard:h.heard||h.name, guessed:h.name, dist:h.dist, note:h.note})),
+    text: raw
+  };
+}
+
 /* ---------- 類似パーティ検索 ---------- */
 /** 過去の対戦から、相手6匹が近いものを返す（共通3体以上） */
 function similarBattles(battles, oppNames, minShared){
@@ -800,6 +928,6 @@ global.PC = {
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
   bestOffense, bestThreat, immuneType,
-  similarBattles, observedMoves
+  similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
 };
 })(window);

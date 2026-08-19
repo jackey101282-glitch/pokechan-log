@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '11';
+const APP_VERSION = '12';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -394,6 +394,38 @@ function renderQuick(){
     S.opp.push(b.dataset.q); renderOpp(); saveDraft();
   });
 }
+
+/* ---------- 音声メモ ----------
+   OSの音声入力で喋った内容を、下の入力欄に流し込む。
+   解析は core.js の parseBattleText（種族名の照合だけ）なので、外部APIは使わない＝無料。
+   誤変換は必ず起きるので、読み取った結果は「確認してください」と明示して人が直せるようにする。 */
+$('#voiceClear').onclick = ()=>{ $('#voiceText').value=''; $('#voiceOut').innerHTML=''; };
+$('#voiceRun').onclick = ()=>{
+  const txt = $('#voiceText').value.trim();
+  const out = $('#voiceOut');
+  if(!txt){ out.innerHTML='<span class="muted">喋った内容を入れてください。</span>'; return; }
+  const r = PC.parseBattleText(txt);
+  if(!r.opp_team.length && !r.my_pick.length){
+    out.innerHTML='<div class="note w">ポケモンの名前を拾えませんでした。名前をはっきり言い直すか、下の欄に直接入れてください。</div>';
+    return;
+  }
+  if(r.opp_team.length){ setArr(S.opp, r.opp_team.slice(0,6)); }
+  if(r.my_pick.length){ setArr(S.myPick, r.my_pick.slice(0,4)); }
+  if(r.result){ S.result = r.result;
+    $('#btnWin').classList.toggle('on', r.result==='win');
+    $('#btnLose').classList.toggle('on', r.result==='lose'); }
+  if(!$('#fReason').value.trim()) $('#fReason').value = txt;   // 元の発言は敗因メモとして残す
+  renderOpp(); renderPickers(); saveDraft();
+
+  out.innerHTML = `
+    <div class="note g" style="margin-bottom:8px">下の欄に反映しました。<b>内容が合っているか必ず確認してください。</b></div>
+    <div>相手：<b>${r.opp_team.map(esc).join('・')||'—'}</b></div>
+    <div>自分の選出：<b>${r.my_pick.map(esc).join('・')||'—'}</b></div>
+    <div>結果：<b>${r.result==='win'?'勝ち':r.result==='lose'?'負け':'（読み取れず）'}</b></div>
+    ${r.uncertain.length?`<div class="note w" style="margin-top:8px"><b>聞き取りが怪しい箇所</b><br>
+      ${r.uncertain.map(u=>`「${esc(u.heard||'')}」→ <b>${esc(u.guessed)}</b>${u.note?`（${esc(u.note)}）`:''}`).join('<br>')}
+      <br><span class="muted">違っていたら下のチップをタップして直してください。</span></div>`:''}`;
+};
 
 /* 予想は1回だけ計算して、画面のどこからも同じものを参照する。
    （別々に計算し直すと、②の先発と初手チェックの先発が食い違う） */
