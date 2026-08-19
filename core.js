@@ -768,7 +768,14 @@ function bestThreat(oppName, mine, opp, known){
   const atkOf = cat => (opp.atk && opp.atk[cat] != null) ? opp.atk[cat]
                      : (cat==='物' ? opp.stats.a : opp.stats.c);
 
-  let best = {rate:0, rateHi:0, type:null, move:null, rateOf:null, item:''};
+  /* ★2026-08-19 追記：採用率を判定に入れる。
+     以前は「いちばん痛い技」だけで結論を出していたので、
+     ギャラドス vs ガブリアス で「どの型でも不利・引く」と表示していた。
+     しかし実際は 主力の じしん(採用99.3%) は ひこうタイプに無効で、
+     不利判定を出していたのは げきりん(採用30.2%)＝7割のガブリアスは持っていない技だった。
+     → 「ほぼ確実に食らう技(60%以上)」と「持っていれば痛い技(それ未満)」を分けて返す。 */
+  const SURE = 60;                                   // これ以上の採用率＝ほぼ全個体が持っている
+  const rows = [], immune = [];
   cands.forEach(mv=>{
     if(mv.type === imm) return;                       // こちらの特性でタイプごと無効
     // 採用率25%以上の打点アイテムだけ乗せる。タイプ強化アイテムはそのタイプの技にだけ効く
@@ -780,22 +787,46 @@ function bestThreat(oppName, mine, opp, known){
                 types:ms.types, ability:mine.ability||'', item:mine.item||'', rank:0, hpRatio:1},
       move:mv, field:{}, flags:{}
     });
-    if(r.error || r.eff===0) return;
-    const rate = ((r.min + r.max)/2) / myStats.h;
-    // いちばん痛い技を採用。同率なら採用率の高い方
-    if(rate > best.rate + 1e-9 || (Math.abs(rate-best.rate)<1e-9 && (mv.rate||0) > (best.rateOf||0))){
-      best = { rate, rateHi: r.max / myStats.h, type:mv.type, move:mv.name,
-               rateOf: mv.rate, item };
+    if(r.error) return;
+    if(r.eff===0){                                    // タイプ相性で無効＝この技には出し得る
+      immune.push({ move:mv.name, type:mv.type, rateOf:(mv.rate==null?100:mv.rate) });
+      return;
     }
+    rows.push({ rate:((r.min + r.max)/2)/myStats.h, rateHi: r.max/myStats.h,
+                type:mv.type, move:mv.name, rateOf: (mv.rate==null?100:mv.rate),
+                confirmed: !!mv.confirmed, item });
   });
-  best.estimated = estimated;
-  return best;
+  const pick = list => list.reduce((a,b)=>
+    (b.rate > a.rate + 1e-9 || (Math.abs(b.rate-a.rate)<1e-9 && b.rateOf > a.rateOf)) ? b : a,
+    list[0]);
+
+  const empty = {rate:0, rateHi:0, type:null, move:null, rateOf:null, item:''};
+  immune.sort((a,b)=> b.rateOf - a.rateOf);
+  if(!rows.length) return {...empty, estimated, sure:{...empty}, threatRate:0, hitting:[], rows:[], immune};
+
+  const best = pick(rows);                                   // 最悪ケース（低採用率の技も含む）
+  // 観測で確定した技があるなら、それは採用率100%として扱う
+  const sureRows = rows.filter(r=> r.confirmed || r.rateOf >= SURE);
+  const sure = sureRows.length ? pick(sureRows) : {...empty};
+
+  return { ...best, estimated, sure,
+    // その相手のうち「こちらに有効打(3割以上)を持っている型」の最大採用率。
+    // これが低いほど「持っていれば痛いが、たいてい持っていない」
+    threatRate: Math.max(0, ...rows.filter(r=> r.rate >= 0.3).map(r=> r.rateOf)),
+    hitting: rows.filter(r=> r.rate >= 0.25).sort((a,b)=> b.rate-a.rate)
+                 .map(r=>({move:r.move, rateOf:r.rateOf, lo:r.rate, hi:r.rateHi})),
+    rows: rows.slice().sort((a,b)=> b.rate-a.rate),
+    /* こちらのタイプ／特性で完全に無効化できる相手の技。
+       ギャラドスはガブリアスの じしん(採用99.3%) を無効化できる＝この技に交代で合わせられる。
+       これは「不利かどうか」とは別の、実戦で最も使える情報なので必ず持ち回る。 */
+    immune };
 }
 
 /** こちら側が「1発だけ耐える」手段を持っているか。
  *  きあいのタスキ（HP満タンから）／ばけのかわ／がんじょう は、相手の必要打数を実質+1する。
  *  ここを見ていないと、タスキゲッコウガやミミッキュが全部「一撃で落ちる」と出てしまう。 */
 function myOneHitGuard(mine){
+  if(mine.guardGone) return '';      // 試合中に「もう剥がれた／使った」と指定された
   if(mine.item === 'きあいのタスキ') return 'きあいのタスキ';
   if(mine.ability === 'ばけのかわ')  return 'ばけのかわ';
   if(mine.ability === 'がんじょう')  return 'がんじょう';
@@ -832,11 +863,20 @@ function matchupVs(mine, oppName, opp, known){
   const danger = (!winsRace && thr.rate >= 0.5) || (opHits <= 2 && myHits >= 4)
               || (!guard && thr.rateHi >= 1.0 && myHits >= 2);
 
+  // 「ほぼ確実に持っている技(採用60%以上)」だけで見た場合の必要打数
+  const sureDmg  = thr.sure ? thr.sure.rate : 0;
+  const sureHits = sureDmg>0 ? Math.ceil(1/sureDmg) + (guard?1:0) : 99;
+  const winsRaceSure = myHits < sureHits || (myHits === sureHits && faster);
+
   return { kind:opp.kind, label:opp.label, weight:opp.weight, oppItem:opp.item||'',
            faster, myS, opS, score, winsRace, danger,
            myDmg:off.rate, myMove:off.move, myHits,
            opDmg:thr.rate, opDmgHi:thr.rateHi, opType:thr.type, opMove:thr.move,
            opMoveRate:thr.rateOf, opMoveItem:thr.item, opEstimated:thr.estimated,
+           opSureDmg:sureDmg, opSureDmgHi: thr.sure?thr.sure.rateHi:0,
+           opSureMove: thr.sure?thr.sure.move:null, opSureRate: thr.sure?thr.sure.rateOf:null,
+           sureHits, winsRaceSure, threatRate: thr.threatRate||0, hitting: thr.hitting||[],
+           oppRows: thr.rows||[], immuneMoves: thr.immune||[],
            opHits, opHitsHi, guard };
 }
 
@@ -845,7 +885,7 @@ const _muCache = new Map();
 function _muKey(mine, oppName, known){
   const st = mine.stats ? [mine.stats.h,mine.stats.a,mine.stats.b,mine.stats.c,mine.stats.d,mine.stats.s].join('.') : '-';
   return [mine.name, st, (mine.moves||[]).join('/'), mine.ability||'', mine.item||'', oppName,
-          (known||[]).join(',')].join('|');
+          (known||[]).join(','), mine.guardGone?'g0':''].join('|');
 }
 
 /** 自分1体 vs 相手1体。相手の型は「攻撃型」「耐久型」の2通りで見て、
@@ -888,6 +928,18 @@ function matchup(mine, theirs){
     myDmgLo: Math.min(...views.map(v=>v.myDmg)), myDmgHi: Math.max(...views.map(v=>v.myDmg)),
     opDmgLo: Math.min(...views.map(v=>v.opDmg)), opDmgHi: Math.max(...views.map(v=>v.opDmgHi)),
     opMove: primary.opMove, opMoveRate: primary.opMoveRate, opEstimated: primary.opEstimated,
+    /* 「ほぼ確実に持っている技」だけで見た結論。採用率の低い技1本で
+       『どの型でも不利』と言い切っていた誤りを防ぐために分けて持つ。 */
+    opSureDmg: wavg(v=>v.opSureDmg),
+    opSureDmgHi: Math.max(...views.map(v=>v.opSureDmgHi)),
+    opSureMove: primary.opSureMove, opSureRate: primary.opSureRate,
+    winsAllSure: views.every(v=>v.winsRaceSure),
+    threatRate: primary.threatRate,        // こちらに有効打を持つ型の最大採用率(%)
+    hitting: primary.hitting,              // 通ってくる技の一覧（採用率つき）
+    oppRows: primary.oppRows,              // 相手の技ごとの被ダメージ（採用率つき）
+    immuneMoves: primary.immuneMoves,      // こちらに完全に効かない相手の技
+    // 主力（採用率の高い技）が1つも通らない＝相性で受けられている
+    wallsMain: primary.opSureDmg === 0 && primary.opDmg > 0,
     // 一撃で落とされうる型がひとつでもあるか（最大乱数基準）
     // 一撃で落とされうるか（最大乱数基準）。タスキ・ばけのかわで耐えるなら false にする
     opOHKO: !primary.guard && views.some(v=> v.opDmgHi >= 1.0),
@@ -1042,6 +1094,117 @@ function readDamage(mine, oppName, hpNow, field, known){
     out.left.diesNextToSame = hpNow>0 && !guardAlive && srcMax >= hpNow;
   }
   return out;
+}
+
+/* ---------- 結論を出す唯一の場所 ----------
+   選出画面・対面画面・実戦モードで別々に判定していたため、同じ対面なのに言うことが違っていた。
+   さらに「採用率の低い技1本」で不利判定を出していた（ギャラドス vs ガブリアス：
+   主力の じしん99.3% は ひこうに無効なのに、げきりん30.2% で『どの型でも不利』と表示）。
+   ここに一本化し、採用率を必ず添える。 */
+const SURE_RATE = 60;   // これ以上の採用率＝ほぼ全個体が持っている前提で判定してよい
+
+/** 対面ひとつの結論。すべての画面はこれを使うこと。
+ *  ★判定は「技1本の採用率」ではなく「こちらに勝てる技を持っている型の合計採用率」で出す。
+ *    ミミッキュ vs ドラパルト は ゴーストダイブ27.1% と シャドーボール44.7% の
+ *    どちらでも落とされるので、合わせて約72%が一撃を持っている。
+ *    単一技の採用率だけを見ると「44.7%だから半々」と誤る。 */
+function callIt(mine, oppName, opts){
+  opts = opts || {};
+  const known = opts.known || null;
+  // ばけのかわ・タスキが「もう無い」状態を指定できる（剥がれた後は判定が別物になる）
+  if(opts.guardGone) mine = {...mine, guardGone:true};
+  const mu = matchup(mine, {name:oppName, known});
+  if(!mu) return null;
+  const hpNow = (opts.myHP!=null && mine.stats) ? opts.myHP : null;
+  const rd = hpNow!=null ? readDamage(mine, oppName, hpNow, opts.field, known) : null;
+
+  // 相手の残りHP(%)が分かっていれば、あと何発で落とせるかを補正する
+  const oppLeft = (opts.oppHPPct!=null) ? Math.max(0.01, Math.min(1, opts.oppHPPct)) : 1;
+  const myHits = mu.myDmg>0 ? Math.max(1, Math.ceil(oppLeft / mu.myDmg)) : 99;
+  // こちらの残りHPが分かっていれば、その割合で相手の必要打数を計算する
+  const myLeft = (rd && rd.maxHP) ? rd.hpNow/rd.maxHP : 1;
+  const guardN = mu.guard ? 1 : 0;
+
+  // 技ごとに「こちらに勝てるか」を判定し、勝てる技の採用率を足す（上限100%）
+  const rows = (mu.oppRows||[]).map(r=>{
+    const hits = r.rate>0 ? Math.ceil(myLeft / r.rate) + guardN : 99;
+    const beats = hits < myHits || (hits === myHits && !mu.faster);
+    const ohko  = r.rateHi >= myLeft && guardN===0;
+    return {...r, hits, beats, ohko};
+  });
+  // 採用率の合計。小数の誤差が出るので必ず丸める（71.80000000000001% と出ていた）
+  const sumRate = list => Math.round(Math.min(100, list.reduce((a,b)=> a + (b.rateOf||0), 0)));
+  const pLose = sumRate(rows.filter(r=> r.beats));      // 負ける型の割合
+  const pOHKO = sumRate(rows.filter(r=> r.ohko));       // 一撃を持っている型の割合
+  const koMoves = rows.filter(r=> r.ohko).sort((a,b)=> b.rateOf-a.rateOf);
+  const badMoves = rows.filter(r=> r.beats).sort((a,b)=> b.rateOf-a.rateOf);
+
+  const bench = (opts.roster||[]).filter(r=> r.name!==mine.name)
+    .map(r=>({ r, c:callIt(r, oppName, {roster:null, known, oppHPPct:opts.oppHPPct}) }))
+    .filter(x=> x.c && x.c.head!=='引く')
+    .sort((a,b)=> b.c.mu.score - a.c.mu.score);
+
+  const pc = x => Math.round(x*100);
+  const detail = [];
+  if((mu.immuneMoves||[]).length){
+    const im = mu.immuneMoves.filter(x=>x.rateOf>=10);
+    if(im.length) detail.push({k:'good',
+      t:`${im.map(x=>`${x.move}(採用${x.rateOf}%)`).join('・')}は<b>無効</b>。この技に合わせて交代で出せる`});
+  }
+  if(koMoves.length) detail.push({k:'bad',
+    t:`一撃で落とされる：${koMoves.slice(0,3).map(r=>`${r.move}(${r.rateOf}%)`).join('・')}　→ <b>およそ${pOHKO}%</b>の型が持っている`});
+  const others = rows.filter(r=> !r.ohko && r.rate>=0.25).slice(0,4);
+  if(others.length) detail.push({k:'info',
+    t:`飛んでくる技：${others.map(r=>`${r.move}(${r.rateOf}%) ${pc(r.rate)}〜${pc(r.rateHi)}%`).join('、')}`});
+  if(mu.guard) detail.push({k:'good', t:`${mu.guard}で1発は耐える`});
+  if(!mu.faster && mu.fasterAny && oppScarfRate(oppName)>=15)
+    detail.push({k:'bad', t:`こだわりスカーフ採用${oppScarfRate(oppName)}%。持たれていると抜かれる`});
+  if(mu.myMove) detail.push({k:'info',
+    t:`こちらの最大打点：<b>${mu.myMove}</b> ${pc(mu.myDmgLo)}〜${pc(mu.myDmgHi)}%（${myHits}発で落とせる）`});
+  /* 相手の変化技（実採用率）。あくび・回復・積みは、殴り合いの計算だけ見ていると必ず読み落とす。 */
+  const chg = (oppMoveChoices(oppName)||[]).filter(m=> m.cat==='変' && m.rate>=15);
+  if(chg.length){
+    const note = {};
+    (OPP_TRICKS[toBase(oppName)]||OPP_TRICKS[oppName]||[]).forEach(([mv,why])=> note[mv]=why);
+    detail.push({k:'warn', t:`相手の変化技：${chg.map(m=>
+      `<b>${m.name}</b>(${m.rate}%)${note[m.name]?`<span class="muted"> — ${note[m.name]}</span>`:''}`).join('、')}`});
+  }
+
+  // ---- 結論 ----
+  let head, cls, mark, why;
+  const diesNow = rd ? rd.left.diesNext : (pOHKO>=SURE_RATE);
+  if(mu.noOffense){
+    head='引く'; cls='ng'; mark='✕'; why=`打点が無い（最大でも${mu.myHits}発かかる）`;
+  }else if(myHits<=1 && mu.fasterAny && !(diesNow && !mu.faster)){
+    head='殴る'; cls='ok'; mark='◎'; why=`${mu.myMove}で先に落とせる`;
+  }else if(pOHKO >= SURE_RATE){
+    head='引く'; cls='ng'; mark='✕';
+    why=`${koMoves[0].move}などで一撃。およそ${pOHKO}%の型が一撃技を持っている`;
+  }else if(pOHKO >= 25){
+    head='居座らない'; cls='wn'; mark='△';
+    why=`${koMoves[0].move}(採用${koMoves[0].rateOf}%)を持っていたら一撃。${pOHKO}%の型が該当`;
+  }else if(pLose >= SURE_RATE){
+    head='引く'; cls='ng'; mark='✕';
+    why=`${badMoves.length?badMoves[0].move+'などで':''}${myHits}発 対 ${badMoves[0]?badMoves[0].hits:mu.opHits}発。およそ${pLose}%の型に負ける`;
+  }else if(pLose >= 25){
+    head='様子見'; cls='wn'; mark='△';
+    why=`${badMoves[0].move}(採用${badMoves[0].rateOf}%)を持っていると負ける。${pLose}%の型が該当。1発もらってから決める`;
+  }else if(myHits >= 5){
+    // 5発以上＝実戦では回復・交代・積みで必ず巻き返される
+    head='引く'; cls='ng'; mark='✕'; why=`${myHits}発かかる。押し切れない`;
+  }else if(myHits === 4){
+    head='様子見'; cls='wn'; mark='△';
+    why=`落とすのに4発かかる。回復技を持たれていたら押し切れない`;
+  }else{
+    head='殴る'; cls='ok'; mark= pLose>0 ? '○' : '◎';
+    why= pLose>0 ? `${myHits}発で落とせる。負けるのは${pLose}%の型だけ`
+                 : `${myHits}発で落とせる。負ける型が無い`;
+  }
+
+  return { head, cls, mark, why, detail, mu, read:rd, myHits, pLose, pOHKO,
+           koMoves, badMoves, rows, immune: mu.immuneMoves||[],
+           to: bench.length ? {name:bench[0].r.name, c:bench[0].c} : null,
+           bench: bench.slice(0,3).map(x=>({name:x.r.name, c:x.c})) };
 }
 
 /** 実戦中の1手の結論。readDamage の結果と対面の判定を突き合わせて「殴る／引く」を1行で返す。 */
@@ -1320,7 +1483,7 @@ global.PC = {
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
   bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppTypeItem,
-  readDamage, actionNow, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
+  readDamage, actionNow, callIt, SURE_RATE, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
 };
 })(window);

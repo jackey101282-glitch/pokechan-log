@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="20">
+<meta name="app-version" content="21">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -82,6 +82,25 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .quick .qb{border:1.5px solid var(--line);background:#fff;border-radius:10px;padding:5px 9px;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
 .quick .qb:hover{border-color:var(--blue);background:var(--bluesoft)}
 .quick .qb.dim{opacity:.35;pointer-events:none}
+/* 選択式のチップ。dim と違いタップできる（未選択でも押せないと記録できない） */
+.quick .qb.off{opacity:.55;border-style:dashed}
+.quick .qb.on{border-color:var(--red);background:var(--redsoft);color:var(--red)}
+/* 折りたたみカードの見出し */
+.cardsum{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;
+  margin-bottom:14px;box-shadow:var(--shadow);font-size:14px;font-weight:800;cursor:pointer;
+  display:flex;align-items:center;gap:8px;list-style:none}
+.cardsum::-webkit-details-marker{display:none}
+.cardsum::after{content:'▾';margin-left:auto;color:var(--muted);font-weight:400}
+details[open] > .cardsum::after{content:'▴'}
+.cardsum .sub{font-weight:400;font-size:12px;color:var(--muted);margin-left:auto}
+.cardsum .sub + *{margin-left:0}
+/* 実戦の主役ブロック */
+.nowhead{font-size:26px;font-weight:800;line-height:1.15}
+.hpwrap{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.hpwrap input[type=number]{width:92px;text-align:right;font-size:17px;font-weight:700}
+.seg{display:flex;gap:4px;flex-wrap:wrap}
+.seg button{border:1.5px solid var(--line);background:#fff;border-radius:9px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer}
+.seg button.on{border-color:var(--red);background:var(--redsoft);color:var(--red)}
 .quick .qb .cnt{font-size:10px;color:var(--muted);font-weight:500}
 
 /* 対面ガイド */
@@ -216,10 +235,10 @@ tr.bad .bar>i{background:var(--lose)}
     <button class="btn ghost sm" id="btnOut">ログアウト</button>
   </div>
   <div class="tabs">
-    <button class="tab on" data-tab="rec">対戦</button>
-    <button class="tab" data-tab="bt">実戦</button>
-    <button class="tab" data-tab="vs">対面</button>
+    <button class="tab on" data-tab="bt">対戦</button>
+    <button class="tab" data-tab="rec">記録</button>
     <button class="tab" data-tab="dmg">ダメージ計算</button>
+    <button class="tab" data-tab="vs">対面（旧）</button>
     <button class="tab" data-tab="advice">相談</button>
     <button class="tab" data-tab="stat">分析</button>
     <button class="tab" data-tab="hist">履歴</button>
@@ -230,7 +249,7 @@ tr.bad .bar>i{background:var(--lose)}
 <main class="wrap">
 
 <!-- ---------- 対戦 ---------- -->
-<section id="tab-rec">
+<section id="tab-rec" hidden>
   <div class="card">
     <h2>音声メモから記録<span class="sub">喋った内容を読み取って下に反映</span></h2>
     <p class="hint">スマホはキーボードのマイク、Macは<b>Fnキーを2回</b>で音声入力できます。<br>
@@ -329,22 +348,28 @@ tr.bad .bar>i{background:var(--lose)}
 
 <!-- ---------- ダメージ計算 ---------- -->
 <!-- ---------- 実戦（試合中はこの画面だけ見る） ---------- -->
-<section id="tab-bt" hidden>
-  <div class="card">
-    <h2>実戦モード<span class="sub">試合中はこの画面だけ見る</span></h2>
-    <p class="hint">選出画面で相手6体を入れたら、あとは<b>対面した相手をタップするだけ</b>です。計算は入れた瞬間に全部終わっているので、待ち時間はありません。</p>
-    <label class="f">相手6体（声で言うか、下のボタンで足す）</label>
-    <textarea id="btVoice" rows="2" placeholder="ポワルン、コータス、ユキノオー、ペリッパー、ハッサム"></textarea>
-    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-      <button class="btn sm" id="btVoiceRun">読み取る</button>
-      <button class="btn ghost sm" id="btReset">やり直す</button>
+<section id="tab-bt">
+  <!-- 試合中はこの1画面で完結させる。上から順に「相手を入れる → 選出 → いまの対面」 -->
+  <details id="btInputWrap" open>
+    <summary class="cardsum">相手6体を入れる<span class="sub">タップして開閉</span></summary>
+    <div class="card">
+      <label class="f">声で言うか、下のボタンで足す</label>
+      <textarea id="btVoice" rows="2" placeholder="ガブリアス、アシレーヌ、ミミッキュ、カバルドン、ハッサム、ドラパルト"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button class="btn sm" id="btVoiceRun">読み取る</button>
+        <button class="btn ghost sm" id="btReset">やり直す</button>
+      </div>
+      <div id="btOppChips" class="pklist" style="margin-top:10px"></div>
+      <div id="btQuick" class="quick" style="margin-top:8px"></div>
     </div>
-    <div id="btOppChips" class="pklist" style="margin-top:10px"></div>
-    <div id="btQuick" class="quick" style="margin-top:8px"></div>
-  </div>
+  </details>
   <div id="btPlan"></div>
-  <div id="btGrid"></div>
-  <div id="btDetail"></div>
+  <div id="btNow"></div>
+  <details id="btGridWrap">
+    <summary class="cardsum">対面表（全部まとめて見る）<span class="sub">タップして開閉</span></summary>
+    <div id="btGrid"></div>
+  </details>
+  <div id="btDetail" hidden></div>
 </section>
 
 <!-- ---------- 対面（1対1の即答） ---------- -->
@@ -541,13 +566,13 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=20"></script>
-<script src="./data/species.js?v=20"></script>
-<script src="./data/moves.js?v=20"></script>
-<script src="./data/principles.js?v=20"></script>
-<script src="./data/usage.js?v=20"></script>
-<script src="./core.js?v=20"></script>
+<script src="./supabase-config.js?v=21"></script>
+<script src="./data/species.js?v=21"></script>
+<script src="./data/moves.js?v=21"></script>
+<script src="./data/principles.js?v=21"></script>
+<script src="./data/usage.js?v=21"></script>
+<script src="./core.js?v=21"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=20"></script>
+<script src="./app.js?v=21"></script>
 </body>
 </html>

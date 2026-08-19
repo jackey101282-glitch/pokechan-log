@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '20';
+const APP_VERSION = '21';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -279,6 +279,8 @@ function rosterForCalc(roster, megaChoice){
     return {
       label:m.name,                    // 表示・選出の照合はこちら
       name:calcName,                   // 計算に使う姿
+      // 画面に出す名前は「実際に計算した姿」。メガ枠を別に切るなら メガ前の名前で出さないと嘘になる
+      disp: demote ? PC.toBase(m.name) : m.name,
       demoted:demote,
       stats:PC.realStats(calcName, m.sp, m.nature),
       moves:(m.moves||[]).filter(Boolean),
@@ -961,7 +963,7 @@ $('#btnSave').onclick=async ()=>{
    45秒の中でClaudeに聞くと必ず間に合わない（実際に2戦落とした）。
    相手6体を入れた時点で全対面を計算しておき、試合中はタップだけで即答する。
    ========================================================= */
-let BT = { opp:[], picks:[], mega:null, matrix:null, sel:null, me:null, hp:{}, obs:{} };
+let BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null, hp:{}, oppHp:{}, obs:{}, guardGone:{} };
 
 function initBtUI(){
   $('#btVoiceRun').onclick = ()=> safe('実戦', ()=>{
@@ -987,32 +989,30 @@ function btCompute(){
   const size = $('#fRule').value==='double' ? 4 : 3;
   const bp = bestPlan(roster, BT.opp, size, BT.opp);
   BT.picks = bp.plan ? bp.plan.members : roster.slice(0,size).map(m=>m.name);
-  BT.mega  = bp.mega;
-  const rc = bp.rc || rosterForCalc(roster, BT.mega);
+  // 社長が手でメガ枠を決めていたらそれを優先する（提案と違うメガを切ることは普通にある）
+  BT.mega  = BT.megaFixed || bp.mega;
+  // メガ枠を手で変えたら、その姿で全部計算し直す（bp.rc は提案時のもの）
+  const rc = (BT.megaFixed ? rosterForCalc(roster, BT.mega) : (bp.rc || rosterForCalc(roster, BT.mega)));
   BT.matrix = {};
   BT.opp.forEach(o=>{
     const knownOf = BT.obs && BT.obs[o] ? BT.obs[o] : null;
     BT.matrix[o] = roster.map(m=>{
       const me = rc.find(r=>r.label===m.name) || {name:m.name};
-      return { name:m.name, mu: PC.matchup(me,{name:effOpp(o), known:knownOf}) };
+      const c = PC.callIt(me, effOpp(o), {known:knownOf});
+      return { name:m.name, mu: c ? c.mu : PC.matchup(me,{name:effOpp(o), known:knownOf}), call:c };
     }).filter(x=>x.mu);
   });
 }
 
 /** 1対面の結論を1語で */
-function btAct(mu){
-  // ★一撃で落とされうる対面が最優先。2026-08-19、ここを出していなかったので
-  //   「28〜37%」の表示を信じて残し、だいもんじで一撃で失った
-  if(mu.opOHKO && !(mu.winsAll && mu.faster && mu.myHits<=1)) return {c:'ng', t:'一撃で落ちる'};
-  if(mu.noOffense && mu.dangerAll) return {c:'ng', t:'すぐ引く'};
-  if(mu.noOffense)                 return {c:'ng', t:'打点なし'};
-  if(mu.dangerAll)                 return {c:'ng', t:'引く'};
-  if(mu.winsAll && mu.faster && mu.myHits<=1) return {c:'ok', t:'一撃'};
-  if(mu.winsAll)                   return {c:'ok', t:'殴る'};
-  if(mu.split)                     return {c:'wn', t:'型次第'};
-  if(mu.winsRace)                  return {c:'ok', t:'殴る'};
-  if(mu.opHits>=3)                 return {c:'wn', t:'削る'};
-  return {c:'ng', t:'引く'};
+/* 対面表の1マス。結論は PC.callIt() に一本化してあるので、ここは短縮表示だけ。 */
+function btAct(mu, c){
+  if(c) return {c:c.cls, t:c.head, m:c.mark};
+  if(mu.opOHKO) return {c:'ng', t:'一撃で落ちる', m:'✕'};
+  if(mu.noOffense) return {c:'ng', t:'打点なし', m:'✕'};
+  if(mu.winsAll) return {c:'ok', t:'殴る', m:'◎'};
+  if(mu.split) return {c:'wn', t:'様子見', m:'△'};
+  return mu.winsRace ? {c:'ok', t:'殴る', m:'○'} : {c:'ng', t:'引く', m:'✕'};
 }
 
 function btRender(){
@@ -1035,22 +1035,35 @@ function btRender(){
   if(!BT.matrix || !roster.length){ $('#btPlan').innerHTML=''; $('#btGrid').innerHTML=''; $('#btDetail').innerHTML=''; return; }
 
   $('#btPlan').innerHTML = `<div class="card" style="border-color:var(--red);background:var(--redsoft)">
-    <div class="small muted">選出</div>
+    <div class="small muted">選出（この6体に対する推奨）</div>
     <div style="font-size:19px;font-weight:800">${BT.picks.map(esc).join(' ／ ')}</div>
-    ${BT.mega?`<div class="small">メガは <b>${esc(BT.mega)}</b> に切る</div>`:''}
+    ${(()=>{ const slots = megaSlotsOf(roster);
+      if(slots.length<=1) return BT.mega?`<div class="small">メガは <b>${esc(BT.mega)}</b> に切る</div>`:'';
+      return `<div class="small" style="margin-top:6px">メガをどれに切るか（変えると全部の判定が変わります）</div>
+        <div class="quick" style="margin-top:4px">${slots.map(sl=>
+          `<button class="qb ${BT.mega===sl?'on':'off'}" data-btmega="${esc(sl)}">${esc(sl)}</button>`).join('')}</div>`;
+    })()}
     ${(()=>{ // ★一撃で落とされる対面。試合前にこれだけは頭に入れる
       const ko=[];
       BT.opp.forEach(o=>{ (BT.matrix[o]||[]).forEach(c=>{
-        if(BT.picks.includes(c.name) && c.mu.opOHKO){
-          const r = c.mu.opOHKORate!=null ? `<span class="muted">(採用${c.mu.opOHKORate}%)</span>` : '';
-          ko.push(`<b>${esc(c.name)}</b>は<b>${esc(o)}</b>の<b>${esc(c.mu.opOHKOMove||'')}</b>${r}で一撃`);
+        if(BT.picks.includes(c.name) && c.call && c.call.pOHKO >= 25){
+          const k = c.call.koMoves[0];
+          ko.push(`<b>${esc(c.name)}</b>は<b>${esc(o)}</b>の<b>${esc(k.move)}</b>`
+                + `<span class="muted">(${k.rateOf}%)</span>で一撃`
+                + `<span class="muted"> — 該当する型は約${c.call.pOHKO}%</span>`);
         }
       });});
       return ko.length?`<div class="note r" style="margin-top:8px"><div class="small">${ko.map(x=>'・'+x).join('<br>')}</div></div>`:'';
     })()}
     ${(()=>{const t=[];BT.opp.forEach(n=>PC.oppTricks(PC.toBase(n)).forEach(([mv,why])=>t.push(`<b>${esc(n)}</b>の<b>${esc(mv)}</b> — ${esc(why)}`)));
-      return t.length?`<div class="small" style="margin-top:8px">${t.map(x=>'・'+x).join('<br>')}</div>`:'';})()}
+      return t.length?`<details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">相手の変化技・妨害技（${t.length}件）</summary>
+        <div class="small" style="margin-top:6px">${t.map(x=>'・'+x).join('<br>')}</div></details>`:'';})()}
   </div>`;
+
+  $$('#btPlan [data-btmega]').forEach(b=> b.onclick=()=>{
+    BT.megaFixed = b.dataset.btmega; BT.mega = BT.megaFixed;
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
+  });
 
   // 相手 × 自分の選出3体。タップで詳細
   $('#btGrid').innerHTML = `<div class="card"><h2>対面表<span class="sub">出てきた相手をタップ</span></h2>
@@ -1061,103 +1074,142 @@ function btRender(){
         <td>${typeChips(o)} ${esc(o)}</td>
         ${BT.picks.map(p=>{ const c=row.find(x=>x.name===p);
           if(!c) return '<td class="num">—</td>';
-          const a=btAct(c.mu);
+          const a=btAct(c.mu, c.call);
           return `<td class="num"><span class="badge ${a.c}">${a.t}</span></td>`;
         }).join('')}</tr>`;
     }).join('')}</table></div>`;
-  $$('#btGrid [data-bo]').forEach(tr=> tr.onclick=()=>{ BT.sel=tr.dataset.bo; btDetail(); });
-  btDetail();
+  $$('#btGrid [data-bo]').forEach(tr=> tr.onclick=()=>{
+    BT.sel=tr.dataset.bo; BT.me=null; btNowRender();
+    const w=$('#btInputWrap'); if(w) w.open=false;
+    const n=$('#btNow'); if(n) n.scrollIntoView({block:'start', behavior:'smooth'});
+  });
+  btNowRender();
 }
 
-/* ---------- 実戦中の1手：いま出している駒の残りHPを入れるだけで全部答える ----------
+/* ================= 実戦（対戦タブ） 1画面 =================
    社長の要望（2026-08-19）：
-   「クチートが相手のカイリューの大文字で 150→20 になった。それを入れたら
-     何を撃たれたのか・あと何発耐えるのか・引いた方がいいかが同じ画面で分かってほしい」
-   試合の1手は45秒しかないので、技名は選ばせず相手の実採用技をこちらで総当たりして特定する。 */
-function btLiveCard(o){
+   「実戦と対戦と対面で3つ見なきゃいけなくてどこを見ればいいか分からない。一つにまとめて欲しい。
+     1画面を見れば、今の対面で有利か不利か、何が出されそうでどんな立ち回りをすべきか、
+     相手が変わったら相手を切り替えてまた立ち回りを示して、ダメージ食らったら計算して、を
+     1画面でやりやすくして。自分のHPは数字、相手のHPは％」
+   → 結論は core の PC.callIt() 1本に統一。画面ごとに違うことを言わないようにする。 */
+
+function btNowRender(){
+  const host = $('#btNow'); if(!host) return;
   const roster = currentRoster();
-  const rc = rosterForCalc(roster, S.mega);
-  // 6匹すべてから選べるようにする（実際の選出が提案と違うことも、控えに引くこともあるため）。
-  // 提案に入っている3体を先に並べる。
+  if(!roster.length || !BT.opp.length){ host.innerHTML=''; return; }
+  const rc = rosterForCalc(roster, BT.mega);
+
+  // 相手：既定は先頭。自分：既定は「その相手にいちばん強い選出内の駒」
+  if(!BT.sel || !BT.opp.includes(BT.sel)) BT.sel = BT.opp[0];
+  const o = effOpp(BT.sel);
   const inPick = r => BT.picks.includes(r.label) || BT.picks.includes(r.name);
-  const picks = [...rc].sort((a,b)=> (inPick(b)?1:0) - (inPick(a)?1:0));
-  if(!picks.length) return '';
-  if(!BT.me || !picks.some(p=>p.label===BT.me)){
-    // 既定は「選出3体のうち、その相手にいちばん強い駒」
-    const best = picks.filter(inPick).map(p=>({p, mu:PC.matchup(p,{name:o})})).filter(x=>x.mu)
-      .sort((a,b)=> b.mu.score-a.mu.score)[0];
-    BT.me = best ? best.p.label : picks[0].label;
+  const mine = [...rc].sort((a,b)=> (inPick(b)?1:0)-(inPick(a)?1:0));
+  if(!BT.me || !mine.some(m=>m.label===BT.me)){
+    const best = mine.filter(inPick).map(m=>({m, c:PC.callIt(m,o,{})})).filter(x=>x.c)
+      .sort((a,b)=> b.c.mu.score - a.c.mu.score)[0];
+    BT.me = best ? best.m.label : mine[0].label;
   }
-  const me = picks.find(p=>p.label===BT.me) || picks[0];
+  const me = mine.find(m=>m.label===BT.me) || mine[0];
   const maxHP = me.stats ? me.stats.h : 0;
-  const hp = (BT.hp && BT.hp[me.label]!=null) ? BT.hp[me.label] : maxHP;
-  const seen = (BT.obs && BT.obs[o]) || [];
-  const an = me.stats ? PC.actionNow(me, o, rc, hp, {}, seen) : null;
-  const rd = an && an.read;
+  BT.hp = BT.hp||{}; BT.oppHp = BT.oppHp||{};
+  const hp = BT.hp[me.label]!=null ? BT.hp[me.label] : maxHP;
+  const oppPct = BT.oppHp[BT.sel]!=null ? BT.oppHp[BT.sel] : 100;
+  const seen = (BT.obs && BT.obs[BT.sel]) || [];
 
-  const cls = an ? (an.verdict==='殴る' ? 'g' : 'r') : 'w';
-  const chips = picks.map(p=>`<button class="qb ${p.label===BT.me?'':'dim'}" data-btme="${esc(p.label)}">${esc(p.label)}${inPick(p)?'':'<span class="muted"> (控え)</span>'}</button>`).join('');
+  BT.guardGone = BT.guardGone || {};
+  const gGone = !!BT.guardGone[me.label];
+  const gName = PC.myOneHitGuard({item:me.item, ability:me.ability});
+  const c = me.stats ? PC.callIt(me, o, {roster:rc, myHP:hp, oppHPPct:oppPct/100, known:seen, guardGone:gGone}) : null;
+  const rd = c && c.read;
 
-  const left = rd ? (()=>{
-    const n = rd.left.worst;
-    const g = rd.left.guardAlive ? `<span class="muted">（${esc(rd.left.guard)}が残っている）</span>` : '';
-    if(rd.left.diesNext) return `<b style="color:var(--red)">次の一撃で落ちる</b>（${esc(rd.left.worstMove)} ${Math.round(rd.left.worstPct*100)}%）`;
-    return `いちばん痛い <b>${esc(rd.left.worstMove)}</b>(${Math.round(rd.left.worstPct*100)}%) でも <b>あと${n}発</b>耐える ${g}`;
-  })() : '';
+  const oppChips = BT.opp.map(n=>`<button class="qb ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}">${typeChips(n)}${esc(n)}</button>`).join('');
+  const myChips  = mine.map(m=>`<button class="qb ${m.label===BT.me?'on':'off'}" data-btme="${esc(m.label)}">${esc(m.disp||m.label)}${m.demoted?'<span class="muted"> メガしない</span>':''}${inPick(m)?'':'<span class="muted"> 控</span>'}</button>`).join('');
 
+  // 逆算の結果（自分が食らったダメージ）
   const src = rd ? (rd.candidates.length ? rd.candidates : rd.others) : [];
-  const read = (!rd || rd.notHitYet) ? '' : `
-    <div class="small" style="margin-top:8px">
-      受けたダメージ <b>${rd.taken}</b>（${Math.round(rd.takenPct*100)}%）
-      ${src.length ? `→ 撃たれたのは <b>${src.map(c=>esc(c.name)+(c.rate!=null?`<span class="muted">(採用${c.rate}%)</span>`:'')).join(' か ')}</b>`
+  const readBlock = (!rd || rd.notHitYet) ? '' : `
+    <div class="small" style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)">
+      食らったダメージ <b>${rd.taken}</b>（HP${rd.maxHP}中）
+      ${src.length ? `→ 撃たれたのは <b>${src.map(x=>esc(x.name)+(x.rate!=null?`<span class="muted">(${x.rate}%)</span>`:'')).join(' か ')}</b>`
                    : '→ <span class="muted">該当なし。急所・2回被弾・天候・ランク変化の可能性</span>'}
       ${rd.fromFullList&&src.length?'<br><span class="muted">※採用率10%未満の技。全技から推定した参考値です</span>':''}
       ${rd.candidates.length&&rd.ruledOut.moves.length?`<br><span class="muted">この一撃では無かった技：${rd.ruledOut.moves.map(esc).join('・')}</span>`:''}
+      ${rd.left ? `<br>いちばん痛い <b>${esc(rd.left.worstMove)}</b>(${Math.round(rd.left.worstPct*100)}%) で
+        ${rd.left.diesNext?'<b style="color:var(--red)">次の一撃で落ちる</b>':`<b>あと${rd.left.worst}発</b>`}` : ''}
     </div>`;
 
-  return `<div class="card">
-    <h2>いま出している駒<span class="sub">残りHPを入れると即答</span></h2>
-    <div class="quick" style="margin:6px 0">${chips}</div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <label class="f" style="margin:0">残りHP</label>
-      <input id="btHp" type="number" inputmode="numeric" min="0" max="${maxHP}" value="${hp}" style="width:88px">
+  host.innerHTML = `
+  <div class="card" style="border-color:${c?`var(--${c.cls==='ok'?'grn':c.cls==='ng'?'red':'org'})`:'var(--line)'}">
+    <h2>いまの対面<span class="sub">相手/自分をタップで切替</span></h2>
+
+    <div class="small muted">相手</div>
+    <div class="quick" style="margin-top:4px">${oppChips}</div>
+    <div class="hpwrap">
+      <span class="small muted">相手の残りHP</span>
+      <div class="seg" id="btOppHp">
+        ${[100,75,50,25,10].map(v=>`<button class="${oppPct===v?'on':''}" data-btop="${v}">${v}%</button>`).join('')}
+      </div>
+    </div>
+
+    <div class="small muted" style="margin-top:12px">自分</div>
+    <div class="quick" style="margin-top:4px">${myChips}</div>
+    <div class="hpwrap">
+      <span class="small muted">自分の残りHP</span>
+      <input id="btHp" type="number" inputmode="numeric" min="0" max="${maxHP}" value="${hp}">
       <span class="muted">/ ${maxHP}</span>
       <button class="btn ghost sm" data-bthp="full">満タン</button>
-      <button class="btn ghost sm" data-bthp="half">半分</button>
     </div>
-    ${an?`<div class="note ${cls}" style="margin-top:10px">
-      <div style="font-size:22px;font-weight:800">${esc(an.verdict)}</div>
-      <div class="small">${esc(an.why)}</div>
-      <div class="small" style="margin-top:4px">${left}</div>
-      ${an.verdict==='引く'&&an.to?`<div class="small" style="margin-top:4px">引き先 → <b>${esc(an.to.name)}</b>（被${dmgRange(an.to.mu.opDmgLo,an.to.mu.opDmgHi)}${an.to.mu.faster?'・先制できる':''}）</div>`:''}
-      ${an.verdict==='殴る'?`<div class="small" style="margin-top:4px">撃つ技 → <b>${esc(an.mu.myMove||'—')}</b>（${dmgRange(an.mu.myDmgLo,an.mu.myDmgHi)}／相手はあと${an.mu.myHits}発）</div>`:''}
+    ${gName?`<div class="hpwrap">
+      <span class="small muted">${esc(gName)}</span>
+      <div class="seg"><button class="${gGone?'':'on'}" data-btguard="0">まだ残っている</button><button class="${gGone?'on':''}" data-btguard="1">もう無い</button></div>
     </div>`:''}
-    ${read}
+
+    ${c?`<div class="note ${c.cls==='ok'?'g':c.cls==='ng'?'r':'w'}" style="margin-top:12px">
+      <div class="nowhead">${c.mark} ${esc(c.head)}</div>
+      <div class="small" style="margin-top:2px">${esc(c.why)}</div>
+      ${c.to?`<div class="small" style="margin-top:6px">引くなら → <b>${esc((mine.find(x=>x.name===c.to.name)||{}).disp || c.to.name)}</b>（${c.to.c.mark} ${esc(c.to.c.why)}）</div>`:''}
+    </div>
+    <div class="small" style="margin-top:10px">
+      ${c.detail.map(d=>`<div style="margin:3px 0;color:${d.k==='bad'?'var(--red)':d.k==='good'?'var(--grn)':d.k==='warn'?'var(--org)':'inherit'}">・${d.t}</div>`).join('')}
+    </div>`:''}
+    ${readBlock}
   </div>
-  ${btSeenCard(o, seen)}`;
+  ${btSeenCard(BT.sel, seen)}`;
+
+  $$('#btNow [data-btopp]').forEach(b=> b.onclick=()=>{ BT.sel=b.dataset.btopp; BT.me=null; btNowRender(); });
+  $$('#btNow [data-btme]').forEach(b=> b.onclick=()=>{ BT.me=b.dataset.btme; btNowRender(); });
+  $$('#btNow [data-btop]').forEach(b=> b.onclick=()=>{ BT.oppHp[BT.sel]=+b.dataset.btop; btNowRender(); saveBtDraft(); });
+  $$('#btNow [data-bthp]').forEach(b=> b.onclick=()=>{ BT.hp[BT.me]=maxHP; btNowRender(); saveBtDraft(); });
+  $$('#btNow [data-btguard]').forEach(b=> b.onclick=()=>{
+    BT.guardGone[BT.me] = b.dataset.btguard==='1'; PC.clearMatchupCache(); btNowRender(); saveBtDraft(); });
+  const inp=$('#btHp');
+  if(inp) inp.oninput=()=>{ BT.hp[BT.me]=Math.max(0,Math.min(maxHP,+inp.value|0));
+    const pos=inp.selectionStart; btNowRender(); const i2=$('#btHp');
+    if(i2){ i2.focus(); try{i2.setSelectionRange(pos,pos);}catch(e){} } saveBtDraft(); };
+  btBindSeen();
 }
 
 /* ---------- 相手が使ってきた技をワンタップで記録 ----------
-   社長の要望（2026-08-19）：
-   「対面している相手が採用してそうな技を10個くらい出して、打ってきた技を記録していく。
-     データが溜まれば、この並びのこのポケモンはこういう役割、と分かるようになる」
+   社長の要望：「相手が採用してそうな技を10個くらい出して、打ってきた技を記録していく」
    技は4つまでなので、4つ記録できた時点で「それ以外は飛んでこない」が確定し、判定が一気に正確になる。 */
-function btSeenCard(o, seen){
+function btSeenCard(oppName, seen){
+  const o = effOpp(oppName);
   const ch = PC.oppMoveChoices(o);
   const extra = seen.filter(m=> !ch.some(c=>c.name===m));
-  const n = seen.length;
-  const conf = n>=4;
+  const n = seen.length, conf = n>=4;
+  if(!ch.length && !extra.length) return '';
   return `<div class="card">
-    <h2>相手が使ってきた技<span class="sub">タップで記録・${n}/4</span></h2>
-    <div class="small ${conf?'':'muted'}" style="margin-bottom:6px">
-      ${conf ? '<b style="color:var(--grn)">4つ確定。これ以外の技は飛んできません。上の判定はこの4つだけで計算しています。</b>'
+    <h2>相手が使ってきた技<span class="sub">タップで記録 ${n}/4</span></h2>
+    <div class="small ${conf?'':'muted'}" style="margin-bottom:8px">
+      ${conf ? '<b style="color:var(--grn)">4つ確定。これ以外は飛んできません。上の判定はこの4つだけで計算しています。</b>'
              : `記録するほど判定が正確になります。あと${4-n}つで確定。`}
     </div>
     <div class="quick">
-      ${ch.map(c=>`<button class="qb ${seen.includes(c.name)?'':'dim'}" data-btseen="${esc(c.name)}">${esc(c.name)}<span class="muted"> ${c.rate}%</span></button>`).join('')}
-      ${extra.map(m=>`<button class="qb" data-btseen="${esc(m)}">${esc(m)}<span class="muted"> 手入力</span></button>`).join('')}
+      ${ch.map(c=>`<button class="qb ${seen.includes(c.name)?'on':'off'}" data-btseen="${esc(c.name)}">${esc(c.name)}<span class="muted"> ${c.rate}%</span></button>`).join('')}
+      ${extra.map(m=>`<button class="qb on" data-btseen="${esc(m)}">${esc(m)}<span class="muted"> 手入力</span></button>`).join('')}
     </div>
-    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
       <input id="btSeenOther" type="text" placeholder="一覧に無い技（だいもんじ 等）" list="mvlist" style="flex:1;min-width:150px">
       <button class="btn ghost sm" id="btSeenAdd">足す</button>
       ${n?`<button class="btn ghost sm" id="btSeenClear">この相手の記録を消す</button>`:''}
@@ -1165,58 +1217,39 @@ function btSeenCard(o, seen){
     ${btSeenHistory(o)}
   </div>`;
 }
-/** これまでの自分の対戦で、その相手が実際に使ってきた技（採用率と並べて出す） */
+/** これまでの自分の対戦で、その相手が実際に使ってきた技 */
 function btSeenHistory(o){
   const base = PC.toBase(o);
   const obs = (PC.observedMoves(BATTLES)[o] || PC.observedMoves(BATTLES)[base] || []).slice(0,8);
   if(!obs.length) return '';
-  return `<div class="small muted" style="margin-top:8px">
+  return `<div class="small muted" style="margin-top:10px">
     自分の対戦での実績：${obs.map(x=>`${esc(x.move)}(${x.count}回)`).join('・')}</div>`;
 }
 function btBindSeen(){
-  const o = BT.sel; if(!o) return;
+  const key = BT.sel; if(!key) return;
   const set = m =>{
     BT.obs = BT.obs || {};
-    const cur = BT.obs[o] = BT.obs[o] || [];
+    const cur = BT.obs[key] = BT.obs[key] || [];
     const i = cur.indexOf(m);
     if(i>=0) cur.splice(i,1); else cur.push(m);
-    if(!cur.length) delete BT.obs[o];
-    PC.clearMatchupCache && PC.clearMatchupCache();
-    btCompute(); btRender(); BT.sel = o; btDetail(); saveBtDraft();
+    if(!cur.length) delete BT.obs[key];
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   };
-  $$('#btDetail [data-btseen]').forEach(b=> b.onclick=()=> set(b.dataset.btseen));
+  $$('#btNow [data-btseen]').forEach(b=> b.onclick=()=> set(b.dataset.btseen));
   const add=$('#btSeenAdd'), inp=$('#btSeenOther');
   if(add) add.onclick=()=>{ const v=(inp.value||'').trim(); if(!v) return;
-    if(!PC.MOVES[v]) return toast('その技名は見つかりません',true); inp.value=''; set(v); };
+    if(!PC.MOVES[v]) return toast('その技名は見つかりません',true); set(v); };
   const clr=$('#btSeenClear');
-  if(clr) clr.onclick=()=>{ delete BT.obs[o]; PC.clearMatchupCache && PC.clearMatchupCache();
-    btCompute(); btRender(); BT.sel=o; btDetail(); saveBtDraft(); };
+  if(clr) clr.onclick=()=>{ delete BT.obs[key]; PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft(); };
 }
-/** 実戦モードの観測は、次に開いたときも残す（試合をまたいで相手の型が分かるのが価値） */
+/** 実戦モードの観測・HPは、次に開いたときも残す */
 function saveBtDraft(){
-  try{ localStorage.setItem('pokechan_bt', JSON.stringify({obs:BT.obs, opp:BT.opp, hp:BT.hp})); }catch(e){}
+  try{ localStorage.setItem('pokechan_bt', JSON.stringify({obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, megaFixed:BT.megaFixed, guardGone:BT.guardGone})); }catch(e){}
 }
 function loadBtDraft(){
   try{ const d=JSON.parse(localStorage.getItem('pokechan_bt')||'{}');
-    if(d.obs) BT.obs=d.obs; if(d.hp) BT.hp=d.hp; }catch(e){}
-}
-
-function btBindLive(){
-  $$('#btDetail [data-btme]').forEach(b=> b.onclick=()=>{ BT.me=b.dataset.btme; btDetail(); });
-  const inp=$('#btHp'); if(!inp) return;
-  const apply = v =>{ BT.hp = BT.hp||{}; BT.hp[BT.me] = Math.max(0, v|0); btDetail(); };
-  inp.oninput = ()=>{ BT.hp=BT.hp||{}; BT.hp[BT.me]=Math.max(0, +inp.value|0); btDetailLiveOnly(); };
-  $$('#btDetail [data-bthp]').forEach(b=> b.onclick=()=>{
-    const max=+inp.max; apply(b.dataset.bthp==='full' ? max : Math.floor(max/2));
-  });
-}
-/* HPを打っている最中にフォーカスが飛ばないよう、結論の部分だけ差し替える */
-function btDetailLiveOnly(){
-  const host=$('#btLive'); if(!host || !BT.sel) return;
-  const pos = $('#btHp') ? $('#btHp').selectionStart : null;
-  host.innerHTML = btLiveCard(BT.sel);
-  const inp=$('#btHp'); if(inp){ inp.focus(); if(pos!=null) try{inp.setSelectionRange(pos,pos);}catch(e){} }
-  btBindLive(); btBindSeen();
+    if(d.obs) BT.obs=d.obs; if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp;
+    if(d.megaFixed) BT.megaFixed=d.megaFixed; if(d.guardGone) BT.guardGone=d.guardGone; }catch(e){}
 }
 
 function btDetail(){
@@ -1229,7 +1262,7 @@ function btDetail(){
   });
   const inPick = rows.filter(r=>BT.picks.includes(r.name));
   const best = inPick[0];
-  const a = best ? btAct(best.mu) : null;
+  const a = best ? btAct(best.mu, best.call) : null;
   el.innerHTML = `<div id="btLive">${btLiveCard(o)}</div>
     <div class="card">
     <div class="hd" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -1246,7 +1279,7 @@ function btDetail(){
     })()}
     ${PC.oppTricks(PC.toBase(o)).map(([mv,why])=>`<div class="small" style="color:var(--red)">・<b>${esc(mv)}</b>：${esc(why)}</div>`).join('')}
     <table style="margin-top:10px"><tr><th>自分</th><th>判断</th><th class="num">与 / 被</th></tr>
-    ${rows.map(r=>{const ac=btAct(r.mu);
+    ${rows.map(r=>{const ac=btAct(r.mu, r.call);
       return `<tr class="${BT.picks.includes(r.name)?'':'muted'}"><td>${esc(r.name)}${BT.picks.includes(r.name)?'':' <span class="small muted">(控え)</span>'}</td>
       <td><span class="badge ${ac.c}">${ac.t}</span>${r.mu.opMove?`<div class="small muted">被:${esc(r.mu.opMove)}</div>`:''}</td><td class="num small">${muNums(r.mu)}</td></tr>`;}).join('')}
     </table></div>`;
