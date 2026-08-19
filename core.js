@@ -129,6 +129,23 @@ function oppMoves(name, minRate){
 /** 相手の持ち物のうち、その分類の打点をいちばん上げるもの（採用率 minRate% 以上）。
  *  メガシンカ後はメガストーンを持っているので打点アイテムは無い。 */
 const OFFENSE_ITEMS = { 'こだわりハチマキ':'物', 'こだわりメガネ':'特', 'いのちのたま':'両', 'たつじんのおび':'両' };
+/* タイプ強化アイテム（そのタイプの技だけ×1.2）。実データで採用率が高いものだけ載せる。
+   例: ドドゲザン くろいメガネ51.5% / ダイケンキ(ヒスイ) くろいメガネ46.4% */
+const TYPE_ITEMS = {
+  'くろいメガネ':'あく','しんぴのしずく':'みず','ようせいのハネ':'フェアリー','もくたん':'ほのお',
+  'きせきのタネ':'くさ','まがったスプーン':'エスパー','とけないこおり':'こおり','じしゃく':'でんき',
+  'するどいくちばし':'ひこう','どくバリ':'どく','やわらかいすな':'じめん','かたいいし':'いわ',
+  'ぎんのこな':'むし','のろいのおふだ':'ゴースト','りゅうのキバ':'ドラゴン','メタルコート':'はがね',
+  'くろおび':'かくとう','シルクのスカーフ':'ノーマル'
+};
+/** 相手の持ち物のうち、その技のタイプを強化するもの（採用率25%以上） */
+function oppTypeItem(name, moveType, minRate){
+  if(name.startsWith('メガ')) return '';
+  const u = oppUsage(name); if(!u) return '';
+  const th = minRate==null ? 25 : minRate;
+  const hit = (u.i||[]).find(([it,rate])=> rate>=th && TYPE_ITEMS[it]===moveType);
+  return hit ? hit[0] : '';
+}
 function oppOffenseItem(name, cat, minRate){
   if(name.startsWith('メガ')) return '';
   const u = oppUsage(name); if(!u) return '';
@@ -722,7 +739,9 @@ function bestThreat(oppName, mine, opp){
   let best = {rate:0, rateHi:0, type:null, move:null, rateOf:null, item:''};
   cands.forEach(mv=>{
     if(mv.type === imm) return;                       // こちらの特性でタイプごと無効
-    const item = oppOffenseItem(oppName, mv.cat);     // 採用率25%以上の打点アイテムだけ乗せる
+    // 採用率25%以上の打点アイテムだけ乗せる。タイプ強化アイテムはそのタイプの技にだけ効く
+    const item = oppOffenseItem(oppName, mv.cat)
+              || (oppTypeItem(oppName, mv.type) ? 'タイプ強化アイテム' : '');
     const r = calcDamage({
       attacker:{name:oppName, atkStat: atkOf(mv.cat), types:os.types, ability:'', item, rank:0, hpRatio:1},
       defender:{name:mine.name, defStat: mv.cat==='物'?myStats.b:myStats.d, hp:myStats.h,
@@ -1102,7 +1121,7 @@ global.PC = {
   MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
-  bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
+  bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppTypeItem, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
 };
 })(window);
