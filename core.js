@@ -106,7 +106,43 @@ function loadData(){
       pp:+p[5], contact: p[6]==='1' };
   });
   Object.assign(USAGE, global.USAGE_M5 || {});
+  Object.assign(TEAMSTOP, global.TEAMS_TOP || {});
   buildMegaMap();
+}
+
+/* ---------- 上位構築の同居データ ----------
+   出典: champs.pokedb.tokyo の公開データ（M-4・M-3 シングル 計517構築）。app/data/teams.js
+   使い道は2つ。
+   ① 相手6体の入力を速くする（選出は90秒しかない）
+   ② まだ見えていない枠を予測する（見せ合いで全部見えていても、型の想定に効く） */
+const TEAMSTOP = {};
+function teamData(name){ return TEAMSTOP[name] || TEAMSTOP[BASE_OF[name]] || null; }
+/** そのポケモンと一緒に使われやすい相手（同居率%つき） */
+function partnersOf(name){
+  const t = teamData(name); if(!t) return [];
+  return t.w.map(([n,r])=>({name:n, rate:r}));
+}
+/** 上位構築での持ち物分布（構築文脈込み） */
+function teamItemsOf(name){
+  const t = teamData(name); if(!t) return [];
+  return t.i.map(([n,r])=>({name:n, rate:r}));
+}
+/** すでに見えている相手から、残りの枠に来そうなポケモンを予測する。
+ *  スコア＝見えている各体との同居率の合計（すでに見えているものは除く）。 */
+function predictRest(seen, limit){
+  const have = new Set((seen||[]).map(n=> BASE_OF[n] || n));
+  const sc = {};
+  (seen||[]).forEach(n=>{
+    partnersOf(n).forEach(p=>{
+      const key = p.name;
+      if(have.has(key) || have.has(BASE_OF[key]||key)) return;
+      sc[key] = (sc[key]||0) + p.rate;
+    });
+  });
+  return Object.entries(sc).sort((a,b)=> b[1]-a[1]).slice(0, limit||8)
+    .map(([name, score])=>({ name, score: Math.round(score),
+      // 見えている何体と同居しやすいか
+      with: (seen||[]).filter(n=> partnersOf(n).some(p=>p.name===name)) }));
 }
 
 /* ---------- 相手の実データ（シーズンM-5 シングル使用率） ----------
@@ -150,6 +186,48 @@ function oppMoveChoices(name){
   if(!u) return [];
   return u.m.map(m=>({ name:m[0], rate:m[1], type:m[2], cat:m[3], power:m[4] }))
            .sort((a,b)=> b.rate - a.rate);
+}
+
+/* ---------- 役割の推定 ----------
+   社長の要望（2026-08-19）：
+   「この特性でこの振り方をしているこのポケモンは大体この技を覚えているよねとか、
+     このパーティーの中のこのポケモンはこういう戦い方・役割を持っているよねが分かってくると、
+     対策がよりしやすくなる」
+   採用率の実データ（技・持ち物・SP振り）から機械的に出す。推測ではなく、根拠の数字を必ず添える。 */
+const ROLE_RULES = [
+  { role:'起点作り',   why:'場を作ってから後続につなぐ', moves:['ステルスロック','まきびし','どくびし','ねばねばネット','おいかぜ','リフレクター','ひかりのかべ','オーロラベール'] },
+  { role:'流し役',     why:'こちらの積みを流す・眠らせる', moves:['あくび','ふきとばし','ドラゴンテール','ほえる','ともえなげ','うずしお'] },
+  { role:'受け',       why:'回復して居座る。削り切れないと粘られる', moves:['じこさいせい','ねがいごと','はねやすめ','なまける','つきのひかり','タマゴうみ','ミルクのみ','ねむる','ソフトボール'] },
+  { role:'積みエース', why:'1回積まれると止まらなくなる', moves:['つるぎのまい','りゅうのまい','めいそう','わるだくみ','てっぺき','ビルドアップ','からをやぶる','ちょうのまい','コットンガード','のろい','ロックカット'] },
+  { role:'サイクル',   why:'殴って引く。有利対面を作り直してくる', moves:['とんぼがえり','ボルトチェンジ','クイックターン','しおふき'] },
+  { role:'搦め手',     why:'状態異常で機能停止させてくる', moves:['どくどく','おにび','でんじは','キノコのほうし','ちょうはつ','アンコール','みがわり'] },
+  { role:'先制技持ち', why:'瀕死圏で殴ると持っていかれる', moves:['ふいうち','かげうち','しんそく','バレットパンチ','マッハパンチ','こおりのつぶて','アクアジェット','でんこうせっか'] }
+];
+/** その相手の「役割」を実データから推定する。根拠（技名と採用率）つき */
+function rolesOf(name){
+  const u = oppUsage(name); if(!u) return [];
+  const out = [];
+  ROLE_RULES.forEach(rule=>{
+    const hit = (u.m||[]).filter(m=> rule.moves.includes(m[0]) && m[1] >= 20)
+                         .map(m=>({move:m[0], rate:m[1]}))
+                         .sort((a,b)=> b.rate - a.rate);
+    if(hit.length) out.push({ role:rule.role, why:rule.why, evidence:hit,
+                              // いちばん採用率の高い根拠technique＝その役割の確からしさ
+                              rate: hit[0].rate });
+  });
+  // 持ち物からも足す
+  const it = (u.i||[]);
+  const has = (n,th)=> it.some(x=> x[0]===n && x[1]>= (th||20));
+  if(has('こだわりスカーフ',20)) out.push({role:'スカーフで上を取る', why:'素早さの想定がひっくり返る',
+    evidence:[{move:'こだわりスカーフ', rate: it.find(x=>x[0]==='こだわりスカーフ')[1]}],
+    rate: it.find(x=>x[0]==='こだわりスカーフ')[1]});
+  if(has('きあいのタスキ',20)) out.push({role:'タスキで1発耐える', why:'確定1発が確定2発になる',
+    evidence:[{move:'きあいのタスキ', rate: it.find(x=>x[0]==='きあいのタスキ')[1]}],
+    rate: it.find(x=>x[0]==='きあいのタスキ')[1]});
+  if(has('とつげきチョッキ',20)) out.push({role:'チョッキで特殊を受ける', why:'特殊技が通らない',
+    evidence:[{move:'とつげきチョッキ', rate: it.find(x=>x[0]==='とつげきチョッキ')[1]}],
+    rate: it.find(x=>x[0]==='とつげきチョッキ')[1]});
+  return out.sort((a,b)=> b.rate - a.rate);
 }
 
 /** 相手の持ち物のうち、その分類の打点をいちばん上げるもの（採用率 minRate% 以上）。
@@ -1042,7 +1120,14 @@ function readDamage(mine, oppName, hpNow, field, known){
   const base = usage || os.types.map(t=>({ name:'（'+t+'技）', type:t,
     cat:(os.base.a>=os.base.c?'物':'特'), power:REP_POWER, contact:false, rate:null }));
   const all = roll(base);
-  if(!all.length) return { maxHP, hpNow, taken, empty:true };
+  if(!all.length){
+    // 相手の技が1つも通らない（全部タイプ相性で無効）。left が無いと呼び出し側が落ちるので必ず返す
+    const g = myOneHitGuard(mine);
+    return { maxHP, hpNow, taken, takenPct: taken/maxHP, empty:true,
+             notHitYet: taken<=0, candidates:[], others:[],
+             ruledOut:{moves:[],items:[],spreads:[]}, fromFullList:false,
+             left:{ worst:99, worstMove:null, worstPct:0, diesNext:false, guard:g, guardAlive:!!g } };
+  }
 
   /* あと何発耐えるか。タスキ／ばけのかわ／がんじょうは満タンからの1発を無効化する。 */
   const worstRow = all.reduce((a,b)=> b.max>a.max ? b : a, all[0]);
@@ -1153,14 +1238,24 @@ function callIt(mine, oppName, opts){
   }
   if(koMoves.length) detail.push({k:'bad',
     t:`一撃で落とされる：${koMoves.slice(0,3).map(r=>`${r.move}(${r.rateOf}%)`).join('・')}　→ <b>およそ${pOHKO}%</b>の型が持っている`});
+  /* 自分の被ダメージは実数でも出す。ゲーム内の自分のHPは数字表記なので、
+     %だけだと画面の数字と突き合わせられない（社長の指摘 2026-08-19）。 */
+  const myMax = mine.stats ? mine.stats.h : 0;
+  const dmgTxt = r => myMax
+    ? `${Math.round(r.rate*myMax*0.94)}〜${Math.round(r.rateHi*myMax)}<span class="muted">(${pc(r.rate)}〜${pc(r.rateHi)}%)</span>`
+    : `${pc(r.rate)}〜${pc(r.rateHi)}%`;
   const others = rows.filter(r=> !r.ohko && r.rate>=0.25).slice(0,4);
   if(others.length) detail.push({k:'info',
-    t:`飛んでくる技：${others.map(r=>`${r.move}(${r.rateOf}%) ${pc(r.rate)}〜${pc(r.rateHi)}%`).join('、')}`});
+    t:`飛んでくる技：${others.map(r=>`${r.move}(${r.rateOf}%) ${dmgTxt(r)}`).join('、')}`});
   if(mu.guard) detail.push({k:'good', t:`${mu.guard}で1発は耐える`});
   if(!mu.faster && mu.fasterAny && oppScarfRate(oppName)>=15)
     detail.push({k:'bad', t:`こだわりスカーフ採用${oppScarfRate(oppName)}%。持たれていると抜かれる`});
   if(mu.myMove) detail.push({k:'info',
     t:`こちらの最大打点：<b>${mu.myMove}</b> ${pc(mu.myDmgLo)}〜${pc(mu.myDmgHi)}%（${myHits}発で落とせる）`});
+  // 相手の役割（実データからの推定。根拠の採用率つき）
+  const roles = rolesOf(oppName);
+  if(roles.length) detail.push({k:'role', t:`相手の役割：${roles.slice(0,3).map(r=>
+    `<b>${r.role}</b><span class="muted">(${r.evidence[0].move} ${r.evidence[0].rate}%)</span>`).join('、')}`});
   /* 相手の変化技（実採用率）。あくび・回復・積みは、殴り合いの計算だけ見ていると必ず読み落とす。 */
   const chg = (oppMoveChoices(oppName)||[]).filter(m=> m.cat==='変' && m.rate>=15);
   if(chg.length){
@@ -1172,7 +1267,7 @@ function callIt(mine, oppName, opts){
 
   // ---- 結論 ----
   let head, cls, mark, why;
-  const diesNow = rd ? rd.left.diesNext : (pOHKO>=SURE_RATE);
+  const diesNow = (rd && rd.left) ? rd.left.diesNext : (pOHKO>=SURE_RATE);
   if(mu.noOffense){
     head='引く'; cls='ng'; mark='✕'; why=`打点が無い（最大でも${mu.myHits}発かかる）`;
   }else if(myHits<=1 && mu.fasterAny && !(diesNow && !mu.faster)){
@@ -1483,7 +1578,7 @@ global.PC = {
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
   bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppTypeItem,
-  readDamage, actionNow, callIt, SURE_RATE, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
+  readDamage, actionNow, callIt, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
 };
 })(window);

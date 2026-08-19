@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '21';
+const APP_VERSION = '22';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1022,10 +1022,23 @@ function btRender(){
     : '<span class="pk ghost">相手を入れてください</span>';
   $$('#btOppChips [data-bx]').forEach(x=> x.onclick=()=>{ BT.opp.splice(+x.dataset.bx,1); btCompute(); btRender(); });
 
+  /* 入力の候補。すでに何体か入っていれば「上位構築での同居率」で並べ替える。
+     選出は90秒しかないので、探す時間を1体でも減らすのが効く。
+     出典: champs.pokedb.tokyo の上位構築517件（app/data/teams.js）。 */
   const seen={}; BATTLES.forEach(b=>(b.opp_team||[]).forEach(n=>seen[n]=(seen[n]||0)+1));
   const hist=Object.entries(seen).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([n])=>n);
-  const list=(hist.length>=6?hist:META_TOP.slice(0,10));
-  $('#btQuick').innerHTML = list.map(n=>`<button class="qb ${BT.opp.includes(n)?'dim':''}" data-bq="${esc(n)}">${typeChips(n)}${esc(n)}</button>`).join('');
+  let list, why='';
+  if(BT.opp.length){
+    const pred = PC.predictRest(BT.opp, 12);
+    if(pred.length){
+      list = pred.map(p=>p.name).filter(n=>PC.SPECIES[n]);
+      why = `<div class="small muted" style="margin-top:6px">いま入っている${BT.opp.length}体と<b>一緒に使われやすい順</b>に並べています（上位構築517件）</div>`;
+    }
+  }
+  if(!list || !list.length) list = (hist.length>=6?hist:META_TOP.slice(0,10));
+  $('#btQuick').innerHTML = why + list.map(n=>`<button class="qb ${BT.opp.includes(n)?'dim':''}" data-bq="${esc(n)}">${typeChips(n)}${esc(n)}</button>`).join('')
+    + (BT.opp.length && BT.opp.length<6 ? `<div class="small muted" style="width:100%;margin-top:6px">
+        残り${6-BT.opp.length}枠の予測：${PC.predictRest(BT.opp,4).map(p=>esc(p.name)).join('・')}</div>` : '');
   $$('#btQuick [data-bq]').forEach(b=> b.onclick=()=>{
     if(BT.opp.length>=6) return toast('6匹までです',true);
     if(BT.opp.includes(b.dataset.bq)) return;
@@ -1135,7 +1148,7 @@ function btNowRender(){
                    : '→ <span class="muted">該当なし。急所・2回被弾・天候・ランク変化の可能性</span>'}
       ${rd.fromFullList&&src.length?'<br><span class="muted">※採用率10%未満の技。全技から推定した参考値です</span>':''}
       ${rd.candidates.length&&rd.ruledOut.moves.length?`<br><span class="muted">この一撃では無かった技：${rd.ruledOut.moves.map(esc).join('・')}</span>`:''}
-      ${rd.left ? `<br>いちばん痛い <b>${esc(rd.left.worstMove)}</b>(${Math.round(rd.left.worstPct*100)}%) で
+      ${(rd.left && rd.left.worstMove) ? `<br>いちばん痛い <b>${esc(rd.left.worstMove)}</b>(${Math.round(rd.left.worstPct*100)}%) で
         ${rd.left.diesNext?'<b style="color:var(--red)">次の一撃で落ちる</b>':`<b>あと${rd.left.worst}発</b>`}` : ''}
     </div>`;
 
@@ -1145,6 +1158,9 @@ function btNowRender(){
 
     <div class="small muted">相手</div>
     <div class="quick" style="margin-top:4px">${oppChips}</div>
+    ${(()=>{ const ti = PC.teamItemsOf(PC.toBase(BT.sel)) || [];
+      return ti.length ? `<div class="small muted" style="margin-top:4px">上位構築での持ち物：${
+        ti.map(x=>`${esc(x.name)} ${x.rate}%`).join('・')}</div>` : ''; })()}
     <div class="hpwrap">
       <span class="small muted">相手の残りHP</span>
       <div class="seg" id="btOppHp">
@@ -1171,7 +1187,7 @@ function btNowRender(){
       ${c.to?`<div class="small" style="margin-top:6px">引くなら → <b>${esc((mine.find(x=>x.name===c.to.name)||{}).disp || c.to.name)}</b>（${c.to.c.mark} ${esc(c.to.c.why)}）</div>`:''}
     </div>
     <div class="small" style="margin-top:10px">
-      ${c.detail.map(d=>`<div style="margin:3px 0;color:${d.k==='bad'?'var(--red)':d.k==='good'?'var(--grn)':d.k==='warn'?'var(--org)':'inherit'}">・${d.t}</div>`).join('')}
+      ${c.detail.map(d=>`<div style="margin:3px 0;color:${d.k==='bad'?'var(--red)':d.k==='good'?'var(--grn)':d.k==='warn'?'var(--org)':d.k==='role'?'var(--blue)':'inherit'}">・${d.t}</div>`).join('')}
     </div>`:''}
     ${readBlock}
   </div>
