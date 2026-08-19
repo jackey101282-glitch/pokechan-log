@@ -30,9 +30,10 @@ video{width:100%;border-radius:10px;background:#000;display:none}
 単体ではどちらも止まるのに、<b>両方動かすと iOS が止めない</b>。<br>
 <b class="ok">③ 小窓も成功</b>：ゲームの上に出せて、裏でも描画が続いた。<br>
 <b class="ng">② 無音ループは失敗</b>／<b class="ng">④ マイク単体も失敗</b>。<br>
-→ ただし <b>2026-08-19 の実機で「音が聞こえなかった」</b>という報告。
-イベント（onstart）は発火しているので、<b>鳴ってはいるが聞こえていない</b>可能性が高い。
-マナーモードか、マイク使用中の受話口出力かを <b>⓪で切り分ける</b>。</p>
+→ ただし <b>実機では音が聞こえなかった</b>。さらに社長の条件として
+<b>「マナーモードは解除できない（ポケモンの音がうるさい）」</b>。<br>
+→ <b>方式を変更。読み上げをやめ、音声ファイルのメディア再生にする（⑦）。</b>
+消音スイッチはメディア再生を止めず、バックグラウンドでも鳴り続けるため。</p>
 </div>
 
 <div class="card">
@@ -64,8 +65,23 @@ video{width:100%;border-radius:10px;background:#000;display:none}
   <div class="res" id="r4">未実行</div>
 </div>
 
+<div class="card" style="border-color:#16a34a;border-width:3px">
+  <h2>⑦ マナーモードのままで鳴らす（本命に変更）</h2>
+  <p class="why"><b>マナーモードを解除せずに鳴らしたい</b>とのことなので、方式を変えました。<br>
+    iOSの消音スイッチは「読み上げ」と Web Audio を止めますが、
+    <b>音楽と同じ「メディア再生」は止めません</b>。しかもメディア再生は
+    <b>バックグラウンドでも鳴り続けます</b>。<br>
+    そこで読み上げをやめ、<b>音声ファイルを先に作っておいて鳴らす</b>方式にしました。<br><br>
+    <b>マナーモードをONのまま（ポケモンの音が出ない状態で）</b>下を押してください。</p>
+  <button class="primary" id="t7a">1. 音を出す（マナーモードのままで聞こえるか）</button>
+  <button id="t7b">2. 続けて鳴らし続ける（裏で何秒持つか）</button>
+  <div class="res" id="r7">未実行</div>
+  <audio id="au" preload="auto" playsinline></audio>
+  <audio id="keep" preload="auto" playsinline loop></audio>
+</div>
+
 <div class="card" style="border-color:#2563eb;border-width:2px">
-  <h2>⓪ まず「音が出るか」を確かめる</h2>
+  <h2>⓪ 参考：読み上げが鳴るかの切り分け（⑦がダメだったときだけ）</h2>
   <p class="why"><b>先にこれをやってください。</b>⑤で何も聞こえなかった原因は、たぶん次のどちらかです。<br>
     ・<b>マナーモード（本体側面のスイッチ）がON</b> → iOSは読み上げを鳴らさないことがあります<br>
     ・<b>マイクを掴むと、音がスピーカーではなく受話口（画面上部の細い穴）から出る</b>
@@ -218,6 +234,63 @@ $('#t4').onclick=async ()=>{
       (t4hidden>0 ? (live?'<span class="ok">裏でもマイクが生きています</span>':'<span class="ng">裏でマイクが止まりました</span>') : '裏に回して確認してください');
   };
   tick(); t4id=setInterval(tick,3000);
+};
+
+/* ⑦ マナーモードのままで鳴らす（メディア再生方式）
+   ★社長の条件：「マナーモードを解除するとポケモンの音がうるさい。マナーモードのままで鳴ってほしい」
+   iOSの消音スイッチは speechSynthesis と Web Audio を止めるが、
+   <audio> のメディア再生は止めない（音楽アプリが鳴るのと同じ）。
+   さらにメディア再生はバックグラウンドでも継続する。
+   → 読み上げをやめ、事前に作った音声ファイルを鳴らす方式に変える。 */
+const CLIPS=['voice/test1.m4a','voice/test2.m4a','voice/test3.m4a'];
+let t7id=null, t7n=0, t7hidden=0, t7ok=0, t7okHidden=0, t7hidAt=0, t7best=0;
+async function playClip(i){
+  const a=$('#au');
+  a.src=CLIPS[i % CLIPS.length];
+  try{ await a.play(); return true; }
+  catch(e){ log('⑦ 再生できず '+e.message); return false; }
+}
+$('#t7a').onclick=async ()=>{
+  // 無音ループを先に鳴らして「メディア再生中」の状態を作る（バックグラウンド維持にも効く）
+  const k=$('#keep');
+  if(k.paused){ k.src='voice/keepalive.m4a'; k.volume=0.02;
+    try{ await k.play(); log('⑦ 無音ループを開始（メディアセッション維持）'); }
+    catch(e){ log('⑦ 無音ループに失敗 '+e.message); } }
+  const ok=await playClip(0);
+  $('#r7').innerHTML = ok
+    ? '<b>「ひく。メガメタグロスへ」と聞こえましたか？</b><br>'+
+      '<span class="muted">マナーモードのままで聞こえたなら成功です</span>'
+    : '<span class="ng">再生できませんでした</span>';
+};
+$('#t7b').onclick=()=>{
+  if(t7id){ clearInterval(t7id); t7id=null; $('#t7b').textContent='2. 続けて鳴らし続ける（裏で何秒持つか）'; return; }
+  $('#t7b').textContent='停止';
+  t7n=0; t7hidden=0; t7ok=0; t7okHidden=0; t7best=0;
+  if(!window._t7vis){ window._t7vis=true;
+    document.addEventListener('visibilitychange',()=>{
+      if(!t7id) return;
+      if(document.hidden) t7hidAt=Date.now();
+      else if(t7hidAt){ const sec=Math.round((Date.now()-t7hidAt)/1000);
+        log('⑦ 裏に'+sec+'秒いた'); t7hidAt=0; u7(); }
+    }); }
+  if(document.hidden) t7hidAt=Date.now();
+  const u7=()=>{ $('#r7').innerHTML=
+    `${t7n}回鳴らした（裏で ${t7hidden}回）<br>`+
+    `<b>成功 ${t7ok}回（<span class="${t7okHidden?'ok':'ng'}">裏で ${t7okHidden}回</span>）</b><br>`+
+    `<b>裏で鳴り続けた最長：<span class="${t7best>=60?'ok':''}">${t7best}秒</span></b>`+
+    (t7best>=60?'　<span class="ok">試合中ずっと使えます</span>':''); };
+  const tick=async ()=>{
+    t7n++; const hidden=document.hidden; if(hidden) t7hidden++;
+    const ok=await playClip(t7n);
+    if(ok){ t7ok++;
+      if(hidden){ t7okHidden++;
+        const sec=t7hidAt? Math.round((Date.now()-t7hidAt)/1000):0;
+        if(sec>t7best) t7best=sec;
+        log('⑦ 裏で'+sec+'秒経過 → 鳴った'); }
+      else log('⑦'+t7n+' 鳴った（表）'); }
+    u7();
+  };
+  tick(); t7id=setInterval(tick,6000);
 };
 
 /* ⓪ 音が出るかの切り分け。
