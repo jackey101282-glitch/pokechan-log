@@ -879,6 +879,9 @@ function matchup(mine, theirs){
     faster: views.every(v=>v.faster),
     fasterAny: views.some(v=>v.faster),
     opS: Math.max(...views.map(v=>v.opS)),
+    // スカーフ想定は行動順を大きく変えるので、素の最大値と分けて持つ（画面で「253」だけ出すと嘘になる）
+    opSNoScarf: Math.max(...views.filter(v=>v.kind!=='scarf').map(v=>v.opS)),
+    opSScarf: (views.find(v=>v.kind==='scarf')||{}).opS || null,
     score: wavg(v=>v.score),
     myDmg: wavg(v=>v.myDmg),
     opDmg: wavg(v=>v.opDmg),

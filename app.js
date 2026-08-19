@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '19';
+const APP_VERSION = '20';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1402,9 +1402,26 @@ function renderVs(){
   PC.oppTricks(opp).forEach(([mv,why])=> warn.push(`<b>${esc(mv)}</b>：${esc(why)}`));
   if(oppAb) warn.push(`相手の特性 <b>${esc(oppAb)}</b>${immT?`（<b>${esc(immT)}技が無効</b>）`:''}`);
   if(PC.survivesOneHit(opp)) warn.push('<b>1発は必ず耐えてくる</b>（ばけのかわ／がんじょう）。連続技か2発で崩す');
+  /* 4倍弱点は「その相手が実際にそのタイプの技を使っているか」で出し分ける。
+     これを見ずに出していたので、でんき技を1つも採用していないガブリアス相手に
+     「でんきが4倍。先制技でも落ちる」と警告していた（2026-08-19 社長の指摘）。 */
   const my4 = inc.filter(x=>x.e>=4);
-  if(my4.length) warn.push(`<b>${my4.map(x=>x.t).join('・')}が4倍</b>。先制技でも落ちる`);
-  if(!mu.faster && mu.fasterAny) warn.push('相手の型次第で<b>抜かれる</b>。最速想定なら後手');
+  if(my4.length){
+    const oppMv = PC.oppMoveChoices(opp);
+    const has = t => !oppMv.length || oppMv.some(m=> m.type===t && m.power>0);
+    const real = my4.filter(x=> has(x.t));
+    const paper = my4.filter(x=> !has(x.t));
+    if(real.length) warn.push(`<b>${real.map(x=>x.t).join('・')}が4倍</b>。先制技でも落ちる`);
+    if(paper.length) warn.push(
+      `<span class="muted">${paper.map(x=>x.t).join('・')}は4倍だが、${esc(opp)}は採用率上位に${paper.length>1?'これらの':'この'}タイプの技を持っていない</span>`);
+  }
+  /* 素早さは「どの型を想定した数字か」を書かないと嘘になる（スカーフ型を入れてから特に） */
+  if(!mu.faster && mu.fasterAny){
+    const sc = PC.oppScarfRate(opp);
+    warn.push(sc>=15
+      ? `相手の型次第で<b>抜かれる</b>。<b>こだわりスカーフ採用${sc}%</b>なので、上の素早さはスカーフ想定の最大値`
+      : '相手の型次第で<b>抜かれる</b>。最速想定なら後手');
+  }
   else if(!mu.faster) warn.push('<b>相手の方が速い</b>');
   if(mu.split) warn.push(`<b>相手の型で結論が変わる</b>：${esc(splitNote(mu)||'型を絞ってから動く')}`);
   const atkRows = moveRows.filter(r=>!r.status);
@@ -1430,7 +1447,7 @@ function renderVs(){
       <div class="small">${esc(act.why)}</div>
     </div>
     <div style="font-size:20px;font-weight:800">${muNums(mu)}</div>
-    <div class="small muted">与える割合 / 受ける割合　・　素早さ ${mu.myS} vs ${mu.opS}　${mu.faster?'<b>先制できる</b>':(mu.fasterAny?'型次第で先制':'<b>後手</b>')}</div>
+    <div class="small muted">与える割合 / 受ける割合　・　素早さ ${mu.myS} vs ${mu.opSNoScarf||mu.opS}${mu.opSScarf?`<span class="muted">（スカーフなら${mu.opSScarf}）</span>`:''}　${mu.faster?'<b>先制できる</b>':(mu.fasterAny?'型次第で先制':'<b>後手</b>')}</div>
   </div>
 
   ${warn.length?`<div class="card" style="border-color:var(--red);background:var(--redsoft)">
