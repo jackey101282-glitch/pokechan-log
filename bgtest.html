@@ -30,7 +30,9 @@ video{width:100%;border-radius:10px;background:#000;display:none}
 単体ではどちらも止まるのに、<b>両方動かすと iOS が止めない</b>。<br>
 <b class="ok">③ 小窓も成功</b>：ゲームの上に出せて、裏でも描画が続いた。<br>
 <b class="ng">② 無音ループは失敗</b>／<b class="ng">④ マイク単体も失敗</b>。<br>
-→ <b>残るは「どれだけ長く持つか」だけ。⑤を2〜3分やってください。</b></p>
+→ ただし <b>2026-08-19 の実機で「音が聞こえなかった」</b>という報告。
+イベント（onstart）は発火しているので、<b>鳴ってはいるが聞こえていない</b>可能性が高い。
+マナーモードか、マイク使用中の受話口出力かを <b>⓪で切り分ける</b>。</p>
 </div>
 
 <div class="card">
@@ -62,8 +64,21 @@ video{width:100%;border-radius:10px;background:#000;display:none}
   <div class="res" id="r4">未実行</div>
 </div>
 
+<div class="card" style="border-color:#2563eb;border-width:2px">
+  <h2>⓪ まず「音が出るか」を確かめる</h2>
+  <p class="why"><b>先にこれをやってください。</b>⑤で何も聞こえなかった原因は、たぶん次のどちらかです。<br>
+    ・<b>マナーモード（本体側面のスイッチ）がON</b> → iOSは読み上げを鳴らさないことがあります<br>
+    ・<b>マイクを掴むと、音がスピーカーではなく受話口（画面上部の細い穴）から出る</b>
+      → iOSがマイク使用中は通話モードになるためです<br>
+    下の2つを順に押して、<b>どちらが聞こえたか</b>を教えてください。
+    聞こえないときは<b>受話口に耳を当てて</b>ももう一度試してください。</p>
+  <button class="primary" id="t0a">A：マイクなしで鳴らす（ポーン＋「まいくなし」）</button>
+  <button class="primary" id="t0b">B：マイクを掴んでから鳴らす（ポーン＋「まいくあり」）</button>
+  <div class="res" id="r0">未実行</div>
+</div>
+
 <div class="card" style="border-color:#ef4444;border-width:2px">
-  <h2>⑤ 裏で何秒持つかを測る（いちばん知りたいこと）</h2>
+  <h2>⑤ 裏で何秒持つかを測る（⓪で音が出てから）</h2>
   <p class="why"><b>マイクを掴んだまま読み上げると、裏でも鳴り続けることが分かりました。</b>
     残る問題は「どれだけ長く持つか」です。試合は7分あります。<br>
     押したら<b>ホームに戻ってポケモンを開き、できれば2〜3分そのまま</b>にしてください。
@@ -204,6 +219,47 @@ $('#t4').onclick=async ()=>{
   };
   tick(); t4id=setInterval(tick,3000);
 };
+
+/* ⓪ 音が出るかの切り分け。
+   ・ポーン（Web Audio）と 読み上げ（speechSynthesis）は別経路なので、両方鳴らして片方でも聞こえるか見る
+   ・マイクの有無で出力先が変わる（iOSはマイク使用中、受話口から出る）ので A/B に分ける */
+let t0mic=null;
+function beep(ctx, freq){
+  const o=ctx.createOscillator(), g=ctx.createGain();
+  o.type='sine'; o.frequency.value=freq;
+  g.gain.setValueAtTime(0.0001, ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.5, ctx.currentTime+0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.6);
+  o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime+0.7);
+}
+async function soundCheck(withMic){
+  const tag = withMic ? 'B(マイクあり)' : 'A(マイクなし)';
+  if(withMic && !t0mic){
+    try{ t0mic=await navigator.mediaDevices.getUserMedia({audio:true}); log('⓪'+tag+' マイクを取得'); }
+    catch(e){ log('⓪'+tag+' マイクを取れず '+e.message); }
+  }
+  if(!withMic && t0mic){ t0mic.getTracks().forEach(t=>t.stop()); t0mic=null; log('⓪ マイクを解放'); }
+  let ctxState='なし';
+  try{
+    const ctx=new (window.AudioContext||window.webkitAudioContext)();
+    await ctx.resume(); ctxState=ctx.state;
+    beep(ctx, withMic?660:440);
+    setTimeout(()=>ctx.close(), 1500);
+  }catch(e){ log('⓪'+tag+' ポーンに失敗 '+e.message); }
+  const u=new SpeechSynthesisUtterance(withMic?'まいくあり':'まいくなし');
+  u.lang='ja-JP'; u.rate=1.0; u.volume=1;
+  u.onstart=()=>{ log('⓪'+tag+' 読み上げが始まった'); upd0(tag,'読み上げ開始'); };
+  u.onend=()=>{ log('⓪'+tag+' 読み上げが終わった'); };
+  u.onerror=(e)=>{ log('⓪'+tag+' 読み上げ失敗 '+(e.error||'')); upd0(tag,'読み上げ失敗'); };
+  speechSynthesis.speak(u);
+  log('⓪'+tag+' 音の状態='+ctxState+' マイク='+(t0mic?'あり':'なし'));
+  upd0(tag, '音の状態 '+ctxState);
+}
+function upd0(tag, m){ $('#r0').innerHTML =
+  `${tag} を実行：${m}<br><b>スピーカーから聞こえましたか？ 受話口（画面上部）からは？</b><br>`+
+  `<span class="muted">聞こえない場合はマナーモードを解除して、音量を上げてもう一度</span>`; }
+$('#t0a').onclick=()=>soundCheck(false);
+$('#t0b').onclick=()=>soundCheck(true);
 
 /* ⑤ マイク＋読み上げを同時に動かして、裏でどれだけ持つかを測る
    ★2026-08-19 実機で判明：単体では両方とも裏で止まるのに、
