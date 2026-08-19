@@ -21,8 +21,15 @@ video{width:100%;border-radius:10px;background:#000;display:none}
 </style></head><body>
 
 <h1>バックグラウンド動作テスト</h1>
-<p class="lead">iPhoneでポケモンをやりながら、このアプリが裏で喋れるかを実機で判定します。
+<p class="lead">iPhoneでポケモンをやりながら、このアプリが裏で動けるかを実機で判定します。
 各ボタンを押したら<b>ホームに戻ってポケモンを開き、10秒待ってから戻ってきて</b>ください。</p>
+<div class="card" style="background:#fff7ed;border-color:#fdba74">
+<h2>2026-08-19 の実機結果（iOS 18.7）</h2>
+<p class="why" style="margin:0">
+<b class="ng">② 無音ループは失敗</b>：裏に回って3秒で音の状態が interrupted になる。この方式は使えない。<br>
+<b class="ng">④ マイクは失敗</b>：裏に回ると止まり、戻ってきても止まったまま。<b>喋って操作するのは不可能</b>。<br>
+<b>① と ③ は判定できていない</b>ので作り直しました。<b>①と③だけ もう一度</b>お願いします。</p>
+</div>
 
 <div class="card">
   <h2>① 読み上げが裏でも続くか</h2>
@@ -73,13 +80,23 @@ $('#t1').onclick=()=>{
   if(t1id){ clearInterval(t1id); t1id=null; $('#t1').textContent='開始（3秒おきに数を読み上げます）'; return; }
   if(!window.speechSynthesis){ $('#r1').innerHTML='<span class="ng">この端末は読み上げに対応していません</span>'; return; }
   t1n=0; t1hidden=0; $('#t1').textContent='停止';
-  const say=()=>{ t1n++; if(document.hidden) t1hidden++;
-    const u=new SpeechSynthesisUtterance(String(t1n)); u.lang='ja-JP'; u.rate=1.2;
+  let t1started=0, t1ended=0, t1hiddenStart=0;
+  const say=()=>{ t1n++; const wasHidden=document.hidden; if(wasHidden) t1hidden++;
+    const u=new SpeechSynthesisUtterance('てすと'+t1n); u.lang='ja-JP'; u.rate=1.1;
+    // ★呼び出しただけでは音が鳴った証拠にならない。実際に再生が始まったかを onstart で確かめる
+    u.onstart=()=>{ t1started++; if(wasHidden) t1hiddenStart++;
+      log('①'+t1n+' 実際に鳴った'+(wasHidden?'（裏）':'（表）')); upd(); };
+    u.onend=()=>{ t1ended++; upd(); };
+    u.onerror=(e)=>{ log('①'+t1n+' 鳴らなかった: '+(e.error||'不明')+(wasHidden?'（裏）':'（表）')); upd(); };
     speechSynthesis.speak(u);
-    log('①読み上げ '+t1n+(document.hidden?'（裏）':'（表）'));
-    $('#r1').innerHTML=`${t1n}回発声（うち裏で ${t1hidden}回）<br>`+
-      (t1hidden>0?'<span class="ok">裏でも喋れています</span>':'裏に回して確認してください');
+    log('①'+t1n+' 発声を要求'+(wasHidden?'（裏）':'（表）'));
+    upd();
   };
+  const upd=()=>{ $('#r1').innerHTML=
+      `要求 ${t1n}回（裏で ${t1hidden}回）／<b>実際に鳴った ${t1started}回（裏で ${t1hiddenStart}回）</b><br>`+
+      (t1hiddenStart>0?'<span class="ok">裏でも本当に音が出ています</span>'
+       : t1hidden>0?'<span class="ng">裏では音が出ていません（要求だけ通っている）</span>'
+       : '裏に回して確認してください'); };
   say(); t1id=setInterval(say,3000);
 };
 
@@ -125,10 +142,27 @@ $('#t3').onclick=async ()=>{
     if(!cv.captureStream){ throw new Error('canvas.captureStream に未対応'); }
     v.srcObject=cv.captureStream(15); v.style.display='block';
     await v.play();
-    if(v.webkitSetPresentationMode){ v.webkitSetPresentationMode('picture-in-picture'); log('③ webkit方式で小窓を要求'); }
-    else if(v.requestPictureInPicture){ await v.requestPictureInPicture(); log('③ 標準方式で小窓を要求'); }
-    else throw new Error('この端末は小窓に未対応');
-    $('#r3').innerHTML='<span class="ok">小窓を出しました。ホームに戻ってゲームの上に残るか見てください</span>';
+    // ★要求が通ったことと、実際に小窓が出たことは別。イベントで確かめる
+    v.addEventListener('webkitpresentationmodechanged',()=>{
+      const m=v.webkitPresentationMode;
+      log('③ 表示モードが '+m+' になった');
+      $('#r3').innerHTML = m==='picture-in-picture'
+        ? '<span class="ok">小窓が出ました。ホームに戻ってゲームの上に残るか見てください</span>'
+        : '<span class="ng">小窓になりませんでした（モード: '+m+'）</span>';
+    });
+    v.addEventListener('enterpictureinpicture',()=>{ log('③ 小窓に入った');
+      $('#r3').innerHTML='<span class="ok">小窓が出ました。ゲームの上に残るか見てください</span>'; });
+    v.addEventListener('leavepictureinpicture',()=>{ log('③ 小窓から出た'); });
+
+    if(v.webkitSupportsPresentationMode && v.webkitSupportsPresentationMode('picture-in-picture')){
+      v.webkitSetPresentationMode('picture-in-picture'); log('③ webkit方式で小窓を要求');
+    } else if(v.requestPictureInPicture){
+      await v.requestPictureInPicture(); log('③ 標準方式で小窓を要求');
+    } else throw new Error('この端末は小窓に対応していません（webkitSupportsPresentationMode='
+      + (v.webkitSupportsPresentationMode? 'あり(pip不可)' : 'なし') + '）');
+    $('#r3').innerHTML='小窓を要求しました。結果が出るまで少し待ってください…';
+    setTimeout(()=>{ if(v.webkitPresentationMode!=='picture-in-picture' && !document.pictureInPictureElement)
+      $('#r3').innerHTML='<span class="ng">小窓は出ませんでした</span>'; }, 2500);
   }catch(e){ $('#r3').innerHTML='<span class="ng">出せません: '+e.message+'</span>'; log('③失敗 '+e.message); }
 };
 
