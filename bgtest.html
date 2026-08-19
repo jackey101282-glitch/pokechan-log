@@ -1,0 +1,156 @@
+<!doctype html><html lang="ja"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>バックグラウンド動作テスト｜ポケチャン</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif;
+  background:#f6f7fb;color:#22242a;font-size:16px;line-height:1.6}
+h1{font-size:18px;margin:0 0 4px}
+p.lead{color:#6b7280;font-size:14px;margin:0 0 16px}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:14px;margin-bottom:12px}
+.card h2{font-size:15px;margin:0 0 6px}
+.card .why{font-size:13px;color:#6b7280;margin:0 0 10px}
+button{width:100%;padding:14px;border-radius:12px;border:1.5px solid #e5e7eb;background:#fff;
+  font-size:16px;font-weight:700;cursor:pointer;margin-bottom:8px}
+button.primary{background:#ef4444;border-color:#ef4444;color:#fff}
+.res{font-size:13px;background:#f3f4f6;border-radius:10px;padding:10px;white-space:pre-wrap;word-break:break-all;min-height:2em}
+.ok{color:#16a34a;font-weight:700}.ng{color:#dc2626;font-weight:700}
+#log{font-size:12px;max-height:40vh;overflow:auto}
+video{width:100%;border-radius:10px;background:#000;display:none}
+</style></head><body>
+
+<h1>バックグラウンド動作テスト</h1>
+<p class="lead">iPhoneでポケモンをやりながら、このアプリが裏で喋れるかを実機で判定します。
+各ボタンを押したら<b>ホームに戻ってポケモンを開き、10秒待ってから戻ってきて</b>ください。</p>
+
+<div class="card">
+  <h2>① 読み上げが裏でも続くか</h2>
+  <p class="why">これが動けば「引いてください」を音声で言えます。</p>
+  <button class="primary" id="t1">開始（3秒おきに数を読み上げます）</button>
+  <div class="res" id="r1">未実行</div>
+</div>
+
+<div class="card">
+  <h2>② 無音の音を流し続けたら裏でも動くか</h2>
+  <p class="why">音楽アプリと同じ扱いにできれば、裏でも喋れる可能性があります。</p>
+  <button id="t2">開始（無音ループ＋読み上げ）</button>
+  <div class="res" id="r2">未実行</div>
+</div>
+
+<div class="card">
+  <h2>③ 小窓（ピクチャインピクチャ）でゲームの上に出せるか</h2>
+  <p class="why">音が無理でも、これが動けば「引く」の文字をゲーム画面の上に出せます。</p>
+  <button id="t3">小窓を出す</button>
+  <video id="pip" playsinline muted></video>
+  <div class="res" id="r3">未実行</div>
+</div>
+
+<div class="card">
+  <h2>④ マイクが裏でも拾えるか</h2>
+  <p class="why">「ガブリアス出てきた」と喋って操作するのに必要です。</p>
+  <button id="t4">マイクを開始</button>
+  <div class="res" id="r4">未実行</div>
+</div>
+
+<div class="card">
+  <h2>結果（このままスクショして送ってください）</h2>
+  <div class="res" id="log"></div>
+  <button id="copy">結果をコピー</button>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const L=[];
+function log(m){ L.push(new Date().toLocaleTimeString('ja-JP')+' '+m); $('#log').textContent=L.slice(-60).join('\n'); $('#log').scrollTop=1e9; }
+log('端末: '+navigator.userAgent.slice(0,90));
+log('画面が隠れたら記録します');
+document.addEventListener('visibilitychange',()=> log(document.hidden?'--- 裏に回った ---':'--- 戻ってきた ---'));
+
+/* ① 読み上げ */
+let t1n=0, t1id=null, t1hidden=0;
+$('#t1').onclick=()=>{
+  if(t1id){ clearInterval(t1id); t1id=null; $('#t1').textContent='開始（3秒おきに数を読み上げます）'; return; }
+  if(!window.speechSynthesis){ $('#r1').innerHTML='<span class="ng">この端末は読み上げに対応していません</span>'; return; }
+  t1n=0; t1hidden=0; $('#t1').textContent='停止';
+  const say=()=>{ t1n++; if(document.hidden) t1hidden++;
+    const u=new SpeechSynthesisUtterance(String(t1n)); u.lang='ja-JP'; u.rate=1.2;
+    speechSynthesis.speak(u);
+    log('①読み上げ '+t1n+(document.hidden?'（裏）':'（表）'));
+    $('#r1').innerHTML=`${t1n}回発声（うち裏で ${t1hidden}回）<br>`+
+      (t1hidden>0?'<span class="ok">裏でも喋れています</span>':'裏に回して確認してください');
+  };
+  say(); t1id=setInterval(say,3000);
+};
+
+/* ② 無音ループでセッション維持 */
+let ac=null, t2id=null, t2n=0, t2hidden=0;
+$('#t2').onclick=async ()=>{
+  if(t2id){ clearInterval(t2id); t2id=null; if(ac) ac.close(); ac=null; $('#t2').textContent='開始（無音ループ＋読み上げ）'; return; }
+  try{
+    ac=new (window.AudioContext||window.webkitAudioContext)();
+    const buf=ac.createBuffer(1, ac.sampleRate*2, ac.sampleRate);
+    const ch=buf.getChannelData(0);
+    for(let i=0;i<ch.length;i++) ch[i]=(Math.random()*2-1)*0.0002;   // ほぼ無音
+    const src=ac.createBufferSource(); src.buffer=buf; src.loop=true;
+    const g=ac.createGain(); g.gain.value=0.02; src.connect(g); g.connect(ac.destination); src.start();
+    await ac.resume();
+    log('②無音ループ開始 state='+ac.state);
+  }catch(e){ $('#r2').innerHTML='<span class="ng">音を出せませんでした: '+e.message+'</span>'; return; }
+  t2n=0; t2hidden=0; $('#t2').textContent='停止';
+  const tick=()=>{ t2n++; if(document.hidden) t2hidden++;
+    const u=new SpeechSynthesisUtterance('てすと'+t2n); u.lang='ja-JP'; u.rate=1.3; speechSynthesis.speak(u);
+    log('②'+t2n+' 音の状態='+(ac?ac.state:'なし')+(document.hidden?'（裏）':'（表）'));
+    $('#r2').innerHTML=`${t2n}回（うち裏で ${t2hidden}回）／音の状態 ${ac?ac.state:'なし'}<br>`+
+      (t2hidden>0 && ac && ac.state==='running' ? '<span class="ok">裏でも動いています</span>' : '裏に回して確認してください');
+  };
+  tick(); t2id=setInterval(tick,3000);
+};
+
+/* ③ ピクチャインピクチャ */
+$('#t3').onclick=async ()=>{
+  const v=$('#pip'), cv=document.createElement('canvas'); cv.width=480; cv.height=270;
+  const g=cv.getContext('2d'); let f=0;
+  const draw=()=>{ f++;
+    g.fillStyle='#111'; g.fillRect(0,0,480,270);
+    g.fillStyle='#ef4444'; g.font='bold 64px sans-serif'; g.textAlign='center';
+    g.fillText('引く', 240, 120);
+    g.fillStyle='#fff'; g.font='28px sans-serif';
+    g.fillText('→ メガメタグロス', 240, 175);
+    g.font='20px sans-serif'; g.fillStyle='#9ca3af';
+    g.fillText('動作確認 '+f, 240, 230);
+    requestAnimationFrame(draw); };
+  draw();
+  try{
+    if(!cv.captureStream){ throw new Error('canvas.captureStream に未対応'); }
+    v.srcObject=cv.captureStream(15); v.style.display='block';
+    await v.play();
+    if(v.webkitSetPresentationMode){ v.webkitSetPresentationMode('picture-in-picture'); log('③ webkit方式で小窓を要求'); }
+    else if(v.requestPictureInPicture){ await v.requestPictureInPicture(); log('③ 標準方式で小窓を要求'); }
+    else throw new Error('この端末は小窓に未対応');
+    $('#r3').innerHTML='<span class="ok">小窓を出しました。ホームに戻ってゲームの上に残るか見てください</span>';
+  }catch(e){ $('#r3').innerHTML='<span class="ng">出せません: '+e.message+'</span>'; log('③失敗 '+e.message); }
+};
+
+/* ④ マイク */
+let mic=null, t4id=null, t4hidden=0, t4n=0;
+$('#t4').onclick=async ()=>{
+  if(t4id){ clearInterval(t4id); t4id=null; if(mic) mic.getTracks().forEach(t=>t.stop()); mic=null;
+    $('#t4').textContent='マイクを開始'; return; }
+  try{ mic=await navigator.mediaDevices.getUserMedia({audio:true}); }
+  catch(e){ $('#r4').innerHTML='<span class="ng">マイクを使えません: '+e.message+'</span>'; return; }
+  $('#t4').textContent='停止'; t4n=0; t4hidden=0;
+  const tick=()=>{ t4n++; if(document.hidden) t4hidden++;
+    const live=mic.getAudioTracks().every(t=> t.readyState==='live' && !t.muted);
+    log('④'+t4n+' マイク='+(live?'生きている':'止まっている')+(document.hidden?'（裏）':'（表）'));
+    $('#r4').innerHTML=`${t4n}回確認（うち裏で ${t4hidden}回）<br>`+
+      (t4hidden>0 ? (live?'<span class="ok">裏でもマイクが生きています</span>':'<span class="ng">裏でマイクが止まりました</span>') : '裏に回して確認してください');
+  };
+  tick(); t4id=setInterval(tick,3000);
+};
+
+$('#copy').onclick=async ()=>{
+  try{ await navigator.clipboard.writeText(L.join('\n')); $('#copy').textContent='コピーしました'; }
+  catch(e){ $('#copy').textContent='コピーできませんでした（スクショで送ってください）'; }
+};
+</script></body></html>
