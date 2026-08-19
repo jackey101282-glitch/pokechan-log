@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '40';
+const APP_VERSION = '41';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1027,16 +1027,22 @@ function initBtUI(){
     const hit = Object.keys(PC.SPECIES)
       .filter(n=> !BT.opp.includes(n) && BT.tsel.every(t=> PC.SPECIES[n].types.includes(t)))
       .sort((a,b)=> rank(a)-rank(b) || a.length-b.length).slice(0,14);
+    /* ★6体そろっていると押しても何も起きないのに、押せる見た目のままだった（社長の指摘 2026-08-20）。
+       試合中はトーストを見落とすので、「押せない」と「なぜ押せないか」を候補欄に出す。 */
+    const full = BT.opp.length>=6;
     out.innerHTML = hit.length
-      ? `<div class="small muted" style="width:100%">${BT.tsel.join('・')} を持つ ${hit.length}体（使用率順）</div>`
-        + hit.map(n=>`<button class="qb mini" data-bto="${esc(n)}">${typeDots(n)}${esc(n)}${rank(n)<999?`<span class="muted"> ${rank(n)}位</span>`:''}</button>`).join('')
+      ? `<div class="small ${full?'':'muted'}" style="width:100%${full?';color:var(--org);font-weight:700':''}">`
+        + (full ? `もう6体入っています。入れ替えるには <b>上の「いま入っている6体」の × </b>で1体外してください`
+                : `${BT.tsel.join('・')} を持つ ${hit.length}体（使用率順）`) + '</div>'
+        + hit.map(n=>`<button class="qb mini ${full?'dim':''}" data-bto="${esc(n)}">${typeDots(n)}${esc(n)}${rank(n)<999?`<span class="muted"> ${rank(n)}位</span>`:''}</button>`).join('')
       : '<span class="small muted">この組み合わせのポケモンはいません</span>';
     $$('#btTypeOut [data-bto]').forEach(b=> b.onclick=()=>{
-      if(BT.opp.length>=6) return toast('6匹までです',true);
+      if(BT.opp.length>=6) return toast('6匹までです。× で1体外してください',true);
       BT.opp.push(b.dataset.bto); BT.tsel=[];
-      btCompute(); btRender();
+      btCompute(); btRender(); btTypeRender();
     });
   };
+  BT._typeRender = btTypeRender;      // 追加・削除のあとに呼び直す（古い候補が残るのを防ぐ）
   btTypeRender();
 
   /* 名前で探して即タップ。候補に無いポケモンを入れるとき、
@@ -1052,15 +1058,18 @@ function initBtUI(){
       .filter(n=> !BT.opp.includes(n) && kana(n).includes(k))
       .sort((a,b)=> kana(a).indexOf(k)-kana(b).indexOf(k) || a.length-b.length)
       .slice(0,10);
+    const full = BT.opp.length>=6;
     box.innerHTML = hit.length
-      ? hit.map(n=>`<button class="qb mini" data-bs="${esc(n)}">${typeDots(n)}${esc(n)}</button>`).join('')
+      ? (full?`<div class="small" style="width:100%;color:var(--org);font-weight:700">もう6体入っています。入れ替えるには <b>× </b>で1体外してください</div>`:'')
+        + hit.map(n=>`<button class="qb mini ${full?'dim':''}" data-bs="${esc(n)}">${typeDots(n)}${esc(n)}</button>`).join('')
       : '<span class="small muted">見つかりません</span>';
     $$('#btSearchOut [data-bs]').forEach(b=> b.onclick=()=>{
-      if(BT.opp.length>=6) return toast('6匹までです',true);
+      if(BT.opp.length>=6) return toast('6匹までです。× で1体外してください',true);
       BT.opp.push(b.dataset.bs); $('#btSearch').value='';
-      btCompute(); btRender(); $('#btSearch').focus();
+      btCompute(); btRender(); btSearchRender(); $('#btSearch').focus();
     });
   };
+  BT._searchRender = btSearchRender;
   $('#btSearch').oninput = btSearchRender;
 
   $('#btVoiceRun').onclick = ()=> safe('実戦', ()=>{
@@ -1113,10 +1122,19 @@ function btAct(mu, c){
 function btRender(){
   const roster = currentRoster();
   /* 選んだ6体。試合中にスクロールさせないため、タイプは小さい丸だけにして1行に複数入るようにする。 */
+  /* ★選んだ6体が候補チップと同じ見た目で、どれが「入っている」のか分からなかった（社長の指摘 2026-08-20）。
+     6体そろうと候補が押せなくなるので、外す×の場所が分からないと詰む。見出しを付けて区別する。 */
   $('#btOppChips').innerHTML = BT.opp.length
-    ? BT.opp.map((n,i)=>`<span class="pk mini">${typeDots(n)}<b>${esc(n)}</b><span class="x" data-bx="${i}">×</span></span>`).join('')
+    ? `<div class="small" style="width:100%;font-weight:700;color:${BT.opp.length>=6?'var(--org)':'var(--muted)'}">`
+      + `いま入っている ${BT.opp.length}体${BT.opp.length>=6?'（そろいました。入れ替えるなら × で外す）':' / 6体'}</div>`
+      + BT.opp.map((n,i)=>`<span class="pk mini">${typeDots(n)}<b>${esc(n)}</b><span class="x" data-bx="${i}">×</span></span>`).join('')
     : '<span class="pk ghost">下から6体を選んでください</span>';
-  $$('#btOppChips [data-bx]').forEach(x=> x.onclick=()=>{ BT.opp.splice(+x.dataset.bx,1); btCompute(); btRender(); });
+  $$('#btOppChips [data-bx]').forEach(x=> x.onclick=()=>{
+    BT.opp.splice(+x.dataset.bx,1); btCompute(); btRender();
+    // 外したら候補欄も戻す（押せない見た目のまま残ると、また選べないと思われる）
+    if(BT._typeRender) BT._typeRender();
+    if(BT._searchRender) BT._searchRender();
+  });
 
   /* 入力の候補。すでに何体か入っていれば「上位構築での同居率」で並べ替える。
      選出は90秒しかないので、探す時間を1体でも減らすのが効く。
@@ -1132,8 +1150,9 @@ function btRender(){
     }
   }
   if(!list || !list.length) list = (hist.length>=6?hist:META_TOP.slice(0,10));
+  const qFull = BT.opp.length>=6;
   $('#btQuick').innerHTML = why + list.filter(n=>!BT.opp.includes(n)).slice(0,12)
-      .map(n=>`<button class="qb mini" data-bq="${esc(n)}">${typeDots(n)}${esc(n)}</button>`).join('');
+      .map(n=>`<button class="qb mini ${qFull?'dim':''}" data-bq="${esc(n)}">${typeDots(n)}${esc(n)}</button>`).join('');
   $$('#btQuick [data-bq]').forEach(b=> b.onclick=()=>{
     if(BT.opp.length>=6) return toast('6匹までです',true);
     if(BT.opp.includes(b.dataset.bq)) return;
