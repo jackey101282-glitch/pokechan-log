@@ -85,7 +85,7 @@ video{width:100%;border-radius:10px;background:#000;display:none}
   <p class="why">いまの声は <b>Kyoko（標準版）</b>です。ロボットっぽいのはこれが原因です。<br>
     このMacに入っている日本語音声9種で同じ文を作りました。<b>いちばん自然に聞こえたものを教えてください。</b><br>
     <span class="muted">語彙は固定なので、声の差し替えは音声を作り直すだけです（本体は無改修・費用ゼロ）。</span></p>
-  <div id="vsamp" class="quick"></div>
+  <div id="vsamp"></div>
   <div class="res" id="r8">未実行</div>
   <audio id="vs" preload="none" playsinline></audio>
 </div>
@@ -143,6 +143,7 @@ video{width:100%;border-radius:10px;background:#000;display:none}
 <script>
 const $=s=>document.querySelector(s);
 const L=[];
+window.onerror=(m,src,ln)=>{ try{ log('⚠ JSエラー '+m+' ('+ln+'行)'); }catch(e){} };
 function log(m){ L.push(new Date().toLocaleTimeString('ja-JP')+' '+m); $('#log').textContent=L.slice(-60).join('\n'); $('#log').scrollTop=1e9; }
 log('端末: '+navigator.userAgent.slice(0,90));
 log('画面が隠れたら記録します');
@@ -460,8 +461,8 @@ $('#copy').onclick=async ()=>{
 
 /* ⑧ 声の聞き比べ */
 const VOICES=['Kyoko','Sandy','Shelley','Flo','Reed','Rocko','Eddy','Grandma','Grandpa'];
-$('#vsamp').innerHTML = VOICES.map(v=>`<button class="qb" data-v="${v}">${v}</button>`).join('');
-$$('#vsamp [data-v]').forEach(b=> b.onclick=async ()=>{
+$('#vsamp').innerHTML = VOICES.map(v=>`<button data-v="${v}">${v}</button>`).join('');
+document.querySelectorAll('#vsamp [data-v]').forEach(b=> b.onclick=async ()=>{
   const a=$('#vs'); a.src='voice/sample/'+b.dataset.v+'.m4a';
   try{ await a.play(); $('#r8').innerHTML='<b>'+b.dataset.v+'</b> を再生中'; log('⑧ '+b.dataset.v); }
   catch(e){ $('#r8').innerHTML='<span class="ng">再生できず '+e.message+'</span>'; }

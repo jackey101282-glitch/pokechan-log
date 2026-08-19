@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '36';
+const APP_VERSION = '37';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1302,7 +1302,7 @@ function btNowRender(){
   <div class="card" style="border-color:${c?`var(--${c.cls==='ok'?'grn':c.cls==='ng'?'red':'org'})`:'var(--line)'}">
     <h2>いまの対面<span class="sub">相手/自分をタップで切替</span></h2>
     <div class="hpwrap">
-      <button class="btn ${window.VOICE&&VOICE.isOn()?'':'ghost'} sm" id="btVoice">${window.VOICE&&VOICE.isOn()?'🔊 音声ON':'🔇 音声OFF'}</button>
+      <button class="btn ${window.VOICE&&VOICE.isOn()?'':'ghost'} sm" id="btSpeakBtn">${window.VOICE&&VOICE.isOn()?'🔊 音声ON':'🔇 音声OFF'}</button>
       <span class="small muted">マナーモードのままで鳴ります</span>
     </div>
 
@@ -1346,7 +1346,7 @@ function btNowRender(){
   ${btSeenCard(BT.sel, seen)}`;
 
   /* 音声。★指のタップから始めないと iOS は鳴らさないので、必ずボタン経由にする。 */
-  const vb = $('#btVoice');
+  const vb = $('#btSpeakBtn');   // ★#btVoice は既存の音声メモ欄。IDを衝突させないこと
   if(vb) vb.onclick = async ()=>{
     const on = await VOICE.toggle();
     VOICE.reset();
