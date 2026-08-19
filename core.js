@@ -874,6 +874,162 @@ function matchup(mine, theirs){
   return out;
 }
 
+/* ---------- 実戦中の逆算：残りHPを入れるだけで全部答える ----------
+   試合の1手は45秒しかない。技名を選ばせている時間は無いので、
+   相手の実採用技をこちらで全部試して「どれが当たったか」を機械が特定する。
+   出るもの：撃たれた技の候補／否定できた技・型・持ち物／あと何発耐えるか／いま殴るか引くか。 */
+
+/** 相手が持ちうる持ち物のうち、ダメージ計算に影響するものを実データから拾う */
+function oppItemCandidates(oppName){
+  if(oppName.startsWith('メガ')) return [''];        // メガストーン固定
+  const u = oppUsage(oppName);
+  const list = [''];
+  (u ? (u.i||[]) : []).forEach(([it,rate])=>{
+    if(rate < 3) return;
+    if(OFFENSE_ITEMS[it] || TYPE_ITEMS[it]) list.push(it);
+  });
+  return [...new Set(list)];
+}
+/** calcDamage に渡す item 名へ変換（タイプ強化アイテムは技タイプが合う時だけ効く） */
+function itemForCalc(item, moveType){
+  if(!item) return '';
+  if(OFFENSE_ITEMS[item]) return item;
+  if(TYPE_ITEMS[item]) return TYPE_ITEMS[item]===moveType ? 'タイプ強化アイテム' : '';
+  return '';
+}
+
+/** @param mine  自分の駒（stats付き）
+ *  @param oppName 相手
+ *  @param hpNow 自分の残りHP（実数値）
+ *  @param field {weather, reflect, lightscreen, auroraveil} 任意 */
+function readDamage(mine, oppName, hpNow, field){
+  const ms = SPECIES[mine.name], os = SPECIES[oppName];
+  if(!ms || !os || !mine.stats) return null;
+  const maxHP = mine.stats.h;
+  hpNow = Math.max(0, Math.min(maxHP, hpNow|0));
+  const taken = maxHP - hpNow;
+  const usage = oppMoves(oppName);
+  const items = oppItemCandidates(oppName);
+  const spreads = assumedSpreads(oppName);
+  const imm = immuneType(mine.ability);
+
+  /* 与えられた技リストで総当たりし、受けたダメージに一致する組み合わせを返す */
+  const roll = (moveList)=>{
+    const all = [];
+    moveList.forEach(mv=>{
+      if(mv.type === imm) return;
+      spreads.forEach(sp=>{
+        items.forEach(it=>{
+          const item = itemForCalc(it, mv.type);
+          if(it && !item) return;
+          const atk = (sp.atk && sp.atk[mv.cat]!=null) ? sp.atk[mv.cat]
+                    : (mv.cat==='物' ? sp.stats.a : sp.stats.c);
+          const r = calcDamage({
+            attacker:{name:oppName, atkStat:atk, types:os.types, ability:'', item, rank:0, hpRatio:1},
+            defender:{name:mine.name, defStat: mv.cat==='物'?mine.stats.b:mine.stats.d, hp:maxHP,
+                      types:ms.types, ability:mine.ability||'', item:mine.item||'', rank:0, hpRatio:1},
+            move:mv, field:field||{}, flags:{}
+          });
+          if(r.error || r.eff===0) return;
+          all.push({ move:mv.name, rate:mv.rate, type:mv.type, cat:mv.cat, power:mv.power,
+                     spread:sp.label, item: it||'持ち物なし', min:r.min, max:r.max,
+                     lo:r.min/maxHP, hi:r.max/maxHP });
+        });
+      });
+    });
+    return all;
+  };
+  const group = rows =>{
+    const by = {};
+    rows.forEach(r=>{ const b = by[r.move] = by[r.move] || {name:r.move, rate:r.rate, cat:r.cat,
+        type:r.type, power:r.power, spreads:new Set(), items:new Set(), lo:1, hi:0};
+      b.spreads.add(r.spread); b.items.add(r.item); b.lo=Math.min(b.lo,r.lo); b.hi=Math.max(b.hi,r.hi); });
+    return Object.values(by).map(b=>({...b, spreads:[...b.spreads], items:[...b.items]}))
+      .sort((a,b)=> (b.rate||0)-(a.rate||0) || b.power-a.power);
+  };
+
+  const base = usage || os.types.map(t=>({ name:'（'+t+'技）', type:t,
+    cat:(os.base.a>=os.base.c?'物':'特'), power:REP_POWER, contact:false, rate:null }));
+  const all = roll(base);
+  if(!all.length) return { maxHP, hpNow, taken, empty:true };
+
+  /* あと何発耐えるか。タスキ／ばけのかわ／がんじょうは満タンからの1発を無効化する。 */
+  const worstRow = all.reduce((a,b)=> b.max>a.max ? b : a, all[0]);
+  const guard = myOneHitGuard(mine);
+  const guardAlive = !!guard && (guard!=='きあいのタスキ' ? hpNow>0 : hpNow>=maxHP);
+  const survives = dmg => dmg<=0 ? 99 : Math.max(0, Math.ceil(hpNow / dmg)) + (guardAlive?1:0);
+
+  const out = {
+    maxHP, hpNow, taken, takenPct: taken/maxHP,
+    notHitYet: taken <= 0,
+    candidates: [], others: [], ruledOut: { moves:[], items:[], spreads:[] }, fromFullList:false,
+    left: {
+      worst: survives(worstRow.max), worstMove: worstRow.move, worstPct: worstRow.max/maxHP,
+      diesNext: hpNow>0 && !guardAlive && worstRow.max >= hpNow,
+      guard, guardAlive
+    }
+  };
+  if(out.notHitYet) return out;                 // まだ殴られていない＝逆算しない
+
+  const hit = all.filter(r=> taken >= r.min-1 && taken <= r.max+1);
+  const uniq = (arr,k)=> [...new Set(arr.map(x=>x[k]))];
+  out.candidates = group(hit);
+  out.ruledOut = {
+    moves:   uniq(all,'move').filter(m=> !out.candidates.some(c=>c.name===m)),
+    items:   uniq(all,'item').filter(i=> !hit.some(h=>h.item===i)),
+    spreads: uniq(all,'spread').filter(l=> !hit.some(h=>h.spread===l))
+  };
+  /* 一致する技が候補に無い＝採用率10%未満の技（社長が食らった だいもんじ がこれ）。
+     全497技から探し直すが、ノイズを避けるため
+     「相手が実際に使っているタイプ」か「タイプ一致」の技だけに絞り、自爆技は外す。 */
+  if(!out.candidates.length){
+    const usedTypes = new Set((usage||[]).map(m=>m.type));
+    const SELF_KO = ['だいばくはつ','じばく','ミストバースト','いのちがけ','クロスサンダー','クロスフレイム'];
+    const full = Object.values(MOVES).filter(m=> m.power && m.cat!=='変'
+      && (usedTypes.has(m.type) || os.types.includes(m.type)) && !SELF_KO.includes(m.name));
+    const hit2 = roll(full).filter(r=> taken >= r.min-1 && taken <= r.max+1);
+    out.others = group(hit2).sort((a,b)=>{
+      const sc = x => (usedTypes.has(x.type)?4:0) + (os.types.includes(x.type)?2:0);
+      return sc(b)-sc(a) || b.power-a.power;
+    }).slice(0,4);
+    out.fromFullList = true;
+  }
+  // 今のダメージ源が続いた場合に何発耐えるか
+  const src = out.candidates.length ? out.candidates : out.others;
+  if(src.length){
+    const srcMax = Math.max(...src.map(c=> Math.round(c.hi*maxHP)));
+    out.left.sameMove = survives(srcMax);
+    out.left.sameMoveName = src[0].name;
+    out.left.diesNextToSame = hpNow>0 && !guardAlive && srcMax >= hpNow;
+  }
+  return out;
+}
+
+/** 実戦中の1手の結論。readDamage の結果と対面の判定を突き合わせて「殴る／引く」を1行で返す。 */
+function actionNow(mine, oppName, roster, hpNow, field){
+  const mu = matchup(mine, {name:oppName});
+  if(!mu) return null;
+  const rd = (hpNow!=null && mine.stats) ? readDamage(mine, oppName, hpNow, field) : null;
+  const dies = rd ? rd.left.diesNext : mu.opOHKO;
+  const canKill = mu.myHits <= 1 && mu.fasterAny;      // 先に落とせるなら殴っていい
+
+  // 引き先：いま出せる控えの中で、その相手にいちばん強い駒
+  const bench = (roster||[]).filter(r=> r.name!==mine.name)
+    .map(r=>({ r, mu:matchup(r,{name:oppName}) })).filter(x=>x.mu && !x.mu.opOHKO && !x.mu.noOffense)
+    .sort((a,b)=> b.mu.score - a.mu.score);
+
+  let verdict, why;
+  if(canKill && !(dies && !mu.faster)){ verdict='殴る'; why=`${mu.myMove||'最大打点'}で先に落とせる`; }
+  else if(dies){ verdict='引く'; why= rd ? `次の${rd.left.worstMove}で落ちる（残り${rd.hpNow}）` : `${mu.opOHKOMove||'相手の技'}で一撃`; }
+  else if(mu.noOffense){ verdict='引く'; why=`打点が無い（最大でも${mu.myHits}発）`; }
+  else if(mu.winsRace){ verdict='殴る'; why=`${mu.myHits}発 対 ${mu.opHits}発で勝てる`; }
+  else { verdict='引く'; why=`${mu.opHits}発で落とされる`; }
+
+  return { verdict, why, mu, read:rd,
+           to: bench.length ? { name:bench[0].r.name, mu:bench[0].mu } : null,
+           bench: bench.slice(0,3).map(x=>({name:x.r.name, mu:x.mu})) };
+}
+
 /** 自分6 × 相手6 のマトリクス */
 function buildMatrix(myRoster, oppNames){
   return myRoster.map(m=> oppNames.map(o=> matchup(m, {name:o})));
@@ -1121,7 +1277,8 @@ global.PC = {
   MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
-  bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppTypeItem, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
+  bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppTypeItem,
+  readDamage, actionNow, oppItemCandidates, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
 };
 })(window);
