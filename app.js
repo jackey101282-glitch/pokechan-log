@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '18';
+const APP_VERSION = '19';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -961,7 +961,7 @@ $('#btnSave').onclick=async ()=>{
    45秒の中でClaudeに聞くと必ず間に合わない（実際に2戦落とした）。
    相手6体を入れた時点で全対面を計算しておき、試合中はタップだけで即答する。
    ========================================================= */
-let BT = { opp:[], picks:[], mega:null, matrix:null, sel:null, me:null, hp:{} };
+let BT = { opp:[], picks:[], mega:null, matrix:null, sel:null, me:null, hp:{}, obs:{} };
 
 function initBtUI(){
   $('#btVoiceRun').onclick = ()=> safe('実戦', ()=>{
@@ -971,7 +971,13 @@ function initBtUI(){
     BT.opp = [...new Set(names)].slice(0,6);
     btCompute(); btRender();
   }, '#btGrid');
-  $('#btReset').onclick = ()=>{ BT={opp:[],picks:[],mega:null,matrix:null,sel:null}; $('#btVoice').value=''; btRender(); };
+  // やり直しても、相手の技の観測だけは残す（次の試合でも同じ相手に当たるので価値がある）
+  $('#btReset').onclick = ()=>{
+    const obs = BT.obs;
+    BT={opp:[],picks:[],mega:null,matrix:null,sel:null,me:null,hp:{},obs:obs||{}};
+    PC.clearMatchupCache(); $('#btVoice').value=''; btRender(); saveBtDraft();
+  };
+  loadBtDraft();
 }
 
 /** 相手6体が決まった時点で、全部の対面を先に計算しておく */
@@ -985,9 +991,10 @@ function btCompute(){
   const rc = bp.rc || rosterForCalc(roster, BT.mega);
   BT.matrix = {};
   BT.opp.forEach(o=>{
+    const knownOf = BT.obs && BT.obs[o] ? BT.obs[o] : null;
     BT.matrix[o] = roster.map(m=>{
       const me = rc.find(r=>r.label===m.name) || {name:m.name};
-      return { name:m.name, mu: PC.matchup(me,{name:effOpp(o)}) };
+      return { name:m.name, mu: PC.matchup(me,{name:effOpp(o), known:knownOf}) };
     }).filter(x=>x.mu);
   });
 }
@@ -1084,7 +1091,8 @@ function btLiveCard(o){
   const me = picks.find(p=>p.label===BT.me) || picks[0];
   const maxHP = me.stats ? me.stats.h : 0;
   const hp = (BT.hp && BT.hp[me.label]!=null) ? BT.hp[me.label] : maxHP;
-  const an = me.stats ? PC.actionNow(me, o, rc, hp) : null;
+  const seen = (BT.obs && BT.obs[o]) || [];
+  const an = me.stats ? PC.actionNow(me, o, rc, hp, {}, seen) : null;
   const rd = an && an.read;
 
   const cls = an ? (an.verdict==='殴る' ? 'g' : 'r') : 'w';
@@ -1125,7 +1133,72 @@ function btLiveCard(o){
       ${an.verdict==='殴る'?`<div class="small" style="margin-top:4px">撃つ技 → <b>${esc(an.mu.myMove||'—')}</b>（${dmgRange(an.mu.myDmgLo,an.mu.myDmgHi)}／相手はあと${an.mu.myHits}発）</div>`:''}
     </div>`:''}
     ${read}
+  </div>
+  ${btSeenCard(o, seen)}`;
+}
+
+/* ---------- 相手が使ってきた技をワンタップで記録 ----------
+   社長の要望（2026-08-19）：
+   「対面している相手が採用してそうな技を10個くらい出して、打ってきた技を記録していく。
+     データが溜まれば、この並びのこのポケモンはこういう役割、と分かるようになる」
+   技は4つまでなので、4つ記録できた時点で「それ以外は飛んでこない」が確定し、判定が一気に正確になる。 */
+function btSeenCard(o, seen){
+  const ch = PC.oppMoveChoices(o);
+  const extra = seen.filter(m=> !ch.some(c=>c.name===m));
+  const n = seen.length;
+  const conf = n>=4;
+  return `<div class="card">
+    <h2>相手が使ってきた技<span class="sub">タップで記録・${n}/4</span></h2>
+    <div class="small ${conf?'':'muted'}" style="margin-bottom:6px">
+      ${conf ? '<b style="color:var(--grn)">4つ確定。これ以外の技は飛んできません。上の判定はこの4つだけで計算しています。</b>'
+             : `記録するほど判定が正確になります。あと${4-n}つで確定。`}
+    </div>
+    <div class="quick">
+      ${ch.map(c=>`<button class="qb ${seen.includes(c.name)?'':'dim'}" data-btseen="${esc(c.name)}">${esc(c.name)}<span class="muted"> ${c.rate}%</span></button>`).join('')}
+      ${extra.map(m=>`<button class="qb" data-btseen="${esc(m)}">${esc(m)}<span class="muted"> 手入力</span></button>`).join('')}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+      <input id="btSeenOther" type="text" placeholder="一覧に無い技（だいもんじ 等）" list="mvlist" style="flex:1;min-width:150px">
+      <button class="btn ghost sm" id="btSeenAdd">足す</button>
+      ${n?`<button class="btn ghost sm" id="btSeenClear">この相手の記録を消す</button>`:''}
+    </div>
+    ${btSeenHistory(o)}
   </div>`;
+}
+/** これまでの自分の対戦で、その相手が実際に使ってきた技（採用率と並べて出す） */
+function btSeenHistory(o){
+  const base = PC.toBase(o);
+  const obs = (PC.observedMoves(BATTLES)[o] || PC.observedMoves(BATTLES)[base] || []).slice(0,8);
+  if(!obs.length) return '';
+  return `<div class="small muted" style="margin-top:8px">
+    自分の対戦での実績：${obs.map(x=>`${esc(x.move)}(${x.count}回)`).join('・')}</div>`;
+}
+function btBindSeen(){
+  const o = BT.sel; if(!o) return;
+  const set = m =>{
+    BT.obs = BT.obs || {};
+    const cur = BT.obs[o] = BT.obs[o] || [];
+    const i = cur.indexOf(m);
+    if(i>=0) cur.splice(i,1); else cur.push(m);
+    if(!cur.length) delete BT.obs[o];
+    PC.clearMatchupCache && PC.clearMatchupCache();
+    btCompute(); btRender(); BT.sel = o; btDetail(); saveBtDraft();
+  };
+  $$('#btDetail [data-btseen]').forEach(b=> b.onclick=()=> set(b.dataset.btseen));
+  const add=$('#btSeenAdd'), inp=$('#btSeenOther');
+  if(add) add.onclick=()=>{ const v=(inp.value||'').trim(); if(!v) return;
+    if(!PC.MOVES[v]) return toast('その技名は見つかりません',true); inp.value=''; set(v); };
+  const clr=$('#btSeenClear');
+  if(clr) clr.onclick=()=>{ delete BT.obs[o]; PC.clearMatchupCache && PC.clearMatchupCache();
+    btCompute(); btRender(); BT.sel=o; btDetail(); saveBtDraft(); };
+}
+/** 実戦モードの観測は、次に開いたときも残す（試合をまたいで相手の型が分かるのが価値） */
+function saveBtDraft(){
+  try{ localStorage.setItem('pokechan_bt', JSON.stringify({obs:BT.obs, opp:BT.opp, hp:BT.hp})); }catch(e){}
+}
+function loadBtDraft(){
+  try{ const d=JSON.parse(localStorage.getItem('pokechan_bt')||'{}');
+    if(d.obs) BT.obs=d.obs; if(d.hp) BT.hp=d.hp; }catch(e){}
 }
 
 function btBindLive(){
@@ -1143,7 +1216,7 @@ function btDetailLiveOnly(){
   const pos = $('#btHp') ? $('#btHp').selectionStart : null;
   host.innerHTML = btLiveCard(BT.sel);
   const inp=$('#btHp'); if(inp){ inp.focus(); if(pos!=null) try{inp.setSelectionRange(pos,pos);}catch(e){} }
-  btBindLive();
+  btBindLive(); btBindSeen();
 }
 
 function btDetail(){
@@ -1177,7 +1250,7 @@ function btDetail(){
       return `<tr class="${BT.picks.includes(r.name)?'':'muted'}"><td>${esc(r.name)}${BT.picks.includes(r.name)?'':' <span class="small muted">(控え)</span>'}</td>
       <td><span class="badge ${ac.c}">${ac.t}</span>${r.mu.opMove?`<div class="small muted">被:${esc(r.mu.opMove)}</div>`:''}</td><td class="num small">${muNums(r.mu)}</td></tr>`;}).join('')}
     </table></div>`;
-  btBindLive();
+  btBindLive(); btBindSeen();
 }
 
 /* =========================================================

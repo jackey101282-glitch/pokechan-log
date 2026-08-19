@@ -126,6 +126,32 @@ function oppMoves(name, minRate){
                contact: (MOVES[m[0]] ? MOVES[m[0]].contact : false) }));
   return list.length ? list : null;
 }
+/** 試合中に観測した「相手が実際に撃ってきた技」を、計算に使える形にする。
+ *  技は最大4つなので、4つ観測できたら full=true（それ以外の技は存在しない）。 */
+function confirmedMoves(oppName, known){
+  if(!known || !known.length) return null;
+  const list = known.map(n=>{
+    const m = MOVES[n]; if(!m || !m.power || m.cat==='変') return null;
+    return { name:m.name, type:m.type, cat:m.cat, power:m.power, contact:m.contact, rate:null, confirmed:true };
+  }).filter(Boolean);
+  // 変化技も「技枠を1つ使った」事実としては効くので、枠数は観測した技の総数で数える
+  return { list, full: known.length >= 4, count: known.length };
+}
+function dedupeMoves(list){
+  const seen = new Set(), out = [];
+  list.forEach(m=>{ if(seen.has(m.name)) return; seen.add(m.name); out.push(m); });
+  return out;
+}
+
+/** 試合中に「相手が撃ってきた技」をワンタップで記録するための選択肢。
+ *  変化技も含めた採用率上位（＝実際に使われている技）をそのまま返す。 */
+function oppMoveChoices(name){
+  const u = oppUsage(name);
+  if(!u) return [];
+  return u.m.map(m=>({ name:m[0], rate:m[1], type:m[2], cat:m[3], power:m[4] }))
+           .sort((a,b)=> b.rate - a.rate);
+}
+
 /** 相手の持ち物のうち、その分類の打点をいちばん上げるもの（採用率 minRate% 以上）。
  *  メガシンカ後はメガストーンを持っているので打点アイテムは無い。 */
 const OFFENSE_ITEMS = { 'こだわりハチマキ':'物', 'こだわりメガネ':'特', 'いのちのたま':'両', 'たつじんのおび':'両' };
@@ -715,22 +741,28 @@ function bestOffense(mine, oppName, opp){
  *
  *  いまは app/data/usage.js の実採用技をそのまま撃たせる。データが無い種だけ従来方式にフォールバック。
  *  返り値の rate は平均乱数、rateHi は最大乱数（一撃で落ちるかの判定はこちらで見る）。 */
-function bestThreat(oppName, mine, opp){
+function bestThreat(oppName, mine, opp, known){
   const os = SPECIES[oppName], ms = SPECIES[mine.name];
   if(!os || !ms) return {rate:0, rateHi:0, type:null, move:null};
   const myStats = mine.stats || spreadStats(mine.name, {h:32,a:0,b:17,c:0,d:17,s:0}, {a:1,b:1,c:1,d:1,s:1});
   const imm = immuneType(mine.ability);
 
   const real = oppMoves(oppName);
+  /* ★試合中に「この技を撃ってきた」と記録した技があれば、それを最優先で使う。
+     ポケモンの技は4つまでなので、4つ確定したら他の技は撃たれない＝想定を確定に置き換えられる。 */
+  const conf = confirmedMoves(oppName, known);
   let cands, estimated = false;
-  if(real){
-    cands = real;
+  if(conf && conf.full){
+    cands = conf.list;                     // 4つ確定＝これ以外は飛んでこない
+  }else if(real){
+    cands = conf ? dedupeMoves(conf.list.concat(real)) : real;
   }else{
     // 実データが無い種：従来どおりタイプ一致・代表威力で見積もる（あくまで暫定値）
     estimated = true;
     const physical = opp.stats.a >= opp.stats.c;
     cands = os.types.map(t=>({ name:'（'+t+'技）', type:t, cat: physical?'物':'特',
                                power:REP_POWER, contact:false, rate:null }));
+    if(conf) cands = dedupeMoves(conf.list.concat(cands));
   }
 
   const atkOf = cat => (opp.atk && opp.atk[cat] != null) ? opp.atk[cat]
@@ -771,13 +803,13 @@ function myOneHitGuard(mine){
 }
 
 /** 自分1体 × 相手の想定1通り を採点 */
-function matchupVs(mine, oppName, opp){
+function matchupVs(mine, oppName, opp, known){
   const myS = mine.stats ? mine.stats.s : spreadStats(mine.name,{h:2,a:0,b:0,c:0,d:0,s:32},{a:1,b:1,c:1,d:1,s:1}).s;
   const opS = opp.stats.s;
   const faster = myS > opS;
 
   const off = bestOffense(mine, oppName, opp);      // 自分→相手 のダメージ割合
-  const thr = bestThreat(oppName, mine, opp);       // 相手→自分 のダメージ割合
+  const thr = bestThreat(oppName, mine, opp, known); // 相手→自分 のダメージ割合
 
   // 何発で落とせるか / 落とされるか
   let myHits = off.rate>0 ? Math.ceil(1/off.rate) : 99;
@@ -810,9 +842,10 @@ function matchupVs(mine, oppName, opp){
 
 /* 同じ (自分の個体 × 相手) の組み合わせは何度も出てくるので結果を使い回す */
 const _muCache = new Map();
-function _muKey(mine, oppName){
+function _muKey(mine, oppName, known){
   const st = mine.stats ? [mine.stats.h,mine.stats.a,mine.stats.b,mine.stats.c,mine.stats.d,mine.stats.s].join('.') : '-';
-  return [mine.name, st, (mine.moves||[]).join('/'), mine.ability||'', mine.item||'', oppName].join('|');
+  return [mine.name, st, (mine.moves||[]).join('/'), mine.ability||'', mine.item||'', oppName,
+          (known||[]).join(',')].join('|');
 }
 
 /** 自分1体 vs 相手1体。相手の型は「攻撃型」「耐久型」の2通りで見て、
@@ -821,12 +854,13 @@ function _muKey(mine, oppName){
 function matchup(mine, theirs){
   const ms = SPECIES[mine.name], ts = SPECIES[theirs.name];
   if(!ms || !ts) return null;
-  const key = _muKey(mine, theirs.name);
+  const known = theirs.known || null;          // 試合中に観測した相手の技
+  const key = _muKey(mine, theirs.name, known);
   const hit = _muCache.get(key); if(hit) return hit;
 
   const spreads = assumedSpreads(theirs.name);
   if(!spreads.length) return null;
-  const views = spreads.map(sp=> matchupVs(mine, theirs.name, sp));
+  const views = spreads.map(sp=> matchupVs(mine, theirs.name, sp, known));
 
   // 主想定＝ありそうな方。表示する結論はこちらに合わせる
   const primary = views.reduce((a,b)=> b.weight > a.weight ? b : a);
@@ -902,13 +936,15 @@ function itemForCalc(item, moveType){
  *  @param oppName 相手
  *  @param hpNow 自分の残りHP（実数値）
  *  @param field {weather, reflect, lightscreen, auroraveil} 任意 */
-function readDamage(mine, oppName, hpNow, field){
+function readDamage(mine, oppName, hpNow, field, known){
   const ms = SPECIES[mine.name], os = SPECIES[oppName];
   if(!ms || !os || !mine.stats) return null;
   const maxHP = mine.stats.h;
   hpNow = Math.max(0, Math.min(maxHP, hpNow|0));
   const taken = maxHP - hpNow;
-  const usage = oppMoves(oppName);
+  const conf = confirmedMoves(oppName, known);
+  const usage = (conf && conf.full) ? conf.list
+              : (conf ? dedupeMoves(conf.list.concat(oppMoves(oppName)||[])) : oppMoves(oppName));
   const items = oppItemCandidates(oppName);
   const spreads = assumedSpreads(oppName);
   const imm = immuneType(mine.ability);
@@ -1006,16 +1042,16 @@ function readDamage(mine, oppName, hpNow, field){
 }
 
 /** 実戦中の1手の結論。readDamage の結果と対面の判定を突き合わせて「殴る／引く」を1行で返す。 */
-function actionNow(mine, oppName, roster, hpNow, field){
-  const mu = matchup(mine, {name:oppName});
+function actionNow(mine, oppName, roster, hpNow, field, known){
+  const mu = matchup(mine, {name:oppName, known});
   if(!mu) return null;
-  const rd = (hpNow!=null && mine.stats) ? readDamage(mine, oppName, hpNow, field) : null;
+  const rd = (hpNow!=null && mine.stats) ? readDamage(mine, oppName, hpNow, field, known) : null;
   const dies = rd ? rd.left.diesNext : mu.opOHKO;
   const canKill = mu.myHits <= 1 && mu.fasterAny;      // 先に落とせるなら殴っていい
 
   // 引き先：いま出せる控えの中で、その相手にいちばん強い駒
   const bench = (roster||[]).filter(r=> r.name!==mine.name)
-    .map(r=>({ r, mu:matchup(r,{name:oppName}) })).filter(x=>x.mu && !x.mu.opOHKO && !x.mu.noOffense)
+    .map(r=>({ r, mu:matchup(r,{name:oppName, known}) })).filter(x=>x.mu && !x.mu.opOHKO && !x.mu.noOffense)
     .sort((a,b)=> b.mu.score - a.mu.score);
 
   let verdict, why;
@@ -1029,6 +1065,9 @@ function actionNow(mine, oppName, roster, hpNow, field){
            to: bench.length ? { name:bench[0].r.name, mu:bench[0].mu } : null,
            bench: bench.slice(0,3).map(x=>({name:x.r.name, mu:x.mu})) };
 }
+
+/** 観測技が増えると同じ組み合わせでも結果が変わるので、キャッシュを捨てられるようにしておく */
+function clearMatchupCache(){ _muCache.clear(); }
 
 /** 自分6 × 相手6 のマトリクス */
 function buildMatrix(myRoster, oppNames){
@@ -1278,7 +1317,7 @@ global.PC = {
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
   bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppTypeItem,
-  readDamage, actionNow, oppItemCandidates, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
+  readDamage, actionNow, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
 };
 })(window);
