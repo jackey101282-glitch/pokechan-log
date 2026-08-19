@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="22">
+<meta name="app-version" content="23">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -121,6 +121,11 @@ details[open] > .cardsum::after{content:'▴'}
 .pk.tapp{cursor:pointer}
 .pk.ghost{color:var(--muted);border-style:dashed;font-weight:400}
 .pklist{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}
+/* 試合中用のコンパクト表示。タイプは小さい丸だけにして、1行に複数並ぶようにする */
+.dots{display:inline-flex;gap:3px;margin-right:5px}
+.dots i{width:9px;height:9px;border-radius:50%;display:inline-block}
+.pk.mini{padding:4px 8px;font-size:13px;gap:3px}
+.quick .qb.mini{padding:5px 8px;font-size:13px;gap:3px}
 
 /* suggestion */
 .sug{position:relative}
@@ -359,8 +364,9 @@ tr.bad .bar>i{background:var(--lose)}
         <button class="btn sm" id="btVoiceRun">読み取る</button>
         <button class="btn ghost sm" id="btReset">やり直す</button>
       </div>
-      <div id="btOppChips" class="pklist" style="margin-top:10px"></div>
+      <!-- 候補を先に置く。選んだ分は候補から消えるので、タップしても下の要素が押し下がらない -->
       <div id="btQuick" class="quick" style="margin-top:8px"></div>
+      <div id="btOppChips" class="pklist" style="margin-top:10px"></div>
     </div>
   </details>
   <div id="btPlan"></div>
@@ -566,14 +572,14 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=22"></script>
-<script src="./data/species.js?v=22"></script>
-<script src="./data/moves.js?v=22"></script>
-<script src="./data/principles.js?v=22"></script>
-<script src="./data/usage.js?v=22"></script>
-<script src="./data/teams.js?v=22"></script>
-<script src="./core.js?v=22"></script>
+<script src="./supabase-config.js?v=23"></script>
+<script src="./data/species.js?v=23"></script>
+<script src="./data/moves.js?v=23"></script>
+<script src="./data/principles.js?v=23"></script>
+<script src="./data/usage.js?v=23"></script>
+<script src="./data/teams.js?v=23"></script>
+<script src="./core.js?v=23"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=22"></script>
+<script src="./app.js?v=23"></script>
 </body>
 </html>

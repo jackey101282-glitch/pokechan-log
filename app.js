@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '22';
+const APP_VERSION = '23';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -67,6 +67,12 @@ function typeChips(name){
   const s = PC.SPECIES[name]; if(!s) return '';
   return s.types.map(t=>
     `<span class="tp" style="background:${PC.TYPE_COLOR[t]||'#aaa'}">${typeIcon(t)}${t}</span>`).join(' ');
+}
+/** 小さい丸2つでタイプを示す。試合中の一覧は1行に何個も並べたいので、フルのタイプチップは使わない */
+function typeDots(name){
+  const s = PC.SPECIES[name]; if(!s) return '';
+  return `<span class="dots">${s.types.map(t=>
+    `<i style="background:${PC.TYPE_COLOR[t]||'#aaa'}" title="${t}"></i>`).join('')}</span>`;
 }
 function pkChip(name, opts){
   opts = opts||{};
@@ -1017,9 +1023,10 @@ function btAct(mu, c){
 
 function btRender(){
   const roster = currentRoster();
+  /* 選んだ6体。試合中にスクロールさせないため、タイプは小さい丸だけにして1行に複数入るようにする。 */
   $('#btOppChips').innerHTML = BT.opp.length
-    ? BT.opp.map((n,i)=>`<span class="pk">${typeChips(n)}<b>${esc(n)}</b><span class="x" data-bx="${i}">×</span></span>`).join('')
-    : '<span class="pk ghost">相手を入れてください</span>';
+    ? BT.opp.map((n,i)=>`<span class="pk mini">${typeDots(n)}<b>${esc(n)}</b><span class="x" data-bx="${i}">×</span></span>`).join('')
+    : '<span class="pk ghost">下から6体を選んでください</span>';
   $$('#btOppChips [data-bx]').forEach(x=> x.onclick=()=>{ BT.opp.splice(+x.dataset.bx,1); btCompute(); btRender(); });
 
   /* 入力の候補。すでに何体か入っていれば「上位構築での同居率」で並べ替える。
@@ -1036,20 +1043,23 @@ function btRender(){
     }
   }
   if(!list || !list.length) list = (hist.length>=6?hist:META_TOP.slice(0,10));
-  $('#btQuick').innerHTML = why + list.map(n=>`<button class="qb ${BT.opp.includes(n)?'dim':''}" data-bq="${esc(n)}">${typeChips(n)}${esc(n)}</button>`).join('')
-    + (BT.opp.length && BT.opp.length<6 ? `<div class="small muted" style="width:100%;margin-top:6px">
-        残り${6-BT.opp.length}枠の予測：${PC.predictRest(BT.opp,4).map(p=>esc(p.name)).join('・')}</div>` : '');
+  $('#btQuick').innerHTML = why + list.filter(n=>!BT.opp.includes(n)).slice(0,12)
+      .map(n=>`<button class="qb mini" data-bq="${esc(n)}">${typeDots(n)}${esc(n)}</button>`).join('');
   $$('#btQuick [data-bq]').forEach(b=> b.onclick=()=>{
     if(BT.opp.length>=6) return toast('6匹までです',true);
     if(BT.opp.includes(b.dataset.bq)) return;
+    if(BT.opp.length===5){ const w=$('#btInputWrap'); if(w) setTimeout(()=>{w.open=false;},0); }
     BT.opp.push(b.dataset.bq); btCompute(); btRender();
   });
 
   if(!BT.matrix || !roster.length){ $('#btPlan').innerHTML=''; $('#btGrid').innerHTML=''; $('#btDetail').innerHTML=''; return; }
 
-  $('#btPlan').innerHTML = `<div class="card" style="border-color:var(--red);background:var(--redsoft)">
-    <div class="small muted">選出（この6体に対する推奨）</div>
-    <div style="font-size:19px;font-weight:800">${BT.picks.map(esc).join(' ／ ')}</div>
+  /* 選出は試合開始時に一度読むもの。試合中は「いまの対面」を見るので、折りたたんで高さを取らない。 */
+  $('#btPlan').innerHTML = `<details open class="planbox">
+    <summary class="cardsum" style="border-color:var(--red);background:var(--redsoft)">
+      <span>選出 <b>${BT.picks.map(esc).join(' / ')}</b>${BT.mega?`<span class="muted"> ・メガ=${esc(BT.mega)}</span>`:''}</span>
+    </summary>
+    <div class="card" style="border-color:var(--red);background:var(--redsoft)">
     ${(()=>{ const slots = megaSlotsOf(roster);
       if(slots.length<=1) return BT.mega?`<div class="small">メガは <b>${esc(BT.mega)}</b> に切る</div>`:'';
       return `<div class="small" style="margin-top:6px">メガをどれに切るか（変えると全部の判定が変わります）</div>
@@ -1071,7 +1081,7 @@ function btRender(){
     ${(()=>{const t=[];BT.opp.forEach(n=>PC.oppTricks(PC.toBase(n)).forEach(([mv,why])=>t.push(`<b>${esc(n)}</b>の<b>${esc(mv)}</b> — ${esc(why)}`)));
       return t.length?`<details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">相手の変化技・妨害技（${t.length}件）</summary>
         <div class="small" style="margin-top:6px">${t.map(x=>'・'+x).join('<br>')}</div></details>`:'';})()}
-  </div>`;
+  </div></details>`;
 
   $$('#btPlan [data-btmega]').forEach(b=> b.onclick=()=>{
     BT.megaFixed = b.dataset.btmega; BT.mega = BT.megaFixed;
@@ -1094,7 +1104,7 @@ function btRender(){
   $$('#btGrid [data-bo]').forEach(tr=> tr.onclick=()=>{
     BT.sel=tr.dataset.bo; BT.me=null; btNowRender();
     const w=$('#btInputWrap'); if(w) w.open=false;
-    const n=$('#btNow'); if(n) n.scrollIntoView({block:'start', behavior:'smooth'});
+    const n=$('#btNow'); if(n) n.scrollIntoView({block:'start'});   // smooth は試合中の待ち時間になるので使わない
   });
   btNowRender();
 }
@@ -1133,11 +1143,16 @@ function btNowRender(){
   BT.guardGone = BT.guardGone || {};
   const gGone = !!BT.guardGone[me.label];
   const gName = PC.myOneHitGuard({item:me.item, ability:me.ability});
-  const c = me.stats ? PC.callIt(me, o, {roster:rc, myHP:hp, oppHPPct:oppPct/100, known:seen, guardGone:gGone}) : null;
+  /* 引き先は必ず「選出した3体」の中から出す。
+     控えのポケモンを勧めるのは矛盾（社長の指摘 2026-08-19）。 */
+  const pickRoster = rc.filter(inPick);
+  const c = me.stats ? PC.callIt(me, o, {roster: pickRoster.length?pickRoster:rc,
+                                         myHP:hp, oppHPPct:oppPct/100, known:seen, guardGone:gGone}) : null;
   const rd = c && c.read;
 
-  const oppChips = BT.opp.map(n=>`<button class="qb ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}">${typeChips(n)}${esc(n)}</button>`).join('');
-  const myChips  = mine.map(m=>`<button class="qb ${m.label===BT.me?'on':'off'}" data-btme="${esc(m.label)}">${esc(m.disp||m.label)}${m.demoted?'<span class="muted"> メガしない</span>':''}${inPick(m)?'':'<span class="muted"> 控</span>'}</button>`).join('');
+  // 試合中はスクロールが命取りになるので、タイプは小さい丸だけにして1行に複数入れる
+  const oppChips = BT.opp.map(n=>`<button class="qb mini ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}">${typeDots(n)}${esc(n)}</button>`).join('');
+  const myChips  = mine.map(m=>`<button class="qb mini ${m.label===BT.me?'on':'off'}" data-btme="${esc(m.label)}">${typeDots(m.name)}${esc(m.disp||m.label)}${m.demoted?'<span class="muted"> メガ無</span>':''}${inPick(m)?'':'<span class="muted"> 控</span>'}</button>`).join('');
 
   // 逆算の結果（自分が食らったダメージ）
   const src = rd ? (rd.candidates.length ? rd.candidates : rd.others) : [];
@@ -1159,8 +1174,8 @@ function btNowRender(){
     <div class="small muted">相手</div>
     <div class="quick" style="margin-top:4px">${oppChips}</div>
     ${(()=>{ const ti = PC.teamItemsOf(PC.toBase(BT.sel)) || [];
-      return ti.length ? `<div class="small muted" style="margin-top:4px">上位構築での持ち物：${
-        ti.map(x=>`${esc(x.name)} ${x.rate}%`).join('・')}</div>` : ''; })()}
+      return ti.length ? `<details><summary class="small muted" style="cursor:pointer;margin-top:4px">上位構築での持ち物</summary>
+        <div class="small muted">${ti.map(x=>`${esc(x.name)} ${x.rate}%`).join('・')}</div></details>` : ''; })()}
     <div class="hpwrap">
       <span class="small muted">相手の残りHP</span>
       <div class="seg" id="btOppHp">
@@ -1193,7 +1208,12 @@ function btNowRender(){
   </div>
   ${btSeenCard(BT.sel, seen)}`;
 
-  $$('#btNow [data-btopp]').forEach(b=> b.onclick=()=>{ BT.sel=b.dataset.btopp; BT.me=null; btNowRender(); });
+  $$('#btNow [data-btopp]').forEach(b=> b.onclick=()=>{
+    BT.sel=b.dataset.btopp; BT.me=null;
+    const pb=$('.planbox'); if(pb) pb.open=false;          // 試合が始まったら選出カードは畳む
+    const iw=$('#btInputWrap'); if(iw) iw.open=false;
+    btNowRender();
+  });
   $$('#btNow [data-btme]').forEach(b=> b.onclick=()=>{ BT.me=b.dataset.btme; btNowRender(); });
   $$('#btNow [data-btop]').forEach(b=> b.onclick=()=>{ BT.oppHp[BT.sel]=+b.dataset.btop; btNowRender(); saveBtDraft(); });
   $$('#btNow [data-bthp]').forEach(b=> b.onclick=()=>{ BT.hp[BT.me]=maxHP; btNowRender(); saveBtDraft(); });
