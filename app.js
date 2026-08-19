@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '35';
+const APP_VERSION = '36';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1268,6 +1268,19 @@ function btNowRender(){
                                          myHP:hp, oppHPPct:oppPct/100, known:seen, guardGone:gGone, st}) : null;
   const rd = c && c.read;
 
+  /* 相手が交代してきた時の答え。試合中いちばん聞かれる択なので、画面と音声の両方に出す。
+     いま出ている相手を除いた残りのうち、こちらがいちばん困る1体を選ぶ。 */
+  let swIn = null;
+  if(c){
+    const others = BT.opp.filter(n=> n!==BT.sel);
+    const cand = others.map(n=>{
+      const cc = PC.callIt(me, effOpp(n), {roster: pickRoster.length?pickRoster:rc,
+                                           myHP:hp, known:(BT.obs&&BT.obs[n])||[], guardGone:gGone, st});
+      return cc ? {name:n, c:cc} : null;
+    }).filter(Boolean).sort((a,b)=> a.c.mu.score - b.c.mu.score);
+    swIn = cand[0] || null;
+  }
+
   // 試合中はスクロールが命取りになるので、タイプは小さい丸だけにして1行に複数入れる
   const oppChips = BT.opp.map(n=>`<button class="qb mini ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}">${typeDots(n)}${esc(n)}</button>`).join('');
   const myChips  = mine.map(m=>`<button class="qb mini ${m.label===BT.me?'on':'off'}" data-btme="${esc(m.label)}">${typeDots(m.name)}${esc(m.disp||m.label)}${m.demoted?'<span class="muted"> メガ無</span>':''}${inPick(m)?'':'<span class="muted"> 控</span>'}</button>`).join('');
@@ -1288,6 +1301,10 @@ function btNowRender(){
   host.innerHTML = `
   <div class="card" style="border-color:${c?`var(--${c.cls==='ok'?'grn':c.cls==='ng'?'red':'org'})`:'var(--line)'}">
     <h2>いまの対面<span class="sub">相手/自分をタップで切替</span></h2>
+    <div class="hpwrap">
+      <button class="btn ${window.VOICE&&VOICE.isOn()?'':'ghost'} sm" id="btVoice">${window.VOICE&&VOICE.isOn()?'🔊 音声ON':'🔇 音声OFF'}</button>
+      <span class="small muted">マナーモードのままで鳴ります</span>
+    </div>
 
     <div class="small muted">相手</div>
     <div class="quick" style="margin-top:4px">${oppChips}</div>
@@ -1318,6 +1335,7 @@ function btNowRender(){
       <div class="nowhead">${c.mark} ${esc(c.head)}</div>
       <div class="small" style="margin-top:2px">${esc(c.why)}</div>
       ${c.to?`<div class="small" style="margin-top:6px">引くなら → <b>${esc((mine.find(x=>x.name===c.to.name)||{}).disp || c.to.name)}</b>（${c.to.c.mark} ${esc(c.to.c.why)}）</div>`:''}
+      ${swIn?`<div class="small" style="margin-top:6px">${esc(swIn.name)}に交代されたら → <b>${swIn.c.mark} ${esc(swIn.c.head)}</b>${swIn.c.to?`（${esc(swIn.c.to.name)}へ）`:''}</div>`:''}
     </div>
     <div class="small" style="margin-top:10px">
       ${c.detail.map(d=>`<div style="margin:3px 0;color:${d.k==='bad'?'var(--red)':d.k==='good'?'var(--grn)':d.k==='warn'?'var(--org)':d.k==='role'?'var(--blue)':'inherit'}">・${d.t}</div>`).join('')}
@@ -1326,6 +1344,22 @@ function btNowRender(){
     ${readBlock}
   </div>
   ${btSeenCard(BT.sel, seen)}`;
+
+  /* 音声。★指のタップから始めないと iOS は鳴らさないので、必ずボタン経由にする。 */
+  const vb = $('#btVoice');
+  if(vb) vb.onclick = async ()=>{
+    const on = await VOICE.toggle();
+    VOICE.reset();
+    btNowRender();
+    if(on) btSpeak();
+  };
+  /* 結論が変わった時だけ喋る。画面は頻繁に再描画されるので、同じ内容は繰り返さない。 */
+  function btSpeak(){
+    if(!window.VOICE || !VOICE.isOn() || !c) return;
+    const lines = voiceLines(c, swIn ? {switchIn:{name:swIn.name, head:swIn.c.head}} : {});
+    VOICE.sayIfChanged([BT.me,BT.sel,c.head,c.to&&c.to.name,hp,oppPct].join('|'), lines);
+  }
+  btSpeak();
 
   $$('#btNow [data-btopp]').forEach(b=> b.onclick=()=>{
     BT.sel=b.dataset.btopp; BT.me=null;

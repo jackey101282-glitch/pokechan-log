@@ -80,6 +80,27 @@ video{width:100%;border-radius:10px;background:#000;display:none}
   <audio id="keep" preload="auto" playsinline loop></audio>
 </div>
 
+<div class="card" style="border-color:#7c3aed;border-width:3px">
+  <h2>⑧ 声を選ぶ（機械っぽさの改善）</h2>
+  <p class="why">いまの声は <b>Kyoko（標準版）</b>です。ロボットっぽいのはこれが原因です。<br>
+    このMacに入っている日本語音声9種で同じ文を作りました。<b>いちばん自然に聞こえたものを教えてください。</b><br>
+    <span class="muted">語彙は固定なので、声の差し替えは音声を作り直すだけです（本体は無改修・費用ゼロ）。</span></p>
+  <div id="vsamp" class="quick"></div>
+  <div class="res" id="r8">未実行</div>
+  <audio id="vs" preload="none" playsinline></audio>
+</div>
+
+<div class="card" style="border-color:#0891b2;border-width:3px">
+  <h2>⑨ 文を続けて喋れるか（裏でも）</h2>
+  <p class="why">実戦では「引く。メガメタグロスへ」→「注意。だいもんじで一撃」のように
+    <b>複数の文を続けて</b>鳴らします。1文ずつのファイルをつないで鳴らすので、
+    <b>裏に回っても2文目3文目が続くか</b>を確かめます。<br>
+    押したあと<b>ポケモンに戻って</b>、4文とも聞こえるか確認してください。</p>
+  <button class="primary" id="t9">4文を続けて喋らせる</button>
+  <div class="res" id="r9">未実行</div>
+  <audio id="q9" preload="auto" playsinline></audio>
+</div>
+
 <div class="card" style="border-color:#2563eb;border-width:2px">
   <h2>⓪ 参考：読み上げが鳴るかの切り分け（⑦がダメだったときだけ）</h2>
   <p class="why"><b>先にこれをやってください。</b>⑤で何も聞こえなかった原因は、たぶん次のどちらかです。<br>
@@ -435,5 +456,35 @@ $('#t6').onclick=async ()=>{
 $('#copy').onclick=async ()=>{
   try{ await navigator.clipboard.writeText(L.join('\n')); $('#copy').textContent='コピーしました'; }
   catch(e){ $('#copy').textContent='コピーできませんでした（スクショで送ってください）'; }
+};
+
+/* ⑧ 声の聞き比べ */
+const VOICES=['Kyoko','Sandy','Shelley','Flo','Reed','Rocko','Eddy','Grandma','Grandpa'];
+$('#vsamp').innerHTML = VOICES.map(v=>`<button class="qb" data-v="${v}">${v}</button>`).join('');
+$$('#vsamp [data-v]').forEach(b=> b.onclick=async ()=>{
+  const a=$('#vs'); a.src='voice/sample/'+b.dataset.v+'.m4a';
+  try{ await a.play(); $('#r8').innerHTML='<b>'+b.dataset.v+'</b> を再生中'; log('⑧ '+b.dataset.v); }
+  catch(e){ $('#r8').innerHTML='<span class="ng">再生できず '+e.message+'</span>'; }
+});
+
+/* ⑨ 文を続けて鳴らす（実戦と同じつなぎ方） */
+$('#t9').onclick=async ()=>{
+  // 実戦とまったく同じ並び：「引く。メガメタグロスへ」「注意。だいもんじで一撃」「カイリューが来たら」「引く」
+  const clips=['voice/clips/v0018.m4a','voice/clips/v0122.m4a','voice/clips/v0292.m4a','voice/clips/v0002.m4a'];
+  const a=$('#q9'); let i=0, okN=0, hidN=0;
+  const upd=()=> $('#r9').innerHTML=`${okN}/4 文を再生（裏で ${hidN}文）`+
+    (okN===4?'<br><b class="ok">続けて喋れます</b>':'');
+  const nextClip=()=>{
+    if(i>=clips.length){ log('⑨ 4文おわり'); upd(); return; }
+    const hidden=document.hidden;
+    a.src=clips[i++];
+    a.play().then(()=>{ okN++; if(hidden) hidN++; log('⑨ '+i+'文目 鳴った'+(hidden?'（裏）':'（表）')); upd(); })
+            .catch(e=>{ log('⑨ '+i+'文目 失敗 '+e.message); upd(); nextClip(); });
+  };
+  a.onended=nextClip; a.onerror=nextClip;
+  // 無音ループを先に鳴らしてメディアセッションを作る（⑦と同じ）
+  const k=$('#keep');
+  if(k.paused){ k.src='voice/keepalive.m4a'; k.volume=0.02; try{ await k.play(); }catch(e){} }
+  nextClip();
 };
 </script></body></html>
