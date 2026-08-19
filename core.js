@@ -948,8 +948,20 @@ function matchupVs(mine, oppName, opp, known, st){
   // 先に落とせるか（同じ発数なら速い方が勝ち）
   const winsRace = myHits < opHits || (myHits === opHits && faster);
 
-  // スコア：発数差 ＋ 速さ ＋ 打点の厚み
-  const score = (opHits - myHits) * 0.9 + (faster ? 0.35 : -0.2) + (off.rate - thr.rate) * 1.1;
+  /* ★「受けられる」ことの価値。
+     相手の打点が薄くて4発以上かかるなら、こちらが殴り切れなくてもその対面は"止まっている"。
+     回復技があれば実質無限に受けられるので、さらに価値が上がる。
+     ここを入れていなかったので、受け・起点作りの駒が選出に一度も出てこなかった。 */
+  const role = myRoles(mine);
+  const wallsIt = opHits >= 4;                       // 相手はこちらを落とすのに4発以上かかる
+  const stallsIt = wallsIt && !!role.recover;        // 回復があるので受け切れる
+  let wallBonus = 0;
+  if(wallsIt)  wallBonus += 0.7;
+  if(stallsIt) wallBonus += 0.9;
+  if(wallsIt && (role.status || role.phase)) wallBonus += 0.4;   // 受けながら機能停止/流しができる
+
+  // スコア：発数差 ＋ 速さ ＋ 打点の厚み ＋ 受けられることの価値
+  const score = (opHits - myHits) * 0.9 + (faster ? 0.35 : -0.2) + (off.rate - thr.rate) * 1.1 + wallBonus;
 
   // 明確に不利＝初手に置いてはいけない対面
   // 相手の最大乱数で一撃で落ちるなら、先制できても「1回でも読み負けたら終わり」なので危険扱い
@@ -968,6 +980,7 @@ function matchupVs(mine, oppName, opp, known, st){
            opMoveRate:thr.rateOf, opMoveItem:thr.item, opEstimated:thr.estimated,
            opSureDmg:sureDmg, opSureDmgHi: thr.sure?thr.sure.rateHi:0,
            opSureMove: thr.sure?thr.sure.move:null, opSureRate: thr.sure?thr.sure.rateOf:null,
+           wallsIt, stallsIt, roles:role,
            sureHits, winsRaceSure, threatRate: thr.threatRate||0, hitting: thr.hitting||[],
            oppRows: thr.rows||[], immuneMoves: thr.immune||[],
            opHits, opHitsHi, guard };
@@ -1044,7 +1057,11 @@ function matchup(mine, theirs){
     split, views, primary, other,
     // 「どの型でも勝てる／どの型でも負ける」は選出の判断に直結するので別に持つ
     winsAll:  views.every(v=>v.winsRace),
-    dangerAll:views.every(v=>v.danger)
+    dangerAll:views.every(v=>v.danger),
+    // どの型が相手でも受けられる＝殴り切れなくてもその相手は止まっている
+    wallsAll: views.every(v=>v.wallsIt),
+    stallsAll:views.every(v=>v.stallsIt),
+    roles: primary.roles
   };
   /* ★決め手があるか。
      最大の乱数でも3発かかる＝実戦では回復・交代・積みで必ず巻き返される。
@@ -1254,7 +1271,7 @@ function callIt(mine, oppName, opts){
 
   const bench = (opts.roster||[]).filter(r=> r.name!==mine.name)
     .map(r=>({ r, c:callIt(r, oppName, {roster:null, known, st, oppHPPct:opts.oppHPPct}) }))
-    .filter(x=> x.c && x.c.head!=='引く')
+    .filter(x=> x.c && x.c.head!=='引く' && x.c.head!=='居座らない')
     .sort((a,b)=> b.c.mu.score - a.c.mu.score);
 
   const pc = x => Math.round(x*100);
@@ -1276,6 +1293,10 @@ function callIt(mine, oppName, opts){
   if(others.length) detail.push({k:'info',
     t:`飛んでくる技：${others.map(r=>`${r.move}(${r.rateOf}%) ${dmgTxt(r)}`).join('、')}`});
   if(mu.guard) detail.push({k:'good', t:`${mu.guard}で1発は耐える`});
+  if(mu.wallsAll) detail.push({k:'good',
+    t:`相手はこちらを落とすのに<b>${mu.opHits}発</b>かかる。急いで殴らなくていい対面`});
+  if(mu.roles && mu.roles.hazard && mu.wallsAll) detail.push({k:'good',
+    t:`ここで<b>設置技</b>を置くと、相手6体すべてに効き続ける`});
   if(!mu.faster && mu.fasterAny && oppScarfRate(oppName)>=15)
     detail.push({k:'bad', t:`こだわりスカーフ採用${oppScarfRate(oppName)}%。持たれていると抜かれる`});
   if(mu.myMove) detail.push({k:'info',
@@ -1303,7 +1324,8 @@ function callIt(mine, oppName, opts){
   // ---- 結論 ----
   let head, cls, mark, why;
   const diesNow = (rd && rd.left) ? rd.left.diesNext : (pOHKO>=SURE_RATE);
-  if(mu.noOffense){
+  if(mu.noOffense && !mu.wallsAll){
+    // 打点が無く、しかも受けられもしない＝いる意味がない
     head='引く'; cls='ng'; mark='✕'; why=`打点が無い（最大でも${mu.myHits}発かかる）`;
   }else if(myHits<=1 && mu.fasterAny && !(diesNow && !mu.faster)){
     head='殴る'; cls='ok'; mark='◎'; why=`${mu.myMove}で先に落とせる`;
@@ -1319,12 +1341,22 @@ function callIt(mine, oppName, opts){
   }else if(pLose >= 25){
     head='様子見'; cls='wn'; mark='△';
     why=`${badMoves[0].move}(採用${badMoves[0].rateOf}%)を持っていると負ける。${pLose}%の型が該当。1発もらってから決める`;
+  }else if(mu.stallsAll){
+    /* 殴り切れないが、相手の打点も通らず、こちらは回復を持っている＝受け切れる。
+       ここを「打点なし＝引く」と切っていたので、受けの駒が選出に出てこなかった。 */
+    head='受ける'; cls='ok'; mark='○';
+    why=`相手はこちらを落とすのに${mu.opHits}発かかる。回復で受け切れる`;
+  }else if(mu.wallsAll && (mu.roles&&(mu.roles.hazard||mu.roles.status||mu.roles.phase))){
+    head='盤面を作る'; cls='ok'; mark='○';
+    why=`相手の打点が薄い（${mu.opHits}発）。殴り合わず${
+      mu.roles.hazard?'設置':mu.roles.status?'状態異常':'流し'}で仕事をする`;
   }else if(myHits >= 5){
     // 5発以上＝実戦では回復・交代・積みで必ず巻き返される
     head='引く'; cls='ng'; mark='✕'; why=`${myHits}発かかる。押し切れない`;
   }else if(myHits === 4){
-    head='様子見'; cls='wn'; mark='△';
-    why=`落とすのに4発かかる。回復技を持たれていたら押し切れない`;
+    head= mu.wallsAll ? '削る' : '様子見'; cls='wn'; mark='△';
+    why= mu.wallsAll ? `4発かかるが、相手の打点も薄い（${mu.opHits}発）。急がず削る`
+                     : `落とすのに4発かかる。回復技を持たれていたら押し切れない`;
   }else{
     head='殴る'; cls='ok'; mark= pLose>0 ? '○' : '◎';
     why= pLose>0 ? `${myHits}発で落とせる。負けるのは${pLose}%の型だけ`
@@ -1372,9 +1404,12 @@ function clearMatchupCache(){ _muCache.clear(); }
  *  → 毎回は出さない。その駒が居なくなると "答えが無くなる" 相手が2体以上いる時だけ返す。 */
 function keyPieces(picks, oppNames, opts){
   opts = opts || {};
+  // 「その相手を見れる」＝殴り勝てる、受け切れる、盤面を作れる のいずれか。
+  // 殴るだけを数えていたので、受けの駒が「唯一の答え」として出てこなかった。
+  const OKHEAD = ['殴る','受ける','盤面を作る'];
   const canBeat = (m, o)=>{
     const c = callIt(m, o, {known: (opts.known||{})[o] || null});
-    return c && (c.head === '殴る');
+    return c && OKHEAD.includes(c.head);
   };
   const cover = {};                                  // 相手 -> 見れる駒の一覧
   oppNames.forEach(o=>{ cover[o] = picks.filter(m=> canBeat(m, o)).map(m=> m.label || m.name); });
@@ -1437,6 +1472,36 @@ function buildMatrix(myRoster, oppNames){
   return myRoster.map(m=> oppNames.map(o=> matchup(m, {name:o})));
 }
 
+/* ---------- こちら側の駒の「役割」 ----------
+   社長の指摘（2026-08-19）：
+   「ドラパルトの出番がなさすぎる。そもそもの役割は殴るんじゃなくて守る役割だと思う。
+     相手を殴ることが重視されていて、負けない立ち回りが考慮されていないのでは？
+     一見遠回りに感じることが実は最短、みたいなのを評価してほしい」
+   → 完全に正しかった。選出スコアは「先に落とせるか」しか見ていなかった。
+     受け・起点作り・流し・状態異常・サイクルは1つも点数に入っていなかったので、ここで足す。 */
+const MY_ROLE_MOVES = {
+  recover: ['じこさいせい','ねがいごと','はねやすめ','なまける','つきのひかり','タマゴうみ','ミルクのみ',
+            'ソフトボール','あさのひざし','こうごうせい','ねむる','ドレインパンチ','ギガドレイン','スワンプ'],
+  hazard:  ['ステルスロック','まきびし','どくびし','ねばねばネット'],
+  status:  ['おにび','どくどく','でんじは','キノコのほうし','あくび','ちょうはつ','アンコール','いばる'],
+  phase:   ['ドラゴンテール','ともえなげ','ふきとばし','ほえる'],
+  pivot:   ['とんぼがえり','ボルトチェンジ','クイックターン'],
+  screen:  ['リフレクター','ひかりのかべ','オーロラベール','しんぴのまもり'],
+  setup:   ['つるぎのまい','りゅうのまい','めいそう','わるだくみ','てっぺき','ビルドアップ','からをやぶる','ちょうのまい']
+};
+/** 自分の駒が持っている支援系の役割。登録した技から判定する（推測ではなく実際の技） */
+function myRoles(mine){
+  const mv = new Set(mine.moves||[]);
+  const out = {};
+  Object.entries(MY_ROLE_MOVES).forEach(([k, list])=>{ if(list.some(m=>mv.has(m))) out[k] = true; });
+  return out;
+}
+/** 支援の厚み。受け・起点・流し・状態異常を持つ駒は、殴れなくても盤面を作れる */
+function supportValue(mine){
+  const r = myRoles(mine);
+  return (r.recover?1:0) + (r.hazard?1:0) + (r.status?1:0) + (r.phase?0.5:0) + (r.pivot?0.5:0) + (r.screen?0.5:0);
+}
+
 /** その駒の打点が物理寄りか特殊寄りか。登録した技から判定し、無ければ実数値のA/Cで。
  *  選出が片方に寄り切ると、鬼火・いかく／ひかりのかべ・チョッキ 1枚でまとめて止まる。 */
 function offenseCat(mine){
@@ -1475,7 +1540,11 @@ function suggestPicks(myRoster, oppNames, size){
     const uncovered = [];
     for(let j=0;j<m;j++){
       const best = Math.max(...c.map(i=> mat[i][j] ? mat[i][j].score : -9));
-      const anyWin = c.some(i=> mat[i][j] && mat[i][j].winsRace);
+      /* ★「見れる」＝先に落とせる、だけではない。
+         相手の打点が通らず受け切れるなら、その相手も止まっている。
+         ここを winsRace だけで数えていたので、受けの駒が選出に一度も出なかった。 */
+      const anyWin = c.some(i=> mat[i][j] && (mat[i][j].winsRace || mat[i][j].stallsAll
+                                              || (mat[i][j].wallsAll && !mat[i][j].dangerAll)));
       total += best;
       if(anyWin) cover++; else uncovered.push(oppNames[j]);
       worst = Math.min(worst, best);
@@ -1489,9 +1558,13 @@ function suggestPicks(myRoster, oppNames, size){
     const shared = Object.entries(weak).filter(([,v])=> v>=size).map(([t])=>t);
     // 打点が物理／特殊のどちらかに寄り切った並びは、相手の1枚でまとめて止まる
     const bias = offenseBias(c.map(i=> myRoster[i]));
-    const penalty = shared.length * 1.2 + (bias ? 0.8 : 0);
+    /* アタッカー3枚だけの並びは、1回止められると崩れる。
+       受け・起点・状態異常を1枚以上入れた並びを評価する（社長の「負けない立ち回り」）。 */
+    const support = c.reduce((a,i)=> a + supportValue(myRoster[i]), 0);
+    const supportBonus = Math.min(1.5, support * 0.5);
+    const penalty = shared.length * 1.2 + (bias ? 0.8 : 0) - supportBonus;
     return { members:c.map(i=> myRoster[i].label || myRoster[i].name), cover, total: total - penalty,
-             worst, uncovered, sharedWeak: shared, bias };
+             worst, uncovered, sharedWeak: shared, bias, support };
   }).sort((a,b)=> b.cover - a.cover || b.total - a.total);
 
   return { top: scored.slice(0,10), matrix: mat };
@@ -1679,7 +1752,7 @@ global.PC = {
   MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
-  bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppTypeItem,
+  bestOffense, bestThreat, immuneType, myOneHitGuard, myRoles, supportValue, oppUsage, oppTypeItem,
   readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
 };
