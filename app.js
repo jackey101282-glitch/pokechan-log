@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '12';
+const APP_VERSION = '13';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -948,6 +948,11 @@ function initVsUI(){
   autocomplete('#vsOpp','#vsOppSug', oppSpeciesSource, n=>{
     VS.opp = n; $('#vsOpp').value = n; renderVs();
   });
+  autocomplete('#vsOppMove','#vsOppMoveSug', q=>{
+    const hit=n=>!q||n.includes(q);
+    return MOVE_NAMES.filter(hit).sort((a,b)=>a.indexOf(q)-b.indexOf(q)||a.length-b.length);
+  }, n=>{ $('#vsOppMove').value=n; }, {types:false});
+  $('#vsNarrow').onclick = ()=> safe('絞り込み', vsNarrow, '#vsNarrowOut');
   $('#vsClear').onclick = ()=>{ VS.opp=''; $('#vsOpp').value=''; renderVs(); };
 }
 
@@ -969,11 +974,58 @@ function renderVsPickers(){
   $$('#vsQuick [data-vq]').forEach(b=> b.onclick=()=>{ VS.opp=b.dataset.vq; $('#vsOpp').value=b.dataset.vq; renderVs(); });
 }
 
+/** 食らったダメージ%から、相手の振り方と持ち物を絞る。
+ *  本作はHPが%表示なので、実数値ではなく%で受け取るのが実戦的。 */
+function vsNarrow(){
+  const out=$('#vsNarrowOut');
+  const pct0=+$('#vsDmgPct').value, mvName=$('#vsOppMove').value.trim();
+  const roster=currentRoster(); const rc=rosterForCalc(roster,S.mega);
+  const me=rc.find(r=>r.label===VS.mine); const opp=effOpp(VS.opp);
+  const mv=PC.MOVES[mvName];
+  if(!me||!PC.SPECIES[opp]){ out.innerHTML='<div class="note w">先に自分と相手を選んでください。</div>'; return; }
+  if(!pct0||!mv){ out.innerHTML='<div class="note w">減った%と、相手が使った技を入れてください。</div>'; return; }
+  if(mv.cat==='変'||!mv.power){ out.innerHTML='<div class="note w">変化技はダメージから絞れません。</div>'; return; }
+
+  const items=['','いのちのたま','こだわりハチマキ','こだわりメガネ','たつじんのおび','とつげきチョッキ'];
+  const hit=[], all=[];
+  PC.assumedSpreads(opp).forEach(sp=>{
+    items.forEach(it=>{
+      if(it==='こだわりハチマキ'&&mv.cat!=='物') return;
+      if(it==='こだわりメガネ'&&mv.cat!=='特') return;
+      if(it==='とつげきチョッキ') return;                 // 攻撃側の道具ではない
+      const r=PC.calcDamage({
+        attacker:{name:opp, atkStat: mv.cat==='物'?sp.stats.a:sp.stats.c, types:PC.SPECIES[opp].types,
+                  ability:PC.worstDefAbility(opp), item:it, rank:0, hpRatio:1},
+        defender:{name:me.name, defStat: mv.cat==='物'?me.stats.b:me.stats.d, hp:me.stats.h,
+                  types:PC.SPECIES[me.name].types, ability:me.ability||'', item:me.item||'', rank:0, hpRatio:1},
+        move:mv, field:{}, flags:{}});
+      if(r.error||r.eff===0) return;
+      const lo=r.min/me.stats.h*100, hi=r.max/me.stats.h*100;
+      const row={label:sp.label, item:it||'持ち物なし', lo, hi};
+      all.push(row);
+      if(pct0>=Math.floor(lo)-1 && pct0<=Math.ceil(hi)+1) hit.push(row);
+    });
+  });
+  if(!all.length){ out.innerHTML='<div class="note w">この技では計算できませんでした。</div>'; return; }
+  const deniedSpread=[...new Set(all.map(r=>r.label))].filter(l=>!hit.some(h=>h.label===l));
+  const deniedItem  =[...new Set(all.map(r=>r.item))].filter(i=>!hit.some(h=>h.item===i));
+
+  out.innerHTML = hit.length
+    ? `<div class="note g small"><b>${pct0}%</b> から <b>${hit.length}通り</b>に絞れました。</div>
+       <table style="margin-top:8px"><tr><th>相手の想定</th><th>持ち物</th><th class="num">この場合</th></tr>
+       ${hit.map(h=>`<tr><td>${esc(h.label)}</td><td>${esc(h.item)}</td><td class="num small muted">${Math.round(h.lo)}〜${Math.round(h.hi)}%</td></tr>`).join('')}</table>
+       ${(deniedSpread.length||deniedItem.length)?`<div class="note r small" style="margin-top:10px"><b>この時点で否定できたもの</b><br>
+         ${deniedSpread.length?`振り方：${deniedSpread.map(esc).join('・')} ではない<br>`:''}
+         ${deniedItem.length?`持ち物：${deniedItem.map(esc).join('・')} ではない`:''}</div>`:''}
+       <div class="small muted" style="margin-top:8px">分かったことは、記録の「判明した相手の型」欄に残すと次戦で効きます。</div>`
+    : `<div class="note w">該当なし。急所・天候・能力ランク・特性（かたいツメ等）が絡んでいる可能性があります。</div>`;
+}
+
 function renderVs(){
   const out=$('#vsOut');
   const roster=currentRoster();
   if(!VS.mine || !VS.opp || !PC.SPECIES[VS.opp] || !roster.length){
-    out.innerHTML=''; return;
+    out.innerHTML=''; $('#vsNarrowCard').hidden = true; return;
   }
   const rc = rosterForCalc(roster, S.mega);
   const me = rc.find(r=>r.label===VS.mine) || {name:VS.mine};
@@ -982,6 +1034,19 @@ function renderVs(){
   if(!mu){ out.innerHTML='<div class="note w">計算できませんでした。</div>'; return; }
   const os = PC.SPECIES[opp], ms = PC.SPECIES[me.name];
   const v = verdict(mu);
+
+  /* この対面で「何をするか」を1行で出す。実戦では45秒しかないので、結論を先に置く。 */
+  const setupMoves = (me.moves||[]).filter(n=>['つるぎのまい','りゅうのまい','わるだくみ','めいそう','ビルドアップ','てっぺき','からをやぶる','こうそくいどう','ちょうのまい'].includes(n));
+  let act;
+  if(mu.dangerAll)              act = {cls:'ng', head:'引く',           why:'どの型でも不利。居座ると崩される'};
+  else if(mu.winsAll && mu.faster && mu.myHits<=1) act = {cls:'ok', head:'殴る（1発で落ちる）', why:'先制して確定圏内'};
+  else if(mu.winsAll && setupMoves.length && mu.opHits>=3 && mu.faster)
+                                act = {cls:'ok', head:`積む（${setupMoves[0]}）`, why:`相手の打点は${mu.opHits}発かかる。1ターン使える`};
+  else if(mu.winsAll)           act = {cls:'ok', head:'殴る',           why:'どの型でも先に落とせる'};
+  else if(mu.split)             act = {cls:'wn', head:'1発もらって型を絞る', why:splitNote(mu)||'相手の型で結論が変わる'};
+  else if(mu.winsRace)          act = {cls:'ok', head:'殴る',           why:'先に落とせる想定'};
+  else if(mu.opHits>=3)         act = {cls:'wn', head:'居座って削る',   why:`${mu.opHits}発は耐えるので、削ってから交代でよい`};
+  else                          act = {cls:'ng', head:'引く',           why:'押し切れないうえに、こちらの方が先に落ちる'};
 
   /* ① こちらの技が何倍で通るか（登録した技があればそれ、無ければ全タイプ） */
   const oppAb = PC.worstDefAbility(opp);
@@ -1034,11 +1099,16 @@ function renderVs(){
   }).filter(x=>x.mu && !x.mu.danger)
     .sort((a,b)=> (b.mu.winsAll?1:0)-(a.mu.winsAll?1:0) || b.mu.score-a.mu.score).slice(0,3);
 
+  $('#vsNarrowCard').hidden = false;
   out.innerHTML = `
   <div class="card">
     <div class="hd" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
       ${pkChip(VS.mine,{})}<span class="muted">vs</span>${pkChip(opp,{})}
       <span class="badge ${v.cls}" style="margin-left:auto">${esc(v.txt)}</span>
+    </div>
+    <div class="note ${act.cls==='ok'?'g':act.cls==='ng'?'r':'w'}" style="margin-bottom:10px">
+      <div style="font-size:18px;font-weight:800">${esc(act.head)}</div>
+      <div class="small">${esc(act.why)}</div>
     </div>
     <div style="font-size:20px;font-weight:800">${muNums(mu)}</div>
     <div class="small muted">与える割合 / 受ける割合　・　素早さ ${mu.myS} vs ${mu.opS}　${mu.faster?'<b>先制できる</b>':(mu.fasterAny?'型次第で先制':'<b>後手</b>')}</div>

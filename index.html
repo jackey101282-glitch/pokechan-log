@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="12">
+<meta name="app-version" content="13">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -341,6 +341,17 @@ tr.bad .bar>i{background:var(--lose)}
     </div>
     <div id="vsQuick" class="quick" style="margin-top:10px"></div>
   </div>
+
+  <div class="card" id="vsNarrowCard" hidden>
+    <h2>食らったダメージから相手を絞る<span class="sub">1発もらったら、ここに入れる</span></h2>
+    <p class="hint">本作はHPが%表示です。<b>何%減ったか</b>と<b>相手が使った技</b>を入れると、相手の振り方と持ち物を絞り込みます。絞れた結果は上の判定にも効きます。</p>
+    <div class="row" style="align-items:flex-end">
+      <div style="flex:0 0 110px"><label class="f">減った%</label><input type="number" id="vsDmgPct" placeholder="52"></div>
+      <div><label class="f">相手が使った技</label><div class="sug"><input type="text" id="vsOppMove" autocomplete="off" placeholder="じしん"><div class="sugbox" id="vsOppMoveSug" hidden></div></div></div>
+      <button class="btn sm" id="vsNarrow" style="flex:0 0 auto">絞る</button>
+    </div>
+    <div id="vsNarrowOut" style="margin-top:10px"></div>
+  </div>
 </section>
 
 <section id="tab-dmg" hidden>
@@ -510,12 +521,12 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=12"></script>
-<script src="./data/species.js?v=12"></script>
-<script src="./data/moves.js?v=12"></script>
-<script src="./data/principles.js?v=12"></script>
-<script src="./core.js?v=12"></script>
+<script src="./supabase-config.js?v=13"></script>
+<script src="./data/species.js?v=13"></script>
+<script src="./data/moves.js?v=13"></script>
+<script src="./data/principles.js?v=13"></script>
+<script src="./core.js?v=13"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=12"></script>
+<script src="./app.js?v=13"></script>
 </body>
 </html>
