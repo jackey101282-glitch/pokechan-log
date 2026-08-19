@@ -26,9 +26,11 @@ video{width:100%;border-radius:10px;background:#000;display:none}
 <div class="card" style="background:#fff7ed;border-color:#fdba74">
 <h2>2026-08-19 の実機結果（iOS 18.7）</h2>
 <p class="why" style="margin:0">
-<b class="ng">② 無音ループは失敗</b>：裏に回って3秒で音の状態が interrupted になる。この方式は使えない。<br>
-<b class="ng">④ マイクは失敗</b>：裏に回ると止まり、戻ってきても止まったまま。<b>喋って操作するのは不可能</b>。<br>
-<b>① と ③ は判定できていない</b>ので作り直しました。<b>①と③だけ もう一度</b>お願いします。</p>
+<b class="ok">③ 小窓は成功</b>：ゲームの上に出せる。しかも<b>裏に回ってもカウンタが回り続けた＝ページが生きている</b>。<br>
+<b class="ng">② 無音ループは失敗</b>：裏に回って3秒で interrupted。<br>
+<b class="ng">④ マイクは単体では失敗</b>：裏に回ると止まる。<br>
+<b>① 読み上げは、裏で要求は通ったが鳴ったのは表に戻った後だった</b>（判定は保留）。<br>
+→ <b>次は⑤だけ試してください。</b>小窓でページが生きるなら、読み上げとマイクも生きるかもしれません。</p>
 </div>
 
 <div class="card">
@@ -58,6 +60,18 @@ video{width:100%;border-radius:10px;background:#000;display:none}
   <p class="why">「ガブリアス出てきた」と喋って操作するのに必要です。</p>
   <button id="t4">マイクを開始</button>
   <div class="res" id="r4">未実行</div>
+</div>
+
+<div class="card" style="border-color:#ef4444;border-width:2px">
+  <h2>⑤ 小窓を出したまま、読み上げとマイクを試す（本命）</h2>
+  <p class="why">小窓が出ている間はカウンタが回り続けていました＝ページが生きています。
+    その状態なら読み上げとマイクも生きるかもしれません。ここが動けば
+    <b>iPhone 1台で会話しながら対戦できます</b>。<br>
+    押したら<b>ホームに戻ってポケモンを開き、20秒ほど待ってから</b>戻ってきてください。
+    裏にいる間に「てすと◯」と聞こえるか耳で確認してください。</p>
+  <button class="primary" id="t5">小窓＋読み上げ＋マイクを同時に開始</button>
+  <video id="pip5" playsinline muted></video>
+  <div class="res" id="r5">未実行</div>
 </div>
 
 <div class="card">
@@ -181,6 +195,77 @@ $('#t4').onclick=async ()=>{
       (t4hidden>0 ? (live?'<span class="ok">裏でもマイクが生きています</span>':'<span class="ng">裏でマイクが止まりました</span>') : '裏に回して確認してください');
   };
   tick(); t4id=setInterval(tick,3000);
+};
+
+/* ⑤ 小窓を出したまま読み上げとマイクを試す（本命の検証）
+   ★1つでも失敗したら全体が止まる作りだと、実機で何も分からないまま終わる。
+     計測ループを先に始めて、マイクと小窓は「後から追いつく」形にする。 */
+let t5id=null, t5mic=null, t5n=0, t5spoke=0, t5spokeHidden=0, t5hidden=0, t5micAlive=false, t5f=0, t5pip='未';
+$('#t5').onclick=()=>{
+  if(t5id){ clearInterval(t5id); t5id=null;
+    if(t5mic){ t5mic.getTracks().forEach(t=>t.stop()); t5mic=null; }
+    $('#t5').textContent='小窓＋読み上げ＋マイクを同時に開始'; return; }
+  $('#t5').textContent='停止';
+  t5n=0; t5spoke=0; t5spokeHidden=0; t5hidden=0; t5f=0; t5pip='要求中'; t5micAlive=false;
+
+  const v=$('#pip5'), cv=document.createElement('canvas'); cv.width=480; cv.height=270;
+  const g=cv.getContext('2d');
+  (function draw(){ t5f++;
+    g.fillStyle='#111'; g.fillRect(0,0,480,270);
+    g.fillStyle='#ef4444'; g.font='bold 52px sans-serif'; g.textAlign='center';
+    g.fillText('引く', 240, 92);
+    g.fillStyle='#fff'; g.font='24px sans-serif'; g.fillText('→ メガメタグロス', 240, 138);
+    g.font='18px sans-serif'; g.fillStyle='#9ca3af';
+    g.fillText('読み上げ '+t5spoke+'回（裏 '+t5spokeHidden+'）', 240, 186);
+    g.fillStyle= t5micAlive? '#22c55e':'#f87171';
+    g.fillText('マイク '+(t5micAlive?'生存':'停止')+' ／ 描画 '+t5f, 240, 222);
+    if(t5id) requestAnimationFrame(draw);
+  })();
+
+  const u5=()=>{ $('#r5').innerHTML=
+    `${t5n}回チェック（裏で ${t5hidden}回）／描画 ${t5f}／小窓 ${t5pip}<br>`+
+    `<b>読み上げ：実際に鳴った ${t5spoke}回（裏で ${t5spokeHidden}回）</b><br>`+
+    `<b>マイク：${t5micAlive?'<span class="ok">生きている</span>':'<span class="ng">止まっている</span>'}</b><br>`+
+    (t5spokeHidden>0 ? '<span class="ok">裏でも本当に喋れています</span>' : ''); };
+
+  const tick=()=>{
+    t5n++; const hidden=document.hidden; if(hidden) t5hidden++;
+    t5micAlive = !!(t5mic && t5mic.getAudioTracks().every(t=> t.readyState==='live' && !t.muted));
+    const u=new SpeechSynthesisUtterance('てすと'+t5n); u.lang='ja-JP'; u.rate=1.1;
+    u.onstart=()=>{ t5spoke++; if(hidden) t5spokeHidden++;
+      log('⑤'+t5n+' 実際に鳴った'+(hidden?'（裏）':'（表）')); u5(); };
+    u.onerror=(e)=>{ log('⑤'+t5n+' 鳴らなかった '+(e.error||'')+(hidden?'（裏）':'（表）')); u5(); };
+    try{ speechSynthesis.speak(u); }catch(e){ log('⑤読み上げ呼び出しに失敗 '+e.message); }
+    log('⑤'+t5n+' 描画'+t5f+' マイク='+(t5micAlive?'生存':'停止')+' 小窓='+t5pip+(hidden?'（裏）':'（表）'));
+    u5();
+  };
+  tick(); t5id=setInterval(tick,4000);      // ★先にループを回す
+
+  // --- 小窓（ここで詰まっても計測は続く）---
+  (async()=>{
+    try{
+      if(!cv.captureStream) throw new Error('captureStream 未対応');
+      v.srcObject=cv.captureStream(20); v.style.display='block';
+      v.addEventListener('webkitpresentationmodechanged',()=>{
+        t5pip=v.webkitPresentationMode; log('⑤ 表示モード '+t5pip); u5(); });
+      v.addEventListener('enterpictureinpicture',()=>{ t5pip='picture-in-picture'; log('⑤ 小窓に入った'); u5(); });
+      const t=setTimeout(()=>{ if(t5pip==='要求中'){ t5pip='play待ちで止まった'; log('⑤ play()が返ってこない'); u5(); } }, 3000);
+      await v.play(); clearTimeout(t);
+      log('⑤ 再生開始');
+      if(v.webkitSupportsPresentationMode && v.webkitSupportsPresentationMode('picture-in-picture'))
+        v.webkitSetPresentationMode('picture-in-picture');
+      else if(v.requestPictureInPicture) await v.requestPictureInPicture();
+      else throw new Error('小窓に未対応');
+      log('⑤小窓を要求');
+    }catch(e){ t5pip='失敗:'+e.message; log('⑤小窓に失敗 '+e.message); u5(); }
+  })();
+
+  // --- マイク（拒否されても計測は続く）---
+  (async()=>{
+    try{ t5mic=await navigator.mediaDevices.getUserMedia({audio:true}); log('⑤マイクを取得'); }
+    catch(e){ log('⑤マイク取得に失敗 '+e.message); }
+    u5();
+  })();
 };
 
 $('#copy').onclick=async ()=>{
