@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '10';
+const APP_VERSION = '11';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1441,6 +1441,47 @@ $('#tSave').onclick=async ()=>{
   $('#tName').value=''; S.tNew.length=0; renderTNew();
   await loadTeams(); renderAll();
   res.dropped.length ? warnDropped(res.dropped) : toast('構築を保存しました');
+};
+
+/** 構築データの取り込み。Claudeが出したJSONをそのまま貼れるようにする。
+ *  データに無いポケモン名・技名はここで弾いて、何が落ちたかを必ず出す。 */
+$('#impRun').onclick = async ()=>{
+  const msg=$('#impMsg'); msg.className='small muted'; msg.textContent='';
+  let d;
+  try{ d = JSON.parse($('#impText').value.trim()); }
+  catch(e){ msg.className='small'; msg.style.color='var(--red)'; msg.textContent='JSONとして読めません: '+e.message; return; }
+  const name = (d.name||'').trim();
+  const roster = Array.isArray(d.roster) ? d.roster : [];
+  if(!name) { msg.textContent='name がありません'; return; }
+  if(!roster.length){ msg.textContent='roster が空です'; return; }
+
+  const bad=[], clean=[];
+  roster.forEach(m=>{
+    if(!m || !PC.SPECIES[m.name]){ bad.push(`ポケモン「${m&&m.name||'?'}」がデータにありません`); return; }
+    const mv=(m.moves||[]).filter(x=>{
+      if(!x) return false;
+      if(!PC.MOVES[x]){ bad.push(`${m.name} の技「${x}」がデータにありません`); return false; }
+      return true;
+    });
+    if(m.nature && !PC.NATURES[m.nature]) bad.push(`${m.name} の性格「${m.nature}」が不明`);
+    const sp = Object.assign({h:0,a:0,b:0,c:0,d:0,s:0}, m.sp||{});
+    const tot = Object.values(sp).reduce((a,b)=>a+b,0);
+    if(tot>PC.SP_TOTAL) bad.push(`${m.name} のSP合計が ${tot}（上限${PC.SP_TOTAL}）`);
+    Object.entries(sp).forEach(([k,v])=>{ if(v>PC.SP_MAX) bad.push(`${m.name} の${k}が ${v}（1能力の上限${PC.SP_MAX}）`); });
+    clean.push({name:m.name, ability:m.ability||'', nature:m.nature||'', item:m.item||'', sp, moves:mv});
+  });
+  if(!clean.length){ msg.style.color='var(--red)'; msg.textContent='登録できるポケモンがありませんでした'; return; }
+
+  const res = await dbWrite('teams','insert',{user_id:USER.id, name,
+    members:clean.map(m=>m.name), roster:clean, plans:{}, note:d.note||null});
+  if(!res.ok){ msg.style.color='var(--red)'; msg.textContent='保存に失敗: '+res.error.message; return; }
+  $('#impText').value='';
+  await loadTeams(); renderAll();
+  toast(`「${name}」を${clean.length}匹で登録しました`);
+  if(bad.length){
+    msg.style.color='var(--org)';
+    msg.innerHTML = '取り込みましたが、次は反映されていません：<br>'+bad.map(esc).join('<br>');
+  }
 };
 
 function renderTeams(){
