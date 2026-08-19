@@ -781,7 +781,8 @@ function immuneType(ability){ return IMMUNE_BY_ABILITY[ability] || null; }
 const REP_POWER = 90;   // 相手のタイプ一致技の代表威力
 
 /** 自分の最大打点（相手のHPに対する割合 0〜1）と技名。opp は assumedSpreads() の1要素 */
-function bestOffense(mine, oppName, opp){
+function bestOffense(mine, oppName, opp, st){
+  st = st || {};
   const os = SPECIES[oppName]; if(!os) return {rate:0, move:null};
   const hp = opp.stats.h;
   const oppAb = worstDefAbility(oppName);          // 相手の特性（マルチスケイル等）
@@ -797,9 +798,13 @@ function bestOffense(mine, oppName, opp){
     const atk = mv.cat==='物' ? myStats.a : myStats.c;
     const def = mv.cat==='物' ? opp.stats.b : opp.stats.d;
     const r = calcDamage({
-      attacker:{name:mine.name, atkStat:atk, types:SPECIES[mine.name].types, ability:mine.ability||'', item:mine.item||'', rank:0, hpRatio:1},
-      defender:{name:oppName, defStat:def, hp, types:os.types, ability:oppAb, item:'', rank:0, hpRatio:1},
-      move:mv, field:{}, flags:{}
+      attacker:{name:mine.name, atkStat:atk, types:SPECIES[mine.name].types, ability:mine.ability||'',
+                item:mine.item||'', rank: mv.cat==='物'? (st.myAtkRank||0) : (st.mySpaRank||0),
+                hpRatio:1, intimidated: !!st.myIntimidated},
+      defender:{name:oppName, defStat:def, hp, types:os.types, ability:oppAb, item:'',
+                rank: mv.cat==='物'? (st.opDefRank||0) : (st.opSpdRank||0), hpRatio:1},
+      move:mv, field:{ weather:st.weather||'', reflect:!!st.opReflect, lightscreen:!!st.opLightscreen,
+                       auroraveil:!!st.opAuroraveil, burn: mv.cat==='物' && !!st.myBurn }, flags:{}
     });
     if(r.error || r.eff===0) return;
     const rate = ((r.min + r.max)/2) / hp;
@@ -819,7 +824,8 @@ function bestOffense(mine, oppName, opp){
  *
  *  いまは app/data/usage.js の実採用技をそのまま撃たせる。データが無い種だけ従来方式にフォールバック。
  *  返り値の rate は平均乱数、rateHi は最大乱数（一撃で落ちるかの判定はこちらで見る）。 */
-function bestThreat(oppName, mine, opp, known){
+function bestThreat(oppName, mine, opp, known, st){
+  st = st || {};
   const os = SPECIES[oppName], ms = SPECIES[mine.name];
   if(!os || !ms) return {rate:0, rateHi:0, type:null, move:null};
   const myStats = mine.stats || spreadStats(mine.name, {h:32,a:0,b:17,c:0,d:17,s:0}, {a:1,b:1,c:1,d:1,s:1});
@@ -860,10 +866,14 @@ function bestThreat(oppName, mine, opp, known){
     const item = oppOffenseItem(oppName, mv.cat)
               || (oppTypeItem(oppName, mv.type) ? 'タイプ強化アイテム' : '');
     const r = calcDamage({
-      attacker:{name:oppName, atkStat: atkOf(mv.cat), types:os.types, ability:'', item, rank:0, hpRatio:1},
+      attacker:{name:oppName, atkStat: atkOf(mv.cat), types:os.types, ability:'', item,
+                rank: mv.cat==='物'? (st.opAtkRank||0) : (st.opSpaRank||0), hpRatio:1,
+                intimidated: mv.cat==='物' && !!st.opIntimidated},
       defender:{name:mine.name, defStat: mv.cat==='物'?myStats.b:myStats.d, hp:myStats.h,
-                types:ms.types, ability:mine.ability||'', item:mine.item||'', rank:0, hpRatio:1},
-      move:mv, field:{}, flags:{}
+                types:ms.types, ability:mine.ability||'', item:mine.item||'',
+                rank: mv.cat==='物'? (st.myDefRank||0) : (st.mySpdRank||0), hpRatio:1},
+      move:mv, field:{ weather:st.weather||'', reflect:!!st.myReflect, lightscreen:!!st.myLightscreen,
+                       auroraveil:!!st.myAuroraveil, burn: mv.cat==='物' && !!st.opBurn }, flags:{}
     });
     if(r.error) return;
     if(r.eff===0){                                    // タイプ相性で無効＝この技には出し得る
@@ -912,13 +922,18 @@ function myOneHitGuard(mine){
 }
 
 /** 自分1体 × 相手の想定1通り を採点 */
-function matchupVs(mine, oppName, opp, known){
-  const myS = mine.stats ? mine.stats.s : spreadStats(mine.name,{h:2,a:0,b:0,c:0,d:0,s:32},{a:1,b:1,c:1,d:1,s:1}).s;
-  const opS = opp.stats.s;
+function matchupVs(mine, oppName, opp, known, st){
+  st = st || {};
+  let myS = mine.stats ? mine.stats.s : spreadStats(mine.name,{h:2,a:0,b:0,c:0,d:0,s:32},{a:1,b:1,c:1,d:1,s:1}).s;
+  let opS = opp.stats.s;
+  // 積み・まひ・おいかぜは行動順をひっくり返すので、素早さにも必ず効かせる
+  myS = Math.floor(myS * rankMul(st.mySpeRank||0)) * (st.myParalysis?0.5:1) * (st.myTailwind?2:1);
+  opS = Math.floor(opS * rankMul(st.opSpeRank||0)) * (st.opParalysis?0.5:1) * (st.opTailwind?2:1);
+  myS = Math.floor(myS); opS = Math.floor(opS);
   const faster = myS > opS;
 
-  const off = bestOffense(mine, oppName, opp);      // 自分→相手 のダメージ割合
-  const thr = bestThreat(oppName, mine, opp, known); // 相手→自分 のダメージ割合
+  const off = bestOffense(mine, oppName, opp, st);      // 自分→相手 のダメージ割合
+  const thr = bestThreat(oppName, mine, opp, known, st); // 相手→自分 のダメージ割合
 
   // 何発で落とせるか / 落とされるか
   let myHits = off.rate>0 ? Math.ceil(1/off.rate) : 99;
@@ -960,10 +975,11 @@ function matchupVs(mine, oppName, opp, known){
 
 /* 同じ (自分の個体 × 相手) の組み合わせは何度も出てくるので結果を使い回す */
 const _muCache = new Map();
-function _muKey(mine, oppName, known){
-  const st = mine.stats ? [mine.stats.h,mine.stats.a,mine.stats.b,mine.stats.c,mine.stats.d,mine.stats.s].join('.') : '-';
-  return [mine.name, st, (mine.moves||[]).join('/'), mine.ability||'', mine.item||'', oppName,
-          (known||[]).join(','), mine.guardGone?'g0':''].join('|');
+function _muKey(mine, oppName, known, board){
+  const sv = mine.stats ? [mine.stats.h,mine.stats.a,mine.stats.b,mine.stats.c,mine.stats.d,mine.stats.s].join('.') : '-';
+  return [mine.name, sv, (mine.moves||[]).join('/'), mine.ability||'', mine.item||'', oppName,
+          (known||[]).join(','), mine.guardGone?'g0':'',
+          board ? JSON.stringify(board) : ''].join('|');
 }
 
 /** 自分1体 vs 相手1体。相手の型は「攻撃型」「耐久型」の2通りで見て、
@@ -973,12 +989,13 @@ function matchup(mine, theirs){
   const ms = SPECIES[mine.name], ts = SPECIES[theirs.name];
   if(!ms || !ts) return null;
   const known = theirs.known || null;          // 試合中に観測した相手の技
-  const key = _muKey(mine, theirs.name, known);
+  const st = theirs.st || null;               // 盤面の状態（積み・天候・状態異常・壁）
+  const key = _muKey(mine, theirs.name, known, st);
   const hit = _muCache.get(key); if(hit) return hit;
 
   const spreads = assumedSpreads(theirs.name);
   if(!spreads.length) return null;
-  const views = spreads.map(sp=> matchupVs(mine, theirs.name, sp, known));
+  const views = spreads.map(sp=> matchupVs(mine, theirs.name, sp, known, st));
 
   // 主想定＝ありそうな方。表示する結論はこちらに合わせる
   const primary = views.reduce((a,b)=> b.weight > a.weight ? b : a);
@@ -1069,7 +1086,14 @@ function itemForCalc(item, moveType){
  *  @param oppName 相手
  *  @param hpNow 自分の残りHP（実数値）
  *  @param field {weather, reflect, lightscreen, auroraveil} 任意 */
-function readDamage(mine, oppName, hpNow, field, known){
+/** 盤面の状態を calcDamage の field 形に変換する */
+function boardField(st){
+  st = st || {};
+  return { weather: st.weather||'', reflect: !!st.myReflect, lightscreen: !!st.myLightscreen,
+           auroraveil: !!st.myAuroraveil, burn: !!st.opBurn };
+}
+function readDamage(mine, oppName, hpNow, field, known, st){
+  st = st || {};
   const ms = SPECIES[mine.name], os = SPECIES[oppName];
   if(!ms || !os || !mine.stats) return null;
   const maxHP = mine.stats.h;
@@ -1094,9 +1118,12 @@ function readDamage(mine, oppName, hpNow, field, known){
           const atk = (sp.atk && sp.atk[mv.cat]!=null) ? sp.atk[mv.cat]
                     : (mv.cat==='物' ? sp.stats.a : sp.stats.c);
           const r = calcDamage({
-            attacker:{name:oppName, atkStat:atk, types:os.types, ability:'', item, rank:0, hpRatio:1},
+            attacker:{name:oppName, atkStat:atk, types:os.types, ability:'', item,
+                      rank: mv.cat==='物'? (st.opAtkRank||0) : (st.opSpaRank||0), hpRatio:1,
+                      intimidated: mv.cat==='物' && !!st.opIntimidated},
             defender:{name:mine.name, defStat: mv.cat==='物'?mine.stats.b:mine.stats.d, hp:maxHP,
-                      types:ms.types, ability:mine.ability||'', item:mine.item||'', rank:0, hpRatio:1},
+                      types:ms.types, ability:mine.ability||'', item:mine.item||'',
+                      rank: mv.cat==='物'? (st.myDefRank||0) : (st.mySpdRank||0), hpRatio:1},
             move:mv, field:field||{}, flags:{}
           });
           if(r.error || r.eff===0) return;
@@ -1196,12 +1223,13 @@ const SURE_RATE = 60;   // これ以上の採用率＝ほぼ全個体が持っ�
 function callIt(mine, oppName, opts){
   opts = opts || {};
   const known = opts.known || null;
+  const st = opts.st || null;                 // 盤面（積み・天候・状態異常・壁・設置）
   // ばけのかわ・タスキが「もう無い」状態を指定できる（剥がれた後は判定が別物になる）
   if(opts.guardGone) mine = {...mine, guardGone:true};
-  const mu = matchup(mine, {name:oppName, known});
+  const mu = matchup(mine, {name:oppName, known, st});
   if(!mu) return null;
   const hpNow = (opts.myHP!=null && mine.stats) ? opts.myHP : null;
-  const rd = hpNow!=null ? readDamage(mine, oppName, hpNow, opts.field, known) : null;
+  const rd = hpNow!=null ? readDamage(mine, oppName, hpNow, boardField(st), known, st) : null;
 
   // 相手の残りHP(%)が分かっていれば、あと何発で落とせるかを補正する
   const oppLeft = (opts.oppHPPct!=null) ? Math.max(0.01, Math.min(1, opts.oppHPPct)) : 1;
@@ -1225,7 +1253,7 @@ function callIt(mine, oppName, opts){
   const badMoves = rows.filter(r=> r.beats).sort((a,b)=> b.rateOf-a.rateOf);
 
   const bench = (opts.roster||[]).filter(r=> r.name!==mine.name)
-    .map(r=>({ r, c:callIt(r, oppName, {roster:null, known, oppHPPct:opts.oppHPPct}) }))
+    .map(r=>({ r, c:callIt(r, oppName, {roster:null, known, st, oppHPPct:opts.oppHPPct}) }))
     .filter(x=> x.c && x.c.head!=='引く')
     .sort((a,b)=> b.c.mu.score - a.c.mu.score);
 
@@ -1252,6 +1280,13 @@ function callIt(mine, oppName, opts){
     detail.push({k:'bad', t:`こだわりスカーフ採用${oppScarfRate(oppName)}%。持たれていると抜かれる`});
   if(mu.myMove) detail.push({k:'info',
     t:`こちらの最大打点：<b>${mu.myMove}</b> ${pc(mu.myDmgLo)}〜${pc(mu.myDmgHi)}%（${myHits}発で落とせる）`});
+  /* こちら側に置かれた設置技。「引く」と言っても、これがあると引き先が削れて次で落ちる。 */
+  if(st && (st.myRocks || st.mySpikes)){
+    const parts = [];
+    if(st.myRocks) parts.push('ステルスロック');
+    if(st.mySpikes) parts.push('まきびし'+(st.mySpikes>1?`(${st.mySpikes}回)`:''));
+    detail.push({k:'bad', t:`こちらの場に <b>${parts.join('・')}</b>。交代するたびに削られる`});
+  }
   // 相手の役割（実データからの推定。根拠の採用率つき）
   const roles = rolesOf(oppName);
   if(roles.length) detail.push({k:'role', t:`相手の役割：${roles.slice(0,3).map(r=>

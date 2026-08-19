@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '27';
+const APP_VERSION = '28';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -979,7 +979,7 @@ $('#btnSave').onclick=async ()=>{
    45秒の中でClaudeに聞くと必ず間に合わない（実際に2戦落とした）。
    相手6体を入れた時点で全対面を計算しておき、試合中はタップだけで即答する。
    ========================================================= */
-let BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null, hp:{}, oppHp:{}, obs:{}, guardGone:{} };
+let BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null, hp:{}, oppHp:{}, obs:{}, guardGone:{}, board:{} };
 
 function initBtUI(){
   /* ★2026-08-19 修正：ここが「上書き」だったせいで、
@@ -1084,7 +1084,7 @@ function btCompute(){
     const knownOf = BT.obs && BT.obs[o] ? BT.obs[o] : null;
     BT.matrix[o] = roster.map(m=>{
       const me = rc.find(r=>r.label===m.name) || {name:m.name};
-      const c = PC.callIt(me, effOpp(o), {known:knownOf});
+      const c = PC.callIt(me, effOpp(o), {known:knownOf, st:BT.board||{}});
       return { name:m.name, mu: c ? c.mu : PC.matchup(me,{name:effOpp(o), known:knownOf}), call:c };
     }).filter(x=>x.mu);
   });
@@ -1174,7 +1174,30 @@ function btRender(){
     ${(()=>{const t=[];BT.opp.forEach(n=>PC.oppTricks(PC.toBase(n)).forEach(([mv,why])=>t.push(`<b>${esc(n)}</b>の<b>${esc(mv)}</b> — ${esc(why)}`)));
       return t.length?`<details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">相手の変化技・妨害技（${t.length}件）</summary>
         <div class="small" style="margin-top:6px">${t.map(x=>'・'+x).join('<br>')}</div></details>`:'';})()}
-  </div></details>`;
+  </div></details>
+  <button class="btn ghost btn-full" id="btToRec" style="margin-bottom:14px">試合が終わった → 記録に送る</button>`;
+
+  /* 試合が終わったら、実戦タブで集めたもの（相手6体・選出・メガ枠・観測した技）を
+     記録タブへそのまま渡す。ここを繋いでいなかったので、タップで記録した相手の技が
+     端末内に留まったまま、分析にも履歴にも入っていなかった（2026-08-19 の棚卸しで判明）。 */
+  const send = $('#btToRec');
+  if(send) send.onclick = ()=>{
+    S.opp = [...BT.opp];
+    S.myPick = [...BT.picks];
+    S.mega = BT.mega || null;
+    // 観測した技を「ターンの記録」の形に変換する（observedMoves() がこの形を読む）
+    const turns = [];
+    Object.entries(BT.obs||{}).forEach(([o, moves])=>{
+      (moves||[]).forEach(mv=> turns.push({ n:turns.length+1, myMon:null, oppMon:o,
+        myAct:{type:'move'}, oppAct:{type:'move', move:mv}, note:'実戦タブで記録' }));
+    });
+    if(turns.length) S.turns = [...(S.turns||[]), ...turns];
+    renderAll(); saveDraft();
+    const tab = [...document.querySelectorAll('button.tab')].find(b=>b.dataset.tab==='rec');
+    if(tab) tab.click();
+    window.scrollTo(0,0);
+    toast(`相手6体・選出・観測した技${turns.length}件を記録に送りました。勝敗と敗因を入れて保存してください`);
+  };
 
   $$('#btPlan [data-btmega]').forEach(b=> b.onclick=()=>{
     BT.megaFixed = b.dataset.btmega; BT.mega = BT.megaFixed;
@@ -1239,8 +1262,10 @@ function btNowRender(){
   /* 引き先は必ず「選出した3体」の中から出す。
      控えのポケモンを勧めるのは矛盾（社長の指摘 2026-08-19）。 */
   const pickRoster = rc.filter(inPick);
+  BT.board = BT.board || {};
+  const st = BT.board;
   const c = me.stats ? PC.callIt(me, o, {roster: pickRoster.length?pickRoster:rc,
-                                         myHP:hp, oppHPPct:oppPct/100, known:seen, guardGone:gGone}) : null;
+                                         myHP:hp, oppHPPct:oppPct/100, known:seen, guardGone:gGone, st}) : null;
   const rd = c && c.read;
 
   // 試合中はスクロールが命取りになるので、タイプは小さい丸だけにして1行に複数入れる
@@ -1297,6 +1322,7 @@ function btNowRender(){
     <div class="small" style="margin-top:10px">
       ${c.detail.map(d=>`<div style="margin:3px 0;color:${d.k==='bad'?'var(--red)':d.k==='good'?'var(--grn)':d.k==='warn'?'var(--org)':d.k==='role'?'var(--blue)':'inherit'}">・${d.t}</div>`).join('')}
     </div>`:''}
+    ${btBoardCard(st)}
     ${readBlock}
   </div>
   ${btSeenCard(BT.sel, seen)}`;
@@ -1316,7 +1342,81 @@ function btNowRender(){
   if(inp) inp.oninput=()=>{ BT.hp[BT.me]=Math.max(0,Math.min(maxHP,+inp.value|0));
     const pos=inp.selectionStart; btNowRender(); const i2=$('#btHp');
     if(i2){ i2.focus(); try{i2.setSelectionRange(pos,pos);}catch(e){} } saveBtDraft(); };
-  btBindSeen();
+  btBindSeen(); btBindBoard();
+}
+
+/* ---------- 盤面の状態 ----------
+   積み技・天候・状態異常・壁・設置技。計算エンジンは前から対応していたのに、
+   画面から渡していなかったので数字が嘘になっていた（2026-08-19 の棚卸しで判明）。
+   例：相手がつるぎのまいを1回積むだけで被ダメージは 46〜73% → 93〜143% に変わる。
+   試合中にタップ数を増やさないよう、既定は閉じておき、使う時だけ開く。 */
+const BOARD_RANKS = [-2,-1,0,1,2,3,4,5,6];
+function btBoardCard(st){
+  const chip = (label, key, val, on)=>
+    `<button class="qb mini ${on?'on':'off'}" data-bb="${key}" data-bv="${val}">${esc(label)}</button>`;
+  /* ランクは −／＋ のステッパーにする。ボタンを9個並べると縦に伸びて
+     試合中にスクロールが必要になる（社長の指摘）。 */
+  const rankRow = (label, key)=>{
+    const v = st[key]||0;
+    return `<div class="hpwrap" style="gap:6px">
+      <span class="small muted" style="min-width:88px">${label}</span>
+      <div class="seg">
+        <button data-bbstep="${key}" data-bv="-1">−</button>
+        <button class="${v?'on':''}" data-bbstep="${key}" data-bv="0" style="min-width:44px">${v>0?'+'+v:v}</button>
+        <button data-bbstep="${key}" data-bv="1">＋</button>
+      </div>
+      ${v?`<span class="small muted">×${(v>=0?(2+v)/2:2/(2-v)).toFixed(2)}</span>`:''}
+    </div>`;
+  };
+  const n = Object.entries(st).filter(([k,v])=> v && v!==0 && v!=='').length;
+  return `<details id="btBoardWrap" ${n?'open':''} style="margin-top:10px">
+    <summary class="small ${n?'':'muted'}" style="cursor:pointer">
+      盤面の状態（積み・天候・状態異常・壁・設置）${n?`<b style="color:var(--org)"> ${n}件 反映中</b>`:''}</summary>
+    <div class="small" style="margin-top:8px">
+      ${rankRow('相手の攻撃','opAtkRank')}
+      ${rankRow('相手の素早さ','opSpeRank')}
+      ${rankRow('自分の攻撃','myAtkRank')}
+      ${rankRow('自分の防御','myDefRank')}
+      <div class="hpwrap"><span class="small muted" style="min-width:96px">天候</span>
+        <div class="quick">${['','にほんばれ','あめ','すなあらし','ゆき'].map(w=>
+          chip(w||'なし','weather',w,(st.weather||'')===w)).join('')}</div></div>
+      <div class="hpwrap"><span class="small muted" style="min-width:96px">状態異常</span>
+        <div class="quick">
+          ${chip('相手がやけど','opBurn',1,!!st.opBurn)}
+          ${chip('相手がまひ','opParalysis',1,!!st.opParalysis)}
+          ${chip('自分がやけど','myBurn',1,!!st.myBurn)}
+          ${chip('自分がまひ','myParalysis',1,!!st.myParalysis)}</div></div>
+      <div class="hpwrap"><span class="small muted" style="min-width:96px">こちらの壁</span>
+        <div class="quick">
+          ${chip('リフレクター','myReflect',1,!!st.myReflect)}
+          ${chip('ひかりのかべ','myLightscreen',1,!!st.myLightscreen)}
+          ${chip('オーロラベール','myAuroraveil',1,!!st.myAuroraveil)}</div></div>
+      <div class="hpwrap"><span class="small muted" style="min-width:96px">こちらの場</span>
+        <div class="quick">
+          ${chip('ステルスロック','myRocks',1,!!st.myRocks)}
+          ${chip('まきびし','mySpikes',1,!!st.mySpikes)}
+          ${chip('おいかぜ','myTailwind',1,!!st.myTailwind)}</div></div>
+      ${n?`<button class="btn ghost sm" data-bbreset="1" style="margin-top:8px">盤面をリセット</button>`:''}
+    </div></details>`;
+}
+function btBindBoard(){
+  $$('#btNow [data-bbstep]').forEach(b=> b.onclick=()=>{
+    const k=b.dataset.bbstep, d=+b.dataset.bv;
+    const cur = BT.board[k]||0;
+    BT.board[k] = d===0 ? 0 : Math.max(-6, Math.min(6, cur + d));   // 真ん中を押すと0に戻る
+    if(!BT.board[k]) delete BT.board[k];
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
+  });
+  $$('#btNow [data-bb]').forEach(b=> b.onclick=()=>{
+    const k=b.dataset.bb, raw=b.dataset.bv;
+    const v = (k==='weather') ? raw : (+raw);
+    if(k==='weather') BT.board[k] = (BT.board[k]===v ? '' : v);
+    else if(BOARD_RANKS.includes(v) && /Rank$/.test(k)) BT.board[k] = v;
+    else BT.board[k] = BT.board[k] ? 0 : 1;          // トグル
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
+  });
+  const r=$('#btNow [data-bbreset]');
+  if(r) r.onclick=()=>{ BT.board={}; PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft(); };
 }
 
 /* ---------- 相手が使ってきた技をワンタップで記録 ----------
@@ -1373,12 +1473,12 @@ function btBindSeen(){
 }
 /** 実戦モードの観測・HPは、次に開いたときも残す */
 function saveBtDraft(){
-  try{ localStorage.setItem('pokechan_bt', JSON.stringify({obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, megaFixed:BT.megaFixed, guardGone:BT.guardGone})); }catch(e){}
+  try{ localStorage.setItem('pokechan_bt', JSON.stringify({obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board})); }catch(e){}
 }
 function loadBtDraft(){
   try{ const d=JSON.parse(localStorage.getItem('pokechan_bt')||'{}');
     if(d.obs) BT.obs=d.obs; if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp;
-    if(d.megaFixed) BT.megaFixed=d.megaFixed; if(d.guardGone) BT.guardGone=d.guardGone; }catch(e){}
+    if(d.megaFixed) BT.megaFixed=d.megaFixed; if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board; }catch(e){}
 }
 
 function btDetail(){
