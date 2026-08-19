@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '14';
+const APP_VERSION = '15';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -203,7 +203,7 @@ async function enterApp(user){
     document.body.appendChild(dl);
   });
   await Promise.all([loadTeams(), loadBattles()]);
-  initAutocompletes(); initDamageUI(); initVsUI();
+  initAutocompletes(); initDamageUI(); initVsUI(); initBtUI();
   restoreDraft(); renderAll();
 }
 /* DBにまだ無い列があっても保存を落とさない。
@@ -556,6 +556,8 @@ function muNums(mu){
   return `${dmgRange(mu.myDmgLo,mu.myDmgHi)} / 被${dmgRange(mu.opDmgLo,mu.opDmgHi)}`;
 }
 function verdict(mu){
+  // 打点が無い対面は、他の指標が良くても勝てない。最優先で出す
+  if(mu.noOffense) return {cls:'ng', mark:'✕', txt:`打点なし（最大でも${mu.myHits}発）`};
   if(mu.winsAll)   return {cls:'ok', mark:'◎', txt:'どの型でも先に落とせる'};
   if(mu.dangerAll) return {cls:'ng', mark:'✕', txt:'どの型でも不利'};
   if(mu.split)     return {cls:'wn', mark:'△', txt:'相手の型次第'};
@@ -944,6 +946,125 @@ $('#btnSave').onclick=async ()=>{
 };
 
 /* =========================================================
+   実戦モード — 試合中はここだけ見る
+   45秒の中でClaudeに聞くと必ず間に合わない（実際に2戦落とした）。
+   相手6体を入れた時点で全対面を計算しておき、試合中はタップだけで即答する。
+   ========================================================= */
+let BT = { opp:[], picks:[], mega:null, matrix:null, sel:null };
+
+function initBtUI(){
+  $('#btVoiceRun').onclick = ()=> safe('実戦', ()=>{
+    const r = PC.parseBattleText($('#btVoice').value.trim());
+    const names = [...r.opp_team, ...r.my_pick];      // 相手/自分の切り分けは不要。全部相手として扱う
+    if(!names.length) return toast('ポケモンを拾えませんでした',true);
+    BT.opp = [...new Set(names)].slice(0,6);
+    btCompute(); btRender();
+  }, '#btGrid');
+  $('#btReset').onclick = ()=>{ BT={opp:[],picks:[],mega:null,matrix:null,sel:null}; $('#btVoice').value=''; btRender(); };
+}
+
+/** 相手6体が決まった時点で、全部の対面を先に計算しておく */
+function btCompute(){
+  const roster = currentRoster();
+  if(!roster.length || !BT.opp.length){ BT.matrix=null; return; }
+  const size = $('#fRule').value==='double' ? 4 : 3;
+  const bp = bestPlan(roster, BT.opp, size, BT.opp);
+  BT.picks = bp.plan ? bp.plan.members : roster.slice(0,size).map(m=>m.name);
+  BT.mega  = bp.mega;
+  const rc = bp.rc || rosterForCalc(roster, BT.mega);
+  BT.matrix = {};
+  BT.opp.forEach(o=>{
+    BT.matrix[o] = roster.map(m=>{
+      const me = rc.find(r=>r.label===m.name) || {name:m.name};
+      return { name:m.name, mu: PC.matchup(me,{name:effOpp(o)}) };
+    }).filter(x=>x.mu);
+  });
+}
+
+/** 1対面の結論を1語で */
+function btAct(mu){
+  if(mu.noOffense && mu.dangerAll) return {c:'ng', t:'すぐ引く'};
+  if(mu.noOffense)                 return {c:'ng', t:'打点なし'};
+  if(mu.dangerAll)                 return {c:'ng', t:'引く'};
+  if(mu.winsAll && mu.faster && mu.myHits<=1) return {c:'ok', t:'一撃'};
+  if(mu.winsAll)                   return {c:'ok', t:'殴る'};
+  if(mu.split)                     return {c:'wn', t:'型次第'};
+  if(mu.winsRace)                  return {c:'ok', t:'殴る'};
+  if(mu.opHits>=3)                 return {c:'wn', t:'削る'};
+  return {c:'ng', t:'引く'};
+}
+
+function btRender(){
+  const roster = currentRoster();
+  $('#btOppChips').innerHTML = BT.opp.length
+    ? BT.opp.map((n,i)=>`<span class="pk">${typeChips(n)}<b>${esc(n)}</b><span class="x" data-bx="${i}">×</span></span>`).join('')
+    : '<span class="pk ghost">相手を入れてください</span>';
+  $$('#btOppChips [data-bx]').forEach(x=> x.onclick=()=>{ BT.opp.splice(+x.dataset.bx,1); btCompute(); btRender(); });
+
+  const seen={}; BATTLES.forEach(b=>(b.opp_team||[]).forEach(n=>seen[n]=(seen[n]||0)+1));
+  const hist=Object.entries(seen).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([n])=>n);
+  const list=(hist.length>=6?hist:META_TOP.slice(0,10));
+  $('#btQuick').innerHTML = list.map(n=>`<button class="qb ${BT.opp.includes(n)?'dim':''}" data-bq="${esc(n)}">${typeChips(n)}${esc(n)}</button>`).join('');
+  $$('#btQuick [data-bq]').forEach(b=> b.onclick=()=>{
+    if(BT.opp.length>=6) return toast('6匹までです',true);
+    if(BT.opp.includes(b.dataset.bq)) return;
+    BT.opp.push(b.dataset.bq); btCompute(); btRender();
+  });
+
+  if(!BT.matrix || !roster.length){ $('#btPlan').innerHTML=''; $('#btGrid').innerHTML=''; $('#btDetail').innerHTML=''; return; }
+
+  $('#btPlan').innerHTML = `<div class="card" style="border-color:var(--red);background:var(--redsoft)">
+    <div class="small muted">選出</div>
+    <div style="font-size:19px;font-weight:800">${BT.picks.map(esc).join(' ／ ')}</div>
+    ${BT.mega?`<div class="small">メガは <b>${esc(BT.mega)}</b> に切る</div>`:''}
+    ${(()=>{const t=[];BT.opp.forEach(n=>PC.oppTricks(PC.toBase(n)).forEach(([mv,why])=>t.push(`<b>${esc(n)}</b>の<b>${esc(mv)}</b> — ${esc(why)}`)));
+      return t.length?`<div class="small" style="margin-top:8px">${t.map(x=>'・'+x).join('<br>')}</div>`:'';})()}
+  </div>`;
+
+  // 相手 × 自分の選出3体。タップで詳細
+  $('#btGrid').innerHTML = `<div class="card"><h2>対面表<span class="sub">出てきた相手をタップ</span></h2>
+    <table><tr><th>相手</th>${BT.picks.map(p=>`<th class="num">${esc(p.slice(0,5))}</th>`).join('')}</tr>
+    ${BT.opp.map(o=>{
+      const row = BT.matrix[o]||[];
+      return `<tr data-bo="${esc(o)}" style="cursor:pointer">
+        <td>${typeChips(o)} ${esc(o)}</td>
+        ${BT.picks.map(p=>{ const c=row.find(x=>x.name===p);
+          if(!c) return '<td class="num">—</td>';
+          const a=btAct(c.mu);
+          return `<td class="num"><span class="badge ${a.c}">${a.t}</span></td>`;
+        }).join('')}</tr>`;
+    }).join('')}</table></div>`;
+  $$('#btGrid [data-bo]').forEach(tr=> tr.onclick=()=>{ BT.sel=tr.dataset.bo; btDetail(); });
+  btDetail();
+}
+
+function btDetail(){
+  const el=$('#btDetail');
+  if(!BT.sel || !BT.matrix || !BT.matrix[BT.sel]){ el.innerHTML=''; return; }
+  const o=BT.sel;
+  const rows=[...BT.matrix[o]].sort((a,b)=>{
+    const rank=m=> m.noOffense?-2 : m.dangerAll?-3 : m.winsAll?3 : m.winsRace?2 : m.split?1 : 0;
+    return rank(b.mu)-rank(a.mu) || b.mu.score-a.mu.score;
+  });
+  const inPick = rows.filter(r=>BT.picks.includes(r.name));
+  const best = inPick[0];
+  const a = best ? btAct(best.mu) : null;
+  el.innerHTML = `<div class="card">
+    <div class="hd" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      ${typeChips(o)}<b style="font-size:17px">${esc(o)}</b> と対面
+    </div>
+    ${a?`<div class="note ${a.c==='ok'?'g':a.c==='ng'?'r':'w'}" style="margin:8px 0">
+      <div style="font-size:18px;font-weight:800">${esc(best.name)} で ${esc(a.t)}</div>
+      <div class="small">${muNums(best.mu)}${best.mu.faster?' ／ 先制できる':' ／ 後手'}</div></div>`:''}
+    ${PC.oppTricks(PC.toBase(o)).map(([mv,why])=>`<div class="small" style="color:var(--red)">・<b>${esc(mv)}</b>：${esc(why)}</div>`).join('')}
+    <table style="margin-top:10px"><tr><th>自分</th><th>判断</th><th class="num">与 / 被</th></tr>
+    ${rows.map(r=>{const ac=btAct(r.mu);
+      return `<tr class="${BT.picks.includes(r.name)?'':'muted'}"><td>${esc(r.name)}${BT.picks.includes(r.name)?'':' <span class="small muted">(控え)</span>'}</td>
+      <td><span class="badge ${ac.c}">${ac.t}</span></td><td class="num small">${muNums(r.mu)}</td></tr>`;}).join('')}
+    </table></div>`;
+}
+
+/* =========================================================
    対面 — 1対1の即答
    「このタイプ何に弱いんだっけ」を毎回調べなくていいようにする画面。
    自分の登録実数値 × 相手の3想定 で、通る技・通らない技・注意点を出す。
@@ -1044,7 +1165,9 @@ function renderVs(){
   /* この対面で「何をするか」を1行で出す。実戦では45秒しかないので、結論を先に置く。 */
   const setupMoves = (me.moves||[]).filter(n=>['つるぎのまい','りゅうのまい','わるだくみ','めいそう','ビルドアップ','てっぺき','からをやぶる','こうそくいどう','ちょうのまい'].includes(n));
   let act;
-  if(mu.dangerAll)              act = {cls:'ng', head:'引く',           why:'どの型でも不利。居座ると崩される'};
+  if(mu.noOffense && mu.dangerAll) act = {cls:'ng', head:'すぐ引く',    why:`打点が無いうえに不利。最大でも${mu.myHits}発かかる`};
+  else if(mu.noOffense)         act = {cls:'ng', head:'引く（打点なし）', why:`最大の乱数でも${mu.myHits}発。居座っても回復・交代で巻き返される`};
+  else if(mu.dangerAll)         act = {cls:'ng', head:'引く',           why:'どの型でも不利。居座ると崩される'};
   else if(mu.winsAll && mu.faster && mu.myHits<=1) act = {cls:'ok', head:'殴る（1発で落ちる）', why:'先制して確定圏内'};
   else if(mu.winsAll && setupMoves.length && mu.opHits>=3 && mu.faster)
                                 act = {cls:'ok', head:`積む（${setupMoves[0]}）`, why:`相手の打点は${mu.opHits}発かかる。1ターン使える`};
@@ -1673,6 +1796,7 @@ function fillTeamSelects(){
 function renderAll(){
   fillTeamSelects(); renderOpp(); renderTeams(); renderHist(); renderStats();
   safe('対面', ()=>{ renderVsPickers(); renderVs(); }, '#vsOut');
+  safe('実戦', ()=>{ btCompute(); btRender(); }, '#btGrid');
   if(!$('#mvlist2')){const dl2=document.createElement('datalist');dl2.id='mvlist2';
     dl2.innerHTML=MOVE_NAMES.map(m=>`<option value="${esc(m)}">`).join('');document.body.appendChild(dl2);}
 }

@@ -708,6 +708,13 @@ function matchup(mine, theirs){
     winsAll:  views.every(v=>v.winsRace),
     dangerAll:views.every(v=>v.danger)
   };
+  /* ★決め手があるか。
+     最大の乱数でも3発かかる＝実戦では回復・交代・積みで必ず巻き返される。
+     ここを見ていなかったせいで「ギャラドス vs ユキノオー(最大28%)」が▲、
+     「ゲッコウガ vs ブラッキー(最大33%)」が◎と表示され、実戦で1戦落とした。 */
+  out.noOffense = out.myDmgHi < 0.34;
+  out.noDefense = out.opDmgHi >= 1.0;        // 相手の最大打点で一撃で落ちる
+  if(out.noOffense){ out.winsAll = false; }  // 打点が無いなら「勝てる」とは言わせない
   _muCache.set(key, out);
   return out;
 }

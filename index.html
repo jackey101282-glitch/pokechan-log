@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="14">
+<meta name="app-version" content="15">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -217,6 +217,7 @@ tr.bad .bar>i{background:var(--lose)}
   </div>
   <div class="tabs">
     <button class="tab on" data-tab="rec">対戦</button>
+    <button class="tab" data-tab="bt">実戦</button>
     <button class="tab" data-tab="vs">対面</button>
     <button class="tab" data-tab="dmg">ダメージ計算</button>
     <button class="tab" data-tab="advice">相談</button>
@@ -327,6 +328,25 @@ tr.bad .bar>i{background:var(--lose)}
 </section>
 
 <!-- ---------- ダメージ計算 ---------- -->
+<!-- ---------- 実戦（試合中はこの画面だけ見る） ---------- -->
+<section id="tab-bt" hidden>
+  <div class="card">
+    <h2>実戦モード<span class="sub">試合中はこの画面だけ見る</span></h2>
+    <p class="hint">選出画面で相手6体を入れたら、あとは<b>対面した相手をタップするだけ</b>です。計算は入れた瞬間に全部終わっているので、待ち時間はありません。</p>
+    <label class="f">相手6体（声で言うか、下のボタンで足す）</label>
+    <textarea id="btVoice" rows="2" placeholder="ポワルン、コータス、ユキノオー、ペリッパー、ハッサム"></textarea>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+      <button class="btn sm" id="btVoiceRun">読み取る</button>
+      <button class="btn ghost sm" id="btReset">やり直す</button>
+    </div>
+    <div id="btOppChips" class="pklist" style="margin-top:10px"></div>
+    <div id="btQuick" class="quick" style="margin-top:8px"></div>
+  </div>
+  <div id="btPlan"></div>
+  <div id="btGrid"></div>
+  <div id="btDetail"></div>
+</section>
+
 <!-- ---------- 対面（1対1の即答） ---------- -->
 <section id="tab-vs" hidden>
   <div id="vsOut"></div>
@@ -521,12 +541,12 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=14"></script>
-<script src="./data/species.js?v=14"></script>
-<script src="./data/moves.js?v=14"></script>
-<script src="./data/principles.js?v=14"></script>
-<script src="./core.js?v=14"></script>
+<script src="./supabase-config.js?v=15"></script>
+<script src="./data/species.js?v=15"></script>
+<script src="./data/moves.js?v=15"></script>
+<script src="./data/principles.js?v=15"></script>
+<script src="./core.js?v=15"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=14"></script>
+<script src="./app.js?v=15"></script>
 </body>
 </html>
