@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '13';
+const APP_VERSION = '14';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -520,6 +520,12 @@ function renderLeadPredict(){
         <div class="small muted" style="margin-top:5px">③の3体の中から選んでいます。危険対面ごとの引き先は、下の「初手チェック」に出ます。</div>`; })()
         : '<p class="hint">初手の候補が出せませんでした。</p>'}
     </div>
+
+    ${(()=>{ const t=[]; S.opp.forEach(n=>PC.oppTricks(PC.toBase(n)).forEach(([mv,why])=>t.push([n,mv,why])));
+      return t.length?`<div class="pick-card" style="border-color:var(--red);background:var(--redsoft)">
+        <div class="hd"><b>この並びで警戒する技</b></div>
+        ${t.map(([n,mv,why])=>`<div class="small" style="padding:2px 0">・<b>${esc(n)}</b> の <b>${esc(mv)}</b> — ${esc(why)}</div>`).join('')}
+      </div>`:''; })()}
 
     <div class="small muted">相手の型は<b>攻撃型／最速型／耐久型</b>の3通り（SP合計66の範囲内）で計算し、幅で出しています。あくまで初手を決めるための目安です。</div>`;
 
@@ -1081,6 +1087,7 @@ function renderVs(){
 
   /* ③ 気をつけること */
   const warn=[];
+  PC.oppTricks(opp).forEach(([mv,why])=> warn.push(`<b>${esc(mv)}</b>：${esc(why)}`));
   if(oppAb) warn.push(`相手の特性 <b>${esc(oppAb)}</b>${immT?`（<b>${esc(immT)}技が無効</b>）`:''}`);
   if(PC.survivesOneHit(opp)) warn.push('<b>1発は必ず耐えてくる</b>（ばけのかわ／がんじょう）。連続技か2発で崩す');
   const my4 = inc.filter(x=>x.e>=4);
