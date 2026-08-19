@@ -1330,6 +1330,33 @@ function actionNow(mine, oppName, roster, hpNow, field, known){
 /** 観測技が増えると同じ組み合わせでも結果が変わるので、キャッシュを捨てられるようにしておく */
 function clearMatchupCache(){ _muCache.clear(); }
 
+/** この3体で戦うとき、「落とされると一気に苦しくなる駒」を返す。
+ *  社長の要望（2026-08-19）：
+ *  「相手との有利対面が多いポケモンがすぐ死ぬと一気に不利になる。
+ *    この3対3だとこのポケモンがいなくなるときつい、という場合だけ教えてほしい」
+ *  → 毎回は出さない。その駒が居なくなると "答えが無くなる" 相手が2体以上いる時だけ返す。 */
+function keyPieces(picks, oppNames, opts){
+  opts = opts || {};
+  const canBeat = (m, o)=>{
+    const c = callIt(m, o, {known: (opts.known||{})[o] || null});
+    return c && (c.head === '殴る');
+  };
+  const cover = {};                                  // 相手 -> 見れる駒の一覧
+  oppNames.forEach(o=>{ cover[o] = picks.filter(m=> canBeat(m, o)).map(m=> m.label || m.name); });
+
+  const out = [];
+  picks.forEach(m=>{
+    const nm = m.label || m.name;
+    // その駒が唯一の答えになっている相手
+    const only = oppNames.filter(o=> cover[o].length===1 && cover[o][0]===nm);
+    // その駒を抜くと「誰も見れない相手」が何体増えるか
+    if(only.length >= 2) out.push({ name:nm, only, n:only.length });
+  });
+  // 誰も見れない相手（この時点で穴）
+  const uncovered = oppNames.filter(o=> cover[o].length===0);
+  return { keys: out.sort((a,b)=> b.n-a.n), uncovered, cover };
+}
+
 /** 自分6 × 相手6 のマトリクス */
 function buildMatrix(myRoster, oppNames){
   return myRoster.map(m=> oppNames.map(o=> matchup(m, {name:o})));
@@ -1578,7 +1605,7 @@ global.PC = {
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
   bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppTypeItem,
-  readDamage, actionNow, callIt, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
+  readDamage, actionNow, callIt, keyPieces, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
 };
 })(window);

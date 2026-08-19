@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="23">
+<meta name="app-version" content="24">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -358,11 +358,16 @@ tr.bad .bar>i{background:var(--lose)}
   <details id="btInputWrap" open>
     <summary class="cardsum">相手6体を入れる<span class="sub">タップして開閉</span></summary>
     <div class="card">
-      <label class="f">声で言うか、下のボタンで足す</label>
+      <label class="f">名前で探す（1〜2文字でOK。出てきたら押すだけ）</label>
+      <input type="text" id="btSearch" placeholder="らい／アーマ／ガブ …" autocomplete="off">
+      <div id="btSearchOut" class="quick" style="margin-top:6px"></div>
+      <div style="height:10px"></div>
+      <label class="f">声でまとめて言う（複数まとめてOK）</label>
       <textarea id="btVoice" rows="2" placeholder="ガブリアス、アシレーヌ、ミミッキュ、カバルドン、ハッサム、ドラパルト"></textarea>
-      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-        <button class="btn sm" id="btVoiceRun">読み取る</button>
-        <button class="btn ghost sm" id="btReset">やり直す</button>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn sm" id="btVoiceRun">足す</button>
+        <button class="btn ghost sm" id="btReset">全部消す</button>
+        <span class="small muted">※足すだけです。選んだ相手は消えません</span>
       </div>
       <!-- 候補を先に置く。選んだ分は候補から消えるので、タップしても下の要素が押し下がらない -->
       <div id="btQuick" class="quick" style="margin-top:8px"></div>
@@ -572,14 +577,14 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=23"></script>
-<script src="./data/species.js?v=23"></script>
-<script src="./data/moves.js?v=23"></script>
-<script src="./data/principles.js?v=23"></script>
-<script src="./data/usage.js?v=23"></script>
-<script src="./data/teams.js?v=23"></script>
-<script src="./core.js?v=23"></script>
+<script src="./supabase-config.js?v=24"></script>
+<script src="./data/species.js?v=24"></script>
+<script src="./data/moves.js?v=24"></script>
+<script src="./data/principles.js?v=24"></script>
+<script src="./data/usage.js?v=24"></script>
+<script src="./data/teams.js?v=24"></script>
+<script src="./core.js?v=24"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=23"></script>
+<script src="./app.js?v=24"></script>
 </body>
 </html>

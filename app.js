@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '23';
+const APP_VERSION = '24';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -972,12 +972,46 @@ $('#btnSave').onclick=async ()=>{
 let BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null, hp:{}, oppHp:{}, obs:{}, guardGone:{} };
 
 function initBtUI(){
+  /* ★2026-08-19 修正：ここが「上書き」だったせいで、
+     ボタンで選んだ相手が「読み取る」を押した瞬間に全部消えていた。社長が選出に間に合わず1戦落としている。
+     いまは必ず「足す」。消したいときは各チップの × か「やり直す」を使う。 */
+  const btAddNames = names =>{
+    if(!names.length){ toast('ポケモンを拾えませんでした',true); return; }
+    const before = BT.opp.length;
+    names.forEach(n=>{ if(BT.opp.length<6 && !BT.opp.includes(n)) BT.opp.push(n); });
+    const added = BT.opp.length - before;
+    $('#btVoice').value='';
+    btCompute(); btRender();
+    if(added) toast(`${added}体を足しました（いま${BT.opp.length}/6）`);
+    else toast('新しく足せるポケモンがありませんでした', true);
+  };
+  /* 名前で探して即タップ。候補に無いポケモンを入れるとき、
+     フルネームを打ってから「足す」を押すのは遅すぎる（選出は90秒）。 */
+  const btSearchRender = ()=>{
+    const q = ($('#btSearch').value||'').trim();
+    const box = $('#btSearchOut');
+    if(!q){ box.innerHTML=''; return; }
+    const kana = t => t.replace(/[ぁ-ん]/g, c=>String.fromCharCode(c.charCodeAt(0)+0x60))
+                       .replace(/[ー－]/g,'').replace(/[ァィゥェォャュョッ]/g,'');
+    const k = kana(q);
+    const hit = Object.keys(PC.SPECIES)
+      .filter(n=> !BT.opp.includes(n) && kana(n).includes(k))
+      .sort((a,b)=> kana(a).indexOf(k)-kana(b).indexOf(k) || a.length-b.length)
+      .slice(0,10);
+    box.innerHTML = hit.length
+      ? hit.map(n=>`<button class="qb mini" data-bs="${esc(n)}">${typeDots(n)}${esc(n)}</button>`).join('')
+      : '<span class="small muted">見つかりません</span>';
+    $$('#btSearchOut [data-bs]').forEach(b=> b.onclick=()=>{
+      if(BT.opp.length>=6) return toast('6匹までです',true);
+      BT.opp.push(b.dataset.bs); $('#btSearch').value='';
+      btCompute(); btRender(); $('#btSearch').focus();
+    });
+  };
+  $('#btSearch').oninput = btSearchRender;
+
   $('#btVoiceRun').onclick = ()=> safe('実戦', ()=>{
     const r = PC.parseBattleText($('#btVoice').value.trim());
-    const names = [...r.opp_team, ...r.my_pick];      // 相手/自分の切り分けは不要。全部相手として扱う
-    if(!names.length) return toast('ポケモンを拾えませんでした',true);
-    BT.opp = [...new Set(names)].slice(0,6);
-    btCompute(); btRender();
+    btAddNames([...r.opp_team, ...r.my_pick]);        // 相手/自分の切り分けは不要。全部相手として扱う
   }, '#btGrid');
   // やり直しても、相手の技の観測だけは残す（次の試合でも同じ相手に当たるので価値がある）
   $('#btReset').onclick = ()=>{
@@ -1053,6 +1087,7 @@ function btRender(){
   });
 
   if(!BT.matrix || !roster.length){ $('#btPlan').innerHTML=''; $('#btGrid').innerHTML=''; $('#btDetail').innerHTML=''; return; }
+  const rc = rosterForCalc(roster, BT.mega);
 
   /* 選出は試合開始時に一度読むもの。試合中は「いまの対面」を見るので、折りたたんで高さを取らない。 */
   $('#btPlan').innerHTML = `<details open class="planbox">
@@ -1065,6 +1100,18 @@ function btRender(){
       return `<div class="small" style="margin-top:6px">メガをどれに切るか（変えると全部の判定が変わります）</div>
         <div class="quick" style="margin-top:4px">${slots.map(sl=>
           `<button class="qb ${BT.mega===sl?'on':'off'}" data-btmega="${esc(sl)}">${esc(sl)}</button>`).join('')}</div>`;
+    })()}
+    ${(()=>{ /* ★落とされると一気に苦しくなる駒。毎回は出さず、
+                「その駒だけが答えになっている相手が2体以上」のときだけ出す。 */
+      const picks = rc.filter(r=> BT.picks.includes(r.label) || BT.picks.includes(r.name));
+      if(picks.length<2) return '';
+      const k = PC.keyPieces(picks, BT.opp.map(effOpp), {known: BT.obs||{}});
+      let h='';
+      k.keys.forEach(x=> h += `<div>・<b>${esc(x.name)}</b> は <b>${x.only.map(esc).join('・')}</b> の唯一の答え。
+        <b style="color:var(--red)">先に落とされると受けが無くなる</b>ので温存する</div>`);
+      if(k.uncovered.length) h += `<div>・<b style="color:var(--red)">${k.uncovered.map(esc).join('・')}</b> は
+        この3体では誰も見れない。無理に殴らず、削って交代で回す</div>`;
+      return h ? `<div class="note w" style="margin-top:8px"><div class="small">${h}</div></div>` : '';
     })()}
     ${(()=>{ // ★一撃で落とされる対面。試合前にこれだけは頭に入れる
       const ko=[];
