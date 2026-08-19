@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="25">
+<meta name="app-version" content="26">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -552,6 +552,45 @@ tr.bad .bar>i{background:var(--lose)}
 <!-- ---------- 構築 ---------- -->
 <section id="tab-team" hidden>
   <div class="card">
+    <h2>実数値から登録<span class="sub">画面の数字をそのまま入れるだけ</span></h2>
+    <p class="hint">ゲームの画面に出るのは<b>実数値</b>です。6つの数字を入れれば、<b>性格とSPの振り方はこちらで逆算</b>します。
+      技・持ち物・特性も入れておくと、ダメージ計算と選出判定が全部正確になります。</p>
+    <div class="field"><label class="f">ポケモン</label>
+      <div class="sug"><input type="text" id="sfName" autocomplete="off" placeholder="メガクチート"><div class="sugbox" id="sfNameSug" hidden></div></div></div>
+    <label class="f">実数値（HP / こうげき / ぼうぎょ / とくこう / とくぼう / すばやさ）</label>
+    <div id="sfStats" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+      <input type="number" inputmode="numeric" id="sfH" placeholder="HP">
+      <input type="number" inputmode="numeric" id="sfA" placeholder="こうげき">
+      <input type="number" inputmode="numeric" id="sfB" placeholder="ぼうぎょ">
+      <input type="number" inputmode="numeric" id="sfC" placeholder="とくこう">
+      <input type="number" inputmode="numeric" id="sfD" placeholder="とくぼう">
+      <input type="number" inputmode="numeric" id="sfS" placeholder="すばやさ">
+    </div>
+    <div id="sfSolve" class="small" style="margin-top:8px"></div>
+    <div style="height:8px"></div>
+    <div class="field"><label class="f">特性 / 持ち物</label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <input type="text" id="sfAbility" placeholder="ちからもち">
+        <input type="text" id="sfItem" placeholder="メガストーン">
+      </div></div>
+    <label class="f">技（4つまで）</label>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <input type="text" id="sfM1" list="mvlist" placeholder="じゃれつく">
+      <input type="text" id="sfM2" list="mvlist" placeholder="かみなりパンチ">
+      <input type="text" id="sfM3" list="mvlist" placeholder="ふいうち">
+      <input type="text" id="sfM4" list="mvlist" placeholder="つるぎのまい">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
+      <button class="btn" id="sfAdd">この1匹を足す</button>
+      <span id="sfMsg" class="small muted"></span>
+    </div>
+    <div id="sfList" style="margin-top:12px"></div>
+    <div id="sfSaveWrap" style="margin-top:12px" hidden>
+      <div class="field"><label class="f">構築の名前</label><input type="text" id="sfTeamName" placeholder="襷ゲッコウガ×メガクチート×ミミッキュ"></div>
+      <button class="btn primary" id="sfSave">この構築を保存する</button>
+    </div>
+  </div>
+  <div class="card">
     <h2>取り込み<span class="sub">構築データを貼り付けて登録</span></h2>
     <p class="hint">構築記事などから起こしたデータを貼ると、6匹まとめて登録します。Claudeに「この構築を取り込む形にして」と言えば、この欄に貼れる形で出てきます。</p>
     <textarea id="impText" rows="4" placeholder='{"name":"構築名","roster":[{"name":"ガブリアス","nature":"ようき","sp":{"a":31,"s":32},"moves":["じしん"]}]}'></textarea>
@@ -578,14 +617,14 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=25"></script>
-<script src="./data/species.js?v=25"></script>
-<script src="./data/moves.js?v=25"></script>
-<script src="./data/principles.js?v=25"></script>
-<script src="./data/usage.js?v=25"></script>
-<script src="./data/teams.js?v=25"></script>
-<script src="./core.js?v=25"></script>
+<script src="./supabase-config.js?v=26"></script>
+<script src="./data/species.js?v=26"></script>
+<script src="./data/moves.js?v=26"></script>
+<script src="./data/principles.js?v=26"></script>
+<script src="./data/usage.js?v=26"></script>
+<script src="./data/teams.js?v=26"></script>
+<script src="./core.js?v=26"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=25"></script>
+<script src="./app.js?v=26"></script>
 </body>
 </html>

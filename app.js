@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '25';
+const APP_VERSION = '26';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -211,7 +211,7 @@ async function enterApp(user){
     document.body.appendChild(dl);
   });
   await Promise.all([loadTeams(), loadBattles()]);
-  initAutocompletes(); initDamageUI(); initVsUI(); initBtUI();
+  initAutocompletes(); initDamageUI(); initVsUI(); initBtUI(); initStatForm();
   restoreDraft(); renderAll();
 }
 /* DBにまだ無い列があっても保存を落とさない。
@@ -2054,6 +2054,89 @@ $('#impRun').onclick = async ()=>{
     msg.innerHTML = '取り込みましたが、次は反映されていません：<br>'+bad.map(esc).join('<br>');
   }
 };
+
+/* ---------- 実数値から構築を登録する ----------
+   社長の要望（2026-08-19）：
+   「パーティのスクショをすれば技・能力値・持ち物が全部パーティに登録できるようにしたい。
+     そうすればダメージ計算しやすいから」
+   ゲームが見せるのは実数値なので、まず「実数値 → 性格＋SP」の逆算をここで済ませる。
+   スクショOCRを付けたときは、読み取った値をこのフォームに流し込むだけで済む。 */
+let SF = { list:[] };
+function initStatForm(){
+  if(!$('#sfName')) return;
+  autocomplete('#sfName','#sfNameSug', q=>{
+    const hit=n=>!q||n.includes(q);
+    return Object.keys(PC.SPECIES).filter(hit).sort((a,b)=>a.indexOf(q)-b.indexOf(q)||a.length-b.length).slice(0,12);
+  }, n=>{ $('#sfName').value=n; sfSolveShow(); });
+  ['#sfH','#sfA','#sfB','#sfC','#sfD','#sfS','#sfName'].forEach(id=> $(id).addEventListener('input', sfSolveShow));
+  $('#sfAdd').onclick = ()=> safe('登録', sfAdd, '#sfMsg');
+  $('#sfSave').onclick = ()=> safe('保存', sfSave, '#sfMsg');
+  sfRenderList();
+}
+function sfRead(){
+  const name = ($('#sfName').value||'').trim();
+  const g = id => { const v = $(id).value; return v==='' ? null : (+v|0); };
+  const real = {h:g('#sfH'), a:g('#sfA'), b:g('#sfB'), c:g('#sfC'), d:g('#sfD'), s:g('#sfS')};
+  const full = Object.values(real).every(v=> v!==null && v>0);
+  return {name, real, full};
+}
+function sfSolveShow(){
+  const out = $('#sfSolve'); const {name, real, full} = sfRead();
+  if(!name || !PC.SPECIES[name]){ out.innerHTML=''; return; }
+  if(!full){ out.innerHTML='<span class="muted">6つ全部入れると、性格とSPを自動で出します</span>'; return; }
+  const sol = PC.solveSpread(name, real);
+  if(!sol.length){
+    out.innerHTML = `<span style="color:var(--red)">この実数値になる組み合わせがありません。
+      数字か、ポケモン名（メガかどうか）を確認してください。</span>`;
+    return;
+  }
+  SF.sol = sol;
+  out.innerHTML = `<div class="note g"><b>${sol.length===1?'確定':'候補'+sol.length+'通り'}</b>：`
+    + sol.slice(0,3).map((x,i)=>`<label style="display:block;margin-top:4px">
+        <input type="radio" name="sfsol" value="${i}" ${i===0?'checked':''}> ${esc(x.nature)}
+        <span class="muted">H${x.sp.h}/A${x.sp.a}/B${x.sp.b}/C${x.sp.c}/D${x.sp.d}/S${x.sp.s}（合計${x.total}）</span></label>`).join('')
+    + '</div>';
+}
+function sfAdd(){
+  const {name, real, full} = sfRead();
+  if(!name || !PC.SPECIES[name]) throw new Error('ポケモン名が正しくありません');
+  if(!full) throw new Error('実数値を6つ全部入れてください');
+  const sol = PC.solveSpread(name, real);
+  if(!sol.length) throw new Error('この実数値になる組み合わせがありません');
+  const pick = sol[+((document.querySelector('input[name=sfsol]:checked')||{}).value || 0)] || sol[0];
+  const moves = ['#sfM1','#sfM2','#sfM3','#sfM4'].map(id=>($(id).value||'').trim()).filter(Boolean);
+  const bad = moves.filter(m=>!PC.MOVES[m]);
+  if(bad.length) throw new Error('技が見つかりません：'+bad.join('・'));
+  SF.list = SF.list.filter(x=>x.name!==name);
+  SF.list.push({ name, ability:($('#sfAbility').value||'').trim(), item:($('#sfItem').value||'').trim(),
+                 nature:pick.nature, sp:pick.sp, moves, real });
+  ['#sfName','#sfH','#sfA','#sfB','#sfC','#sfD','#sfS','#sfAbility','#sfItem','#sfM1','#sfM2','#sfM3','#sfM4']
+    .forEach(id=> $(id).value='');
+  $('#sfSolve').innerHTML='';
+  sfRenderList();
+  toast(`${name} を足しました（${SF.list.length}/6）`);
+}
+function sfRenderList(){
+  const el = $('#sfList'); if(!el) return;
+  el.innerHTML = SF.list.length ? `<table><tr><th>ポケモン</th><th>性格 / SP</th><th>技</th><th></th></tr>
+    ${SF.list.map((m,i)=>`<tr><td>${typeDots(m.name)}${esc(m.name)}<div class="small muted">${esc(m.ability||'')} ${esc(m.item||'')}</div></td>
+      <td class="small">${esc(m.nature)}<div class="muted">H${m.sp.h}/A${m.sp.a}/B${m.sp.b}/C${m.sp.c}/D${m.sp.d}/S${m.sp.s}</div></td>
+      <td class="small">${m.moves.map(esc).join('<br>')}</td>
+      <td><button class="btn ghost sm" data-sfdel="${i}">消す</button></td></tr>`).join('')}</table>` : '';
+  $$('#sfList [data-sfdel]').forEach(b=> b.onclick=()=>{ SF.list.splice(+b.dataset.sfdel,1); sfRenderList(); });
+  $('#sfSaveWrap').hidden = SF.list.length < 1;
+}
+async function sfSave(){
+  if(!SF.list.length) throw new Error('先に1匹以上足してください');
+  const name = ($('#sfTeamName').value||'').trim() || SF.list.map(m=>m.name).slice(0,3).join('×');
+  const clean = SF.list.map(m=>({name:m.name, ability:m.ability, nature:m.nature, item:m.item, sp:m.sp, moves:m.moves}));
+  const res = await dbWrite('teams','insert',{user_id:USER.id, name,
+    members:clean.map(m=>m.name), roster:clean, plans:{}, note:'実数値から登録'});
+  if(!res.ok) throw new Error('保存に失敗: '+res.error.message);
+  SF.list=[]; $('#sfTeamName').value=''; sfRenderList();
+  await loadTeams(); renderAll();
+  toast(`「${name}」を保存しました`);
+}
 
 function renderTeams(){
   $('#teamList').innerHTML=TEAMS.map(t=>{

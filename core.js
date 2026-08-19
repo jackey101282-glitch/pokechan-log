@@ -1357,6 +1357,46 @@ function keyPieces(picks, oppNames, opts){
   return { keys: out.sort((a,b)=> b.n-a.n), uncovered, cover };
 }
 
+/* ---------- 実数値から「性格＋SP振り」を逆算する ----------
+   ゲームの画面に出るのは実数値（H193 A160 …）であって、SPでも性格でもない。
+   社長の要望「パーティのスクショで技・能力値・持ち物を全部登録したい」を実現するには、
+   まずここが要る。スクショOCRを付けたときも、読み取った6つの数字をこれに渡すだけになる。
+     HP  = floor((種2+31)/2) + 60 + SP
+     他  = floor( (floor((種2+31)/2) + 5 + SP) * 性格補正 )
+   SPは合計66・1能力32が上限。候補が複数出たら全部返す（画面で選ばせる）。 */
+function solveSpread(name, real){
+  const sc = SPECIES[name]; if(!sc || !real) return [];
+  const b = sc.base;
+  const baseOf = k => Math.floor((b[k]*2+31)/2);
+
+  // HP は性格に影響されないので先に確定
+  const spH = real.h - baseOf('h') - 60;
+  if(spH < 0 || spH > SP_MAX) return [];
+
+  const keys = ['a','b','c','d','s'];
+  const out = [];
+  Object.keys(NATURES).forEach(nat=>{
+    const mod = natureMods(nat);
+    const sp = {h:spH};
+    for(const k of keys){
+      const base = baseOf(k);
+      let found = null;
+      for(let v=0; v<=SP_MAX; v++){
+        if(Math.floor((base + 5 + v) * mod[k]) === real[k]){ found = v; break; }
+      }
+      if(found === null) return;                 // この性格ではその実数値を作れない
+      sp[k] = found;
+    }
+    const total = Object.values(sp).reduce((x,y)=>x+y,0);
+    if(total > SP_TOTAL) return;                 // SP合計66を超える＝ありえない
+    out.push({ nature:nat, sp, total, neutral: !NATURES[nat][0] });
+  });
+  // 補正のある性格を優先。無補正（がんばりや等）は同じ結果になるので1つに畳む
+  const withMod = out.filter(o=>!o.neutral);
+  const neutral = out.filter(o=>o.neutral).slice(0,1);
+  return [...withMod, ...neutral];
+}
+
 /** 自分6 × 相手6 のマトリクス */
 function buildMatrix(myRoster, oppNames){
   return myRoster.map(m=> oppNames.map(o=> matchup(m, {name:o})));
@@ -1605,7 +1645,7 @@ global.PC = {
   predictPicks, backtestPicks,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
   bestOffense, bestThreat, immuneType, myOneHitGuard, oppUsage, oppTypeItem,
-  readDamage, actionNow, callIt, keyPieces, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
+  readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
 };
 })(window);
