@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '38';
+const APP_VERSION = '39';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -662,6 +662,15 @@ function renderPickers(){
 }
 function toggle(a,v){const i=a.indexOf(v);i<0?a.push(v):a.splice(i,1);}
 $('#fMega').addEventListener('change',()=>{S.mega=$('#fMega').value||null;saveDraft();});
+/* 対戦タブの構築切替。#fTeam を動かして、記録タブ側と食い違わないようにする。 */
+if($('#btTeam')) $('#btTeam').onchange=()=>{
+  $('#fTeam').value=$('#btTeam').value;
+  $('#fTeam').onchange();
+  BT.sel=null; BT.me=null; BT.matrix=null;
+  PC.clearMatchupCache(); if(window.VOICE) VOICE.reset();
+  fillTeamSelects();
+  safe('実戦',()=>{ btCompute(); btRender(); },'#btGrid');
+};
 $('#fTeam').onchange=()=>{setArr(S.myPick);renderMyTeamChips();renderPickers();renderSuggest();saveDraft();VS.mine=null;safe('対面',()=>{renderVsPickers();renderVs();},'#vsOut');};
 
 /* ---------- 似た並びとの過去実績 ----------
@@ -2383,6 +2392,16 @@ function fillTeamSelects(){
   if(keep&&TEAMS.some(t=>t.id===keep))$('#fTeam').value=keep;
   $('#hTeam').innerHTML='<option value="">すべて</option>'+opts;
   $('#sTeam').innerHTML='<option value="">すべて</option>'+opts;
+  /* 対戦タブにも同じ切替を置く（記録タブの中にしか無く、試合前に見つけられなかった）。
+     値は #fTeam を正本にして、必ず一致させる。 */
+  const bt=$('#btTeam');
+  if(bt){
+    bt.innerHTML=opts||'<option value="">（構築を登録してください）</option>';
+    bt.value=$('#fTeam').value;
+    const chips=$('#btTeamChips');
+    if(chips){ const t=currentTeam();
+      chips.textContent = t ? (t.roster||[]).map(m=>m.name).join('・') : '構築タブか取り込み欄から登録してください'; }
+  }
 }
 function renderAll(){
   fillTeamSelects(); renderOpp(); renderTeams(); renderHist(); renderStats();

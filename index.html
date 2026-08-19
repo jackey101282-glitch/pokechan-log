@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="38">
+<meta name="app-version" content="39">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -365,7 +365,14 @@ tr.bad .bar>i{background:var(--lose)}
 <!-- ---------- ダメージ計算 ---------- -->
 <!-- ---------- 実戦（試合中はこの画面だけ見る） ---------- -->
 <section id="tab-bt">
-  <!-- 試合中はこの1画面で完結させる。上から順に「相手を入れる → 選出 → いまの対面」 -->
+  <!-- 試合中はこの1画面で完結させる。上から順に「使う構築 → 相手を入れる → 選出 → いまの対面」
+       ★使う構築の切替は「記録」タブの中にしか無く、試合前に見つけられなかった（社長の指摘 2026-08-20）。
+         対戦タブの先頭に置く。中身は #fTeam と同じものを指すので、どちらで変えても一致する。 -->
+  <div class="card" style="padding:10px 14px">
+    <label class="f">使う構築<span class="muted">（ここを変えると選出も対面も全部この構築で計算します）</span></label>
+    <select id="btTeam"></select>
+    <div class="pklist small muted" id="btTeamChips" style="margin-top:6px"></div>
+  </div>
   <details id="btInputWrap" open>
     <summary class="cardsum">相手6体を入れる<span class="sub">タップして開閉</span></summary>
     <div class="card">
@@ -632,15 +639,15 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=38"></script>
-<script src="./data/species.js?v=38"></script>
-<script src="./data/moves.js?v=38"></script>
-<script src="./data/principles.js?v=38"></script>
-<script src="./data/usage.js?v=38"></script>
-<script src="./data/teams.js?v=38"></script>
-<script src="./core.js?v=38"></script>
-<script src="./voice.js?v=38"></script>
+<script src="./supabase-config.js?v=39"></script>
+<script src="./data/species.js?v=39"></script>
+<script src="./data/moves.js?v=39"></script>
+<script src="./data/principles.js?v=39"></script>
+<script src="./data/usage.js?v=39"></script>
+<script src="./data/teams.js?v=39"></script>
+<script src="./core.js?v=39"></script>
+<script src="./voice.js?v=39"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=38"></script>
+<script src="./app.js?v=39"></script>
 </body>
 </html>
