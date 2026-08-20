@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '63';
+const APP_VERSION = '64';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -2417,10 +2417,11 @@ function rateRow(label,w,n,bad,extra){
    個人情報は入れない（メールアドレス・IDは出さない）。試合の中身だけ。 */
 function bindExport(){
   const btn=$('#expBattles'); if(!btn) return;
-  btn.onclick = async ()=>{
+  /* 書き出す中身は1か所で作る。ボタンごとに別々に組み立てると必ず食い違う。 */
+  const build = ()=>{
     const B = statSet();
     const t = TEAMS.find(x=>x.id===$('#fTeam').value);
-    const data = {
+    return { B, data:{
       構築: t ? {name:t.name, roster:(t.roster||[]).map(m=>({name:m.name,item:m.item,nature:m.nature,ability:m.ability,sp:m.sp,moves:m.moves}))} : null,
       戦績: {全:B.length, 勝:B.filter(b=>b.result==='win').length},
       試合: B.map(b=>({
@@ -2431,7 +2432,26 @@ function bindExport(){
         観測した相手の技: (b.turns||[]).filter(t=>t.oppAct&&t.oppAct.move)
           .map(t=>`${t.oppMon}:${t.oppAct.move}`)
       }))
-    };
+    }};
+  };
+  /* ★ファイルに保存（2026-08-21・v64・社長の要望）。
+     チャットに貼ると、そのJSONは**会話に残り続けてコンテキストを圧迫する**。
+     ファイルなら Claude は集計結果だけ読めばよく、記録が何戦に増えても読む量が変わらない。
+     ファイル名は日付＋戦数で固定。Claude 側は ~/Downloads の最新を拾う。 */
+  const fbtn = $('#expFile');
+  if(fbtn) fbtn.onclick = ()=>{
+    const {B, data} = build();
+    const d = new Date();
+    const p = n => String(n).padStart(2,'0');
+    const name = `pokechan_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${B.length}戦.json`;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], {type:'application/json'}));
+    const a = document.createElement('a');
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    toast(`${name} を保存しました。Claudeに「保存した」と伝えてください`);
+  };
+  btn.onclick = async ()=>{
+    const {B, data} = build();
     const txt = JSON.stringify(data, null, 1);
     const out = $('#expOut'); out.style.display='block'; out.value = txt;
     try{ await navigator.clipboard.writeText(txt); toast(`${B.length}戦ぶんをコピーしました。Claudeに貼ってください`); }
