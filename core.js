@@ -364,6 +364,34 @@ function graveMovePower(name, base, fallen){
   if(name !== 'おはかまいり') return base;
   return base + 50 * Math.max(0, Math.min(5, fallen||0));
 }
+/* ★積み技が何を何段上げるか（2026-08-21・v66・社長の要望）。
+   「相手に何回積まれたかを加味できたら、結構戦いやすくなる」
+   盤面には最初からランクの欄があったが、**手で数えて手で入れる**必要があった。
+   相手の技をタップで記録する導線があるので、そこに積み技が入ったら**自動でランクに乗せる**。
+   下げる方（からをやぶるの B/D −1 など）も入れないと過大評価になるので、まとめて持つ。 */
+const STAT_UP = {
+  'つるぎのまい':  {a:2},
+  'りゅうのまい':  {a:1, s:1},
+  'ビルドアップ':  {a:1, b:1},
+  'めいそう':      {c:1, d:1},
+  'ちょうのまい':  {c:1, d:1},
+  'からをやぶる':  {a:2, c:2, s:2, b:-1, d:-1},
+  'こうそくいどう':{s:2},
+  'ロックカット':  {s:2},
+  'てっぺき':      {b:2},
+  'とける':        {b:2},
+  'まるくなる':    {b:1},
+  'とぐろをまく':  {a:1, b:1},
+  'めいそう＋':    {c:1, d:1},
+  'わるだくみ':    {c:2},
+  'しっぽをふる':  {},
+  'つめとぎ':      {a:1},
+  'きあいだめ':    {},
+  'にほんばれ':    {}
+};
+/** 積み技なら、盤面のランク（相手側）に足す差分を返す */
+function statUpOf(move){ const u = STAT_UP[move]; return (u && Object.keys(u).length) ? u : null; }
+
 const WEATHER_SPEED = {
   'すなあらし':'すなかき', 'にほんばれ':'ようりょくそ', 'あめ':'すいすい', 'ゆき':'ゆきかき'
 };
@@ -2648,6 +2676,6 @@ global.PC = {
   bestOffense, bestThreat, immuneType, myOneHitGuard, myRoles, supportValue, oppUsage, oppTypeItem,
   readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana,
-  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect, graveMovePower, GRAVE_MOVES
+  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect, graveMovePower, GRAVE_MOVES, statUpOf, STAT_UP
 };
 })(window);

@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '65';
+const APP_VERSION = '66';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -949,6 +949,9 @@ function newBT(keepObs){
               保存していた my_pick は **ツールの推奨（BT.picks）** で、
               社長が実際に出した3体ではなかった。分析の土台が崩れていた。 */
            usedMine:[],
+           /* ★相手に積まれた回数（v66）。stacks[相手名][技名] = 回数。
+              押すたびに盤面のランクへ加算する。 */
+           stacks:{},
            _searchTop:null,
            /* 前回の盤面を古いとして捨てたか（開いたときに1度だけ知らせる） */
            _staleDropped:false };
@@ -1900,7 +1903,16 @@ function btSeenCard(oppName, seen){
              : `記録するほど判定が正確になります。あと${4-n}つで確定。`}
     </div>
     <div class="quick">
-      ${ch.map(c=>`<button class="qb ${seen.includes(c.name)?'on':'off'}" data-btseen="${esc(c.name)}">${esc(c.name)}<span class="muted"> ${c.rate}%</span></button>`).join('')}
+      ${ch.map(c=>{
+        /* ★積み技は、押した回数がそのまま盤面のランクになる（v66）。
+           何段上がるかをボタンに書いておかないと、押していいのか分からない。 */
+        const up = PC.statUpOf(c.name);
+        const tag = up ? `<span style="color:var(--org)"> ${Object.entries(up).map(([k,v])=>
+          ({a:'攻',b:'防',c:'特攻',d:'特防',s:'速'}[k]+(v>0?'+':'')+v)).join(' ')}</span>` : '';
+        const cnt = ((BT.stacks||{})[o]||{})[c.name] || 0;
+        return `<button class="qb ${seen.includes(c.name)?'on':'off'}" data-btseen="${esc(c.name)}">${esc(c.name)}<span class="muted"> ${c.rate}%</span>${tag}${
+          cnt?`<b style="color:var(--org)"> ×${cnt}</b>`:''}</button>`;
+      }).join('')}
       ${extra.map(m=>`<button class="qb on" data-btseen="${esc(m)}">${esc(m)}<span class="muted"> 手入力</span></button>`).join('')}
     </div>
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
@@ -1924,8 +1936,28 @@ function btBindSeen(){
   const set = m =>{
     BT.obs = BT.obs || {};
     const cur = BT.obs[key] = BT.obs[key] || [];
-    const i = cur.indexOf(m);
-    if(i>=0) cur.splice(i,1); else cur.push(m);
+    const up = PC.statUpOf(m);
+    /* ★積み技は「押した＝1回積まれた」。押すたびに盤面のランクに乗せる（v66・社長の要望）。
+       ふつうの技のように on/off で切り替えると、2回積まれたことを表せない。
+       消したいときは盤面のステッパーで直せる（そちらは残してある）。 */
+    if(up){
+      BT.stacks = BT.stacks || {};
+      const st = BT.stacks[key] = BT.stacks[key] || {};
+      st[m] = (st[m]||0) + 1;
+      BT.board = BT.board || {};
+      const MAP = {a:'opAtkRank', b:'opDefRank', c:'opSpaRank', d:'opSpdRank', s:'opSpeRank'};
+      Object.entries(up).forEach(([k,v])=>{
+        const bk = MAP[k]; if(!bk) return;
+        BT.board[bk] = Math.max(-6, Math.min(6, (BT.board[bk]||0) + v));
+        if(!BT.board[bk]) delete BT.board[bk];
+      });
+      if(!cur.includes(m)) cur.push(m);
+      toast(`${m} ${st[m]}回目 → ${Object.entries(up).map(([k,v])=>
+        ({a:'攻撃',b:'防御',c:'特攻',d:'特防',s:'素早さ'}[k]+(v>0?'+':'')+v)).join('・')}`);
+    }else{
+      const i = cur.indexOf(m);
+      if(i>=0) cur.splice(i,1); else cur.push(m);
+    }
     if(!cur.length) delete BT.obs[key];
     PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   };
@@ -1946,7 +1978,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt,
+    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
@@ -1957,7 +1989,7 @@ function loadBtDraft(){
     if(d.opp) BT.opp=d.opp;
     if(d.megaFixed) BT.megaFixed=d.megaFixed;
     if(fresh){
-      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt;
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
       // 黙って捨てると「さっき入れた状態が消えた」と見えるので、捨てたことは伝える
