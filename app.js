@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '47';
+const APP_VERSION = '48';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -988,7 +988,19 @@ $('#btnSave').onclick=async ()=>{
    45秒の中でClaudeに聞くと必ず間に合わない（実際に2戦落とした）。
    相手6体を入れた時点で全対面を計算しておき、試合中はタップだけで即答する。
    ========================================================= */
-let BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null, hp:{}, oppHp:{}, obs:{}, guardGone:{}, board:{} };
+/* ★実戦タブの状態は必ずこの1つの関数で作る（2026-08-20・重大バグの再発防止）。
+   v45/v46 で「保存後の自動リセット」「次の試合へ」を足したとき、
+   BT を作り直す場所が3か所に散らばり、**タイプ検索が使う BT.tsel を復元し忘れた**。
+   その結果、リセット後にタイプを押すと例外で落ち、6体目が入力できなくなっていた
+   （社長が実戦で選出を組めず、致命的だった）。
+   → 新しい状態を足すときは、必ずここに足すこと。個別に {} を書かない。 */
+function newBT(keepObs){
+  return { opp:[], picks:[], mega:null, megaFixed:null, matrix:null,
+           sel:null, me:null, meManual:false,
+           hp:{}, oppHp:{}, obs:keepObs||{}, guardGone:{}, board:{},
+           seenOrder:[], done:{}, tsel:[] };
+}
+let BT = newBT();
 
 function initBtUI(){
   /* ★2026-08-19 修正：ここが「上書き」だったせいで、
@@ -1007,8 +1019,8 @@ function initBtUI(){
   /* タイプで探す。見せ合い画面では相手の名前は出ないが、タイプアイコンは必ず出る。
      2タイプ選べば候補は数体まで落ちるので、名前を知らなくても入力できる。
      出典: app/data/species.js（全313種のタイプ）＋ 使用率順（app/data/usage.js）。 */
-  BT.tsel = BT.tsel || [];
   const btTypeRender = ()=>{
+    if(!Array.isArray(BT.tsel)) BT.tsel = [];   // 状態が欠けても落ちないようにする
     $('#btTypePick').innerHTML = PC.TYPES.map(t=>{
       const on = BT.tsel.includes(t);
       return `<button class="qb mini ${on?'on':'off'}" data-bt="${t}"
@@ -1016,6 +1028,7 @@ function initBtUI(){
         <i style="background:${PC.TYPE_COLOR[t]};width:15px;height:15px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;margin-right:3px">${typeIcon(t)}</i>${t}</button>`;
     }).join('');
     $$('#btTypePick [data-bt]').forEach(b=> b.onclick=()=>{
+      if(!Array.isArray(BT.tsel)) BT.tsel = [];
       const t=b.dataset.bt, i=BT.tsel.indexOf(t);
       if(i>=0) BT.tsel.splice(i,1); else { BT.tsel.push(t); if(BT.tsel.length>2) BT.tsel.shift(); }
       btTypeRender();
@@ -1079,7 +1092,7 @@ function initBtUI(){
   // やり直しても、相手の技の観測だけは残す（次の試合でも同じ相手に当たるので価値がある）
   $('#btReset').onclick = ()=>{
     const obs = BT.obs;
-    BT={opp:[],picks:[],mega:null,matrix:null,sel:null,me:null,meManual:false,hp:{},obs:obs||{},seenOrder:[],done:{}};
+    BT = newBT(obs);
     PC.clearMatchupCache(); $('#btVoice').value=''; btRender(); saveBtDraft();
   };
   loadBtDraft();
@@ -1220,8 +1233,7 @@ function btRender(){
   if(ng) ng.onclick = ()=>{
     if(BT.opp.length && !confirm('いま入っている相手6体と記録を消して、次の試合の入力に戻ります。よろしいですか？')) return;
     const obs = BT.obs;
-    BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null, meManual:false,
-           hp:{}, oppHp:{}, obs:obs||{}, guardGone:{}, board:{}, seenOrder:[], done:{} };
+    BT = newBT(obs);
     PC.clearMatchupCache(); if(window.VOICE) VOICE.reset();
     saveBtDraft(); btCompute(); btRender();
     const w=$('#btInputWrap'); if(w) w.open=true;
@@ -1328,8 +1340,7 @@ function btRender(){
       /* ★保存したら次の試合をすぐ始められる状態に戻す（社長の指摘 2026-08-20）。
          相手の技の観測（BT.obs）だけは残す。同じ相手に何度も当たるので次の試合でも効くため。 */
       const obs = BT.obs;
-      BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null, meManual:false,
-             hp:{}, oppHp:{}, obs:obs||{}, guardGone:{}, board:{}, seenOrder:[], done:{} };
+      BT = newBT(obs);
       PC.clearMatchupCache(); if(window.VOICE) VOICE.reset();
       saveBtDraft();                      // 空になった状態を保存し直す（キーは 'pokechan_bt'）
       await loadBattles(); renderAll();
