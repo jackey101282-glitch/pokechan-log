@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '48';
+const APP_VERSION = '49';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -998,7 +998,7 @@ function newBT(keepObs){
   return { opp:[], picks:[], mega:null, megaFixed:null, matrix:null,
            sel:null, me:null, meManual:false,
            hp:{}, oppHp:{}, obs:keepObs||{}, guardGone:{}, board:{},
-           seenOrder:[], done:{}, tsel:[] };
+           seenOrder:[], done:{}, tsel:[], leadGuess:null };
 }
 let BT = newBT();
 
@@ -1108,6 +1108,24 @@ function btCompute(){
   BT.mega  = bp.mega;
   // メガ枠が選出に入っていなければ、そのメガは切れない。嘘を出さないよう必ず外す
   if(BT.mega && !BT.picks.includes(BT.mega)) BT.mega = null;
+  /* ★選出の並びは「初手に出す順」にする（社長の指摘 2026-08-20）。
+     以前は選出カードの並びと、いまの対面で最初に選ばれる駒が別々の理屈で決まっていたため、
+     「選出はカバルドンが先頭なのに、対面ではメガルカリオが押されている」という状態になり、
+     毎試合そこを押し直す無駄が発生していた。
+     → 相手の先発予想に対していちばん強い駒を先頭に置き、対面の既定もそれに揃える。 */
+  const leadGuess = (PC.predictLead(BT.opp, BATTLES)||[])[0];
+  if(leadGuess && BT.picks.length>1){
+    const rcLead = rosterForCalc(roster, BT.mega);
+    const scoreOf = n => {
+      const me = rcLead.find(r=>r.label===n||r.name===n);
+      if(!me) return -1;
+      const c = PC.callIt(me, effOpp(leadGuess.name), {});
+      return c ? c.mu.score : -1;
+    };
+    BT.picks = [...BT.picks].sort((a,b)=> scoreOf(b)-scoreOf(a));
+    BT.leadGuess = leadGuess.name;      // 画面で「相手の先発予想」を出すために持っておく
+  }
+
   // メガ枠を手で変えたら、その姿で全部計算し直す（bp.rc は提案時のもの）
   const rc = (BT.megaFixed ? rosterForCalc(roster, BT.mega) : (bp.rc || rosterForCalc(roster, BT.mega)));
   BT.matrix = {};
@@ -1179,7 +1197,7 @@ function btRender(){
   /* 選出は試合開始時に一度読むもの。試合中は「いまの対面」を見るので、折りたたんで高さを取らない。 */
   $('#btPlan').innerHTML = `<details open class="planbox">
     <summary class="cardsum" style="border-left:3px solid var(--fg)">
-      <span>選出 <b>${BT.picks.map(n=>esc(dispName(rc,n))).join(' / ')}</b>${BT.mega?`<span class="muted"> ・メガ=${esc(BT.mega)}</span>`:'<span class="muted"> ・メガは切らない</span>'}</span>
+      <span>選出 <b>${BT.picks.map((n,i)=> (i===0?'初手 ':'') + esc(dispName(rc,n))).join(' / ')}</b>${BT.mega?`<span class="muted"> ・メガ=${esc(BT.mega)}</span>`:'<span class="muted"> ・メガは切らない</span>'}${BT.leadGuess?`<span class="muted"> ・相手の先発予想=${esc(BT.leadGuess)}</span>`:''}</span>
     </summary>
     <div class="card" style="border-left:3px solid var(--fg)">
     ${(()=>{ const slots = megaSlotsOf(roster);
@@ -1426,11 +1444,11 @@ function btNowRender(){
      控えの駒がそのまま残り、場にいない駒の判定を見てしまうことがあった。
      手で選んだとき（BT.meManual）は尊重する。相手を変えても勝手に変えない方針は維持。 */
   const cur = mine.find(m=>m.label===BT.me);
-  const needDefault = !cur || (!BT.meManual && BT.picks.length && !inPick(cur));
+  const needDefault = !cur || (!BT.meManual && BT.picks.length && (!inPick(cur) || BT.me!==BT.picks[0]));
   if(needDefault){
-    const best = mine.filter(inPick).map(m=>({m, c:PC.callIt(m,o,{})})).filter(x=>x.c)
-      .sort((a,b)=> b.c.mu.score - a.c.mu.score)[0];
-    BT.me = best ? best.m.label : (mine.filter(inPick)[0]||mine[0]).label;
+    /* 既定は「選出の先頭＝初手に出すべき駒」。選出カードの並びと必ず一致させる。 */
+    const lead = mine.find(m=> m.label===BT.picks[0] || m.name===BT.picks[0]);
+    BT.me = lead ? lead.label : (mine.filter(inPick)[0]||mine[0]).label;
   }
   const me = mine.find(m=>m.label===BT.me) || mine[0];
   const maxHP = me.stats ? me.stats.h : 0;
@@ -2220,6 +2238,32 @@ function rateRow(label,w,n,bad,extra){
    ★設計方針：**母数を必ず出す。足りないときは断定しない。**
      少ない試合数で「この駒を切れ」と言うのは、運と実力の区別がつかないまま構築を壊す行為なので、
      3戦未満は「まだ判定できません（あと◯戦）」と正直に出す。 */
+/* 記録の書き出し。ClaudeはこのアプリのDBを読めないので、分析を頼むときは本人に貼ってもらう。
+   個人情報は入れない（メールアドレス・IDは出さない）。試合の中身だけ。 */
+function bindExport(){
+  const btn=$('#expBattles'); if(!btn) return;
+  btn.onclick = async ()=>{
+    const B = statSet();
+    const t = TEAMS.find(x=>x.id===$('#fTeam').value);
+    const data = {
+      構築: t ? {name:t.name, roster:(t.roster||[]).map(m=>({name:m.name,item:m.item,nature:m.nature,ability:m.ability,sp:m.sp,moves:m.moves}))} : null,
+      戦績: {全:B.length, 勝:B.filter(b=>b.result==='win').length},
+      試合: B.map(b=>({
+        日:b.played_at, 結果:b.result, 相手6体:b.opp_team, 相手の選出:b.opp_pick,
+        こちらの選出:b.my_pick, メガ:b.mega,
+        敗因:b.lose_cause, きつかった相手:b.pain_mon, やられた技:b.pain_move,
+        出すべきだった:b.should_pick, 欲しかった技:b.want_move, メモ:b.memo,
+        観測した相手の技: (b.turns||[]).filter(t=>t.oppAct&&t.oppAct.move)
+          .map(t=>`${t.oppMon}:${t.oppAct.move}`)
+      }))
+    };
+    const txt = JSON.stringify(data, null, 1);
+    const out = $('#expOut'); out.style.display='block'; out.value = txt;
+    try{ await navigator.clipboard.writeText(txt); toast(`${B.length}戦ぶんをコピーしました。Claudeに貼ってください`); }
+    catch(e){ out.select(); toast('下の欄をコピーしてClaudeに貼ってください', true); }
+  };
+}
+
 const UP_MIN = 3;                      // これ未満の母数では結論を出さない
 function renderUpgrade(B, L){
   const host = $('#upgrade'); if(!host) return;
@@ -2773,7 +2817,7 @@ function fillTeamSelects(){
   }
 }
 function renderAll(){
-  fillTeamSelects(); renderOpp(); renderTeams(); renderHist(); renderStats();
+  fillTeamSelects(); bindExport(); renderOpp(); renderTeams(); renderHist(); renderStats();
   safe('対面', ()=>{ renderVsPickers(); renderVs(); }, '#vsOut');
   safe('実戦', ()=>{ btCompute(); btRender(); }, '#btGrid');
   if(!$('#mvlist2')){const dl2=document.createElement('datalist');dl2.id='mvlist2';

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="48">
+<meta name="app-version" content="49">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -559,6 +559,12 @@ tr.bad .bar>i{background:var(--lose)}
     <p class="hint">溜まった記録から「次に何を変えるか」を出します。<b>根拠の試合数を必ず添えています。</b>
       少ない母数の結論は運と区別がつかないので、そのまま鵜呑みにしないでください。</p>
     <div id="upgrade"></div>
+    <!-- Claudeに分析させるための書き出し。DBはClaudeから読めないので、本人に渡してもらう -->
+    <div class="hpwrap" style="margin-top:12px">
+      <button class="btn sm" id="expBattles">記録を書き出す（Claudeに渡す用）</button>
+      <span class="small muted">押すとコピーされます。そのままClaudeに貼ってください</span>
+    </div>
+    <textarea id="expOut" rows="4" style="margin-top:8px;display:none"></textarea>
   </div>
   <!-- 2026-08-20 追加：負けた試合だけを見る。勝ちは分析しない（社長の方針） -->
   <div class="card" style="border-left:3px solid var(--fg)">
@@ -678,15 +684,15 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=48"></script>
-<script src="./data/species.js?v=48"></script>
-<script src="./data/moves.js?v=48"></script>
-<script src="./data/principles.js?v=48"></script>
-<script src="./data/usage.js?v=48"></script>
-<script src="./data/teams.js?v=48"></script>
-<script src="./core.js?v=48"></script>
-<script src="./voice.js?v=48"></script>
+<script src="./supabase-config.js?v=49"></script>
+<script src="./data/species.js?v=49"></script>
+<script src="./data/moves.js?v=49"></script>
+<script src="./data/principles.js?v=49"></script>
+<script src="./data/usage.js?v=49"></script>
+<script src="./data/teams.js?v=49"></script>
+<script src="./core.js?v=49"></script>
+<script src="./voice.js?v=49"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=48"></script>
+<script src="./app.js?v=49"></script>
 </body>
 </html>
