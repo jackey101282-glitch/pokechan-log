@@ -1275,8 +1275,21 @@ function callIt(mine, oppName, opts){
   const koMoves = rows.filter(r=> r.ohko).sort((a,b)=> b.rateOf-a.rateOf);
   const badMoves = rows.filter(r=> r.beats).sort((a,b)=> b.rateOf-a.rateOf);
 
+  /* ★引き先を計算するときは、いま場にいる駒の「自分側の状態」を持ち込まない（2026-08-20 修正）。
+     眠り・こおり・こんらん・やけど・まひ・もうどく・自分のランク変化は、
+     **その駒個人のもの**であって、交代で出す控えには引き継がれない。
+     ここを丸ごと渡していたため、こちらが眠らされていると引き先まで「眠っている前提」で
+     評価され、「△様子見」などの誤った引き先が出ていた。
+     場に残るもの（天候・壁・設置・おいかぜ・相手の状態）はそのまま引き継ぐ。 */
+  const benchSt = (()=>{
+    if(!st) return st;
+    const o = {...st};
+    ['mySleep','myFreeze','myConfuse','myBurn','myParalysis','myToxic','myAtkRank','myDefRank','mySpeRank']
+      .forEach(k=> delete o[k]);
+    return o;
+  })();
   const bench = (opts.roster||[]).filter(r=> r.name!==mine.name)
-    .map(r=>({ r, c:callIt(r, oppName, {roster:null, known, st, oppHPPct:opts.oppHPPct}) }))
+    .map(r=>({ r, c:callIt(r, oppName, {roster:null, known, st:benchSt, oppHPPct:opts.oppHPPct}) }))
     .filter(x=> x.c && x.c.head!=='引く' && x.c.head!=='居座らない')
     .sort((a,b)=> b.c.mu.score - a.c.mu.score);
 
@@ -1299,8 +1312,7 @@ function callIt(mine, oppName, opts){
      それを黙って出すと、社長が「技が何も登録されていない」と驚く（2026-08-20 ヌメルゴンで発生）。
      判定の確からしさが落ちていることを、必ず本人に伝える。 */
   if(mu.opEstimated) detail.push({k:'warn',
-    t:`<b>この相手は使用率データにありません</b>（環境上位の集計に入っていない＝あまり使われていない相手）。
-       技はタイプ一致で推定しているだけなので、<b>判定は目安</b>です。実際に撃たれた技をタップして記録すると精度が上がります`});
+    t:`<b>この相手は使用率データにありません</b>（あまり使われていない相手）。技はタイプ一致で推定しているだけなので<b>判定は目安</b>です。撃たれた技をタップで記録すると精度が上がります`});
   const others = rows.filter(r=> !r.ohko && r.rate>=0.25).slice(0,4);
   if(others.length) detail.push({k:'info',
     t:`飛んでくる技：${others.map(r=>`${r.move}(${r.rateOf}%) ${dmgTxt(r)}`).join('、')}`});
@@ -1333,10 +1345,58 @@ function callIt(mine, oppName, opts){
       `<b>${m.name}</b>(${m.rate}%)${note[m.name]?`<span class="muted"> — ${note[m.name]}</span>`:''}`).join('、')}`});
   }
 
+  /* ---- 状態異常で「そもそも動けるか」が変わる ----
+     社長の指摘（2026-08-20）：
+     「フェイタルクローで眠らされたら、これに交代、みたいな具体的な指示が欲しい」
+     ★これまで盤面はまひ(素早さ半減)とやけど(物理半減)しか見ておらず、
+       **眠り・こおり・こんらんという『行動できるかどうか』を一切見ていなかった。**
+       殴り合いの計算は、動けることが大前提なので、ここが抜けていると結論ごと間違える。 */
+  const myStuck  = !!(st && (st.mySleep || st.myFreeze));
+  const opStuck  = !!(st && (st.opSleep || st.opFreeze));
+  const myConf   = !!(st && st.myConfuse);
+  const myStuckName = (st && st.mySleep) ? 'ねむり' : (st && st.myFreeze) ? 'こおり' : '';
+  const opStuckName = (st && st.opSleep) ? 'ねむり' : (st && st.opFreeze) ? 'こおり' : '';
+
+  if(myStuck) detail.unshift({k:'bad',
+    t:`<b>こちらは${myStuckName}で動けません。</b>殴り合いの計算は「動けること」が前提です。下の打点は当てにできません`});
+  if(opStuck) detail.unshift({k:'good',
+    t:`<b>相手は${opStuckName}で動けません。</b>ここは無償のターンです`});
+  if(myConf) detail.unshift({k:'bad',
+    t:`<b>こちらはこんらん中。</b>3回に1回は自分を殴ります。読み合いに賭けず、確実な行動を`});
+  // もうどくは相手が勝手に落ちていく。受け側の判断が変わる
+  if(st && st.opToxic) detail.unshift({k:'good',
+    t:`相手は<b>もうどく</b>。放っておいても削れます。無理に殴らず、受けと交代で回すのが有利`});
+  if(st && st.myToxic) detail.unshift({k:'bad',
+    t:`こちらは<b>もうどく</b>。ターンが進むほど不利になります。長引かせず決めにいくこと`});
+
   // ---- 結論 ----
   let head, cls, mark, why;
   const diesNow = (rd && rd.left) ? rd.left.diesNext : (pOHKO>=SURE_RATE);
-  if(mu.noOffense && !mu.wallsAll){
+  if(myStuck && !opStuck){
+    /* 動けない駒は、居座っても仕事をしない。
+       ただし相手の打点が薄いなら「起きるまで耐える」方が、交代で1体削られるより得。 */
+    /* 控えにこの相手を1発で落とせる駒がいるなら、寝たまま粘るより交代が明確に上。
+       動けない駒は何ターン居座っても仕事をしないため。 */
+    const rescuer = bench[0];
+    const canKO = rescuer && rescuer.c.myHits<=1;
+    if(canKO){
+      head='引く'; cls='ng'; mark='✕';
+      why=`${myStuckName}で動けない。${rescuer.r.name}なら1発で落とせるので、寝たまま粘るより交代が上`;
+    }else if(mu.opHits<=2 || diesNow){
+      head='引く'; cls='ng'; mark='✕';
+      why=`${myStuckName}で動けない。相手は${mu.opHits}発で落としてくるので、起きる前に落ちる`;
+    }else{
+      head='様子見'; cls='wn'; mark='△';
+      why=`${myStuckName}で動けないが、相手は落とすのに${mu.opHits}発かかる。交代で1体削られるより、起きるまで粘る方が得`;
+    }
+  }else if(opStuck){
+    // 相手が動けない＝無償のターン。積めるなら積む、落とせるなら落とす
+    const upNow = ['つるぎのまい','りゅうのまい','めいそう','わるだくみ','てっぺき','ビルドアップ','からをやぶる','ちょうのまい']
+      .filter(m=> (mine.moves||[]).includes(m))[0];
+    if(myHits<=1){ head='殴る'; cls='ok'; mark='◎'; why=`相手は${opStuckName}で動けない。${mu.myMove}で落とす`; }
+    else if(upNow){ head='積む'; cls='ok'; mark='◎'; why=`相手は${opStuckName}で動けない。${upNow}を積む絶好の機会`; }
+    else { head='殴る'; cls='ok'; mark='◎'; why=`相手は${opStuckName}で動けない。無償で${mu.myMove}を入れられる`; }
+  }else if(mu.noOffense && !mu.wallsAll){
     // 打点が無く、しかも受けられもしない＝いる意味がない
     head='引く'; cls='ng'; mark='✕';
     why = mu.myDmg>0 ? `打点が無い（最大でも${mu.myHits}発かかる）`
@@ -1354,7 +1414,7 @@ function callIt(mine, oppName, opts){
          抜かれる可能性と、その根拠（スカーフ採用率）を必ず添える。 */
     const sc = oppScarfRate(oppName);
     head='殴る'; cls='wn'; mark='△';
-    why = `${mu.myMove}なら1発。ただし<b>相手が最速なら先に動かれる</b>`
+    why = `${mu.myMove}なら1発。ただし相手が最速なら先に動かれる`
         + (sc>=10 ? `（こだわりスカーフ採用${sc}%）` : '')
         + `。こちら${mu.myS} 対 相手${mu.opS}`;
   }else if(pOHKO >= SURE_RATE){
@@ -1402,7 +1462,8 @@ function callIt(mine, oppName, opts){
   const myMoves = new Set(mine.moves||[]);
   const todo = [];
   // この相手の攻撃を1発は耐えるか。耐えないなら「引く前に何かする」は成立しない
-  const survives = !diesNow && pOHKO < SURE_RATE;
+  // 動けない（ねむり・こおり）なら、そもそも何もできない。やることを出さない
+  const survives = !diesNow && pOHKO < SURE_RATE && !myStuck;
 
   // ① 未設置の設置技。撒いてから引くのが3対3では最大の仕事
   const PLACED = { 'ステルスロック': st&&st.opRocks, 'まきびし': st&&st.opSpikes,
@@ -1452,7 +1513,7 @@ function callIt(mine, oppName, opts){
        → **1発で落とせるなら積まない。** 積みは「押し切れないが、相手の打点も薄い」ときだけ。 */
   const up = ['つるぎのまい','りゅうのまい','めいそう','わるだくみ','てっぺき','ビルドアップ','からをやぶる','ちょうのまい']
     .filter(m=> myMoves.has(m))[0];
-  if(up && todo.length<3){
+  if(up && todo.length<3 && !myStuck){
     if(myHits<=1){
       todo.push({k:'bad', t:`<b>${up}は積まない。</b>${mu.myMove||'最大打点'}で1発なので、積む1ターンは相手に無償で渡すだけです`});
     }else if(mu.opHits>=3 && survives){

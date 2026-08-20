@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '51';
+const APP_VERSION = '52';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1653,12 +1653,22 @@ function btBoardCard(st){
       <div class="hpwrap"><span class="small muted" style="min-width:96px">天候</span>
         <div class="quick">${['','にほんばれ','あめ','すなあらし','ゆき'].map(w=>
           chip(w||'なし','weather',w,(st.weather||'')===w)).join('')}</div></div>
+      <!-- ★行動できるかどうかは結論そのものを変えるので、いちばん上に置く（社長の要望 2026-08-20） -->
+      <div class="hpwrap"><span class="small muted" style="min-width:96px">動けない</span>
+        <div class="quick">
+          ${chip('自分がねむり','mySleep',1,!!st.mySleep)}
+          ${chip('自分がこおり','myFreeze',1,!!st.myFreeze)}
+          ${chip('自分がこんらん','myConfuse',1,!!st.myConfuse)}
+          ${chip('相手がねむり','opSleep',1,!!st.opSleep)}
+          ${chip('相手がこおり','opFreeze',1,!!st.opFreeze)}</div></div>
       <div class="hpwrap"><span class="small muted" style="min-width:96px">状態異常</span>
         <div class="quick">
           ${chip('相手がやけど','opBurn',1,!!st.opBurn)}
           ${chip('相手がまひ','opParalysis',1,!!st.opParalysis)}
+          ${chip('相手がもうどく','opToxic',1,!!st.opToxic)}
           ${chip('自分がやけど','myBurn',1,!!st.myBurn)}
-          ${chip('自分がまひ','myParalysis',1,!!st.myParalysis)}</div></div>
+          ${chip('自分がまひ','myParalysis',1,!!st.myParalysis)}
+          ${chip('自分がもうどく','myToxic',1,!!st.myToxic)}</div></div>
       <div class="hpwrap"><span class="small muted" style="min-width:96px">こちらの壁</span>
         <div class="quick">
           ${chip('リフレクター','myReflect',1,!!st.myReflect)}
