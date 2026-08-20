@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '60';
+const APP_VERSION = '61';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1022,7 +1022,10 @@ function initBtUI(){
     /* ★ひらがな・カタカナ・ローマ字・濁点の揺れ・1〜2文字の打ち間違いまで、全部ここが吸収する */
     const res = PC.searchSpecies(q, {exclude:BT.opp, limit:10});
     const hit = res.list;
-    BT._searchTop = hit[0] || null;      // Enterで先頭を足すために覚えておく
+    /* ★Enterで足せるのは「完全に一致した候補」だけ（v61）。
+       「もしかして」候補をEnterで無言追加すると、**違うポケモンを登録したことに気づけない**。
+       社長は誤登録で3敗している。あいまい候補は必ずクリックで選ばせる。 */
+    BT._searchTop = res.fuzzy ? null : (hit[0] || null);
     const full = BT.opp.length>=6;
     box.innerHTML = hit.length
       ? (full?`<div class="small" style="width:100%;color:var(--org);font-weight:700">もう6体入っています。入れ替えるには <b>× </b>で1体外してください</div>`:'')
@@ -1044,7 +1047,11 @@ function initBtUI(){
     if(e.key !== 'Enter') return;
     e.preventDefault();
     const n = BT._searchTop;
-    if(!n) return;
+    if(!n){
+      if((document.getElementById('btSearchOut').textContent||'').includes('もしかして'))
+        toast('完全に一致する名前がありません。候補を押して確かめてください', true);
+      return;
+    }
     if(BT.opp.length>=6) return toast('6匹までです。× で1体外してください', true);
     BT.opp.push(n); $('#btSearch').value=''; BT._searchTop=null;
     btCompute(); btRender(); btSearchRender(); $('#btSearch').focus();
@@ -1070,6 +1077,66 @@ function initBtUI(){
 }
 
 /** 相手6体が決まった時点で、全部の対面を先に計算しておく */
+/* ★先発の候補を3体、理由つきで並べる（2026-08-21・v61）。
+   社長の実戦の形がこうなったため：
+     「1体目は、カバルドン対策で出てくる相手に対して ギャラドス／キラフロル／カイリュー。
+       相手のタイプによって ミミッキュ か ルカリオ。
+       有利対面を常に取ってくる相手には、逆にカバルドンが刺さる（ステロ→あくび連打）」
+   ツールは初手を1体しか出していなかったが、社長が毎回考えているのは
+   **「この駒が通るか。通らないなら次は誰か」** なので、候補を並べて比べられる形にする。
+   出す情報は3つだけ：①相手6体の何体に有利か ②何が来たら終わりか ③そのときどこへ引くか */
+/** 表示用の小さな安全網。ここがこけても選出カードごと消えないようにする */
+function safeHtml(label, fn){
+  try{ return fn() || ''; }
+  catch(e){ console.error('['+label+']', e);
+    return `<div class="small muted" style="margin-top:8px">${esc(label)}の表示に失敗しました（${esc(e.name)}）</div>`; }
+}
+function btLeadCandidates(rc){
+  if(!BT.opp.length || !rc.length) return '';
+  const opp = BT.opp.map(effOpp);
+  const rows = rc.map(m=>{
+    let good=0; const bad=[], ohko=[];
+    opp.forEach(o=>{
+      let c=null; try{ c = PC.callIt(m, o, {oppTeam:opp, st:BT.board||{}}); }catch(e){}
+      if(!c) return;
+      if(c.mark==='◎'||c.mark==='○') good++;
+      if(c.mark==='✕') bad.push(o);
+      if(c.pOHKO >= 25) ohko.push(o);       // 一撃で落とされうる相手は別枠で出す
+    });
+    /* 危ない相手が来たときの逃げ先。いちばん危ない1体についてだけ出す（増やすと読まなくなる） */
+    const worst = ohko[0] || bad[0] || null;
+    let escape = null;
+    if(worst){
+      const alt = rc.filter(x=>x.label!==m.label).map(x=>{
+        try{ return {n:x.label, c:PC.callIt(x, worst, {oppTeam:opp, st:BT.board||{}})}; }catch(e){ return null; }
+      }).filter(x=>x&&x.c).sort((a,b)=> b.c.mu.score-a.c.mu.score)[0];
+      if(alt && (alt.c.mark==='◎'||alt.c.mark==='○')) escape = {to:alt.n, from:worst, mark:alt.c.mark};
+    }
+    return {m, good, bad, ohko, escape};
+  }).sort((a,b)=> b.good-a.good || a.bad.length-b.bad.length);
+
+  const top = rows.slice(0,3);
+  return `<div style="margin-top:10px">
+    <div class="small" style="font-weight:700">先発の候補<span class="muted"> ・相手6体に対して。上から順に有利が多い</span></div>
+    <table style="width:100%;margin-top:5px;font-size:13px">
+      ${top.map((r,i)=>`<tr style="border-top:1px solid var(--line2)">
+        <td style="padding:6px 6px 6px 0;vertical-align:top;white-space:nowrap">
+          <b>${i+1}. ${esc(r.m.disp||r.m.label)}</b><br>
+          <span class="small muted">有利 ${r.good}/${opp.length}体</span>
+        </td>
+        <td style="padding:6px 0;vertical-align:top">
+          ${r.ohko.length
+            ? `<span style="color:var(--red)">一撃で落とされる：<b>${r.ohko.map(esc).join('・')}</b></span><br>`
+            : ''}
+          ${r.bad.length
+            ? `<span class="muted">通らない：${r.bad.filter(x=>!r.ohko.includes(x)).map(esc).join('・')||'なし'}</span>`
+            : '<span class="muted">通らない相手なし</span>'}
+          ${r.escape ? `<br><span class="small muted">${esc(r.escape.from)}が来たら → <b>${esc(r.escape.to)}</b>（${r.escape.mark}）</span>` : ''}
+        </td>
+      </tr>`).join('')}
+    </table>
+  </div>`;
+}
 function btCompute(){
   const roster = currentRoster();
   if(!roster.length || !BT.opp.length){ BT.matrix=null; return; }
@@ -1189,6 +1256,7 @@ function btRender(){
         <div class="quick" style="margin-top:4px">${slots.map(sl=>
           `<button class="qb ${BT.mega===sl?'on':'off'}" data-btmega="${esc(sl)}">${esc(sl)}</button>`).join('')}</div>`;
     })()}
+    ${safeHtml('先発候補', ()=> btLeadCandidates(rc))}
     ${(()=>{ /* ★落とされると一気に苦しくなる駒。毎回は出さず、
                 「その駒だけが答えになっている相手が2体以上」のときだけ出す。 */
       const picks = rc.filter(r=> BT.picks.includes(r.label) || BT.picks.includes(r.name));
