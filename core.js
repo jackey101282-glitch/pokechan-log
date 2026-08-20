@@ -1335,8 +1335,22 @@ function callIt(mine, oppName, opts){
     head='引く'; cls='ng'; mark='✕';
     why = mu.myDmg>0 ? `打点が無い（最大でも${mu.myHits}発かかる）`
                      : `技がまったく通らない（無効・または効果が薄い）`;
-  }else if(myHits<=1 && mu.fasterAny && !(diesNow && !mu.faster)){
+  }else if(myHits<=1 && mu.faster && !(diesNow && !mu.faster)){
     head='殴る'; cls='ok'; mark='◎'; why=`${mu.myMove}で先に落とせる`;
+  }else if(myHits<=1 && mu.fasterAny && !(diesNow && !mu.faster)){
+    /* ★2026-08-20 修正（実戦での敗因）。
+       以前はここも「◎ 殴る・先に落とせる」と言い切っていた。
+       だが fasterAny は「3つの想定型のうち**どれか1つ**より速い」でしかない。
+       メガルカリオ(S164) vs マスカーニャ は、遅い耐久型(S143)にだけ速く、
+       最速型(S192)とスカーフ型(S288・採用49.7%)には**倍近く抜かれる**。
+       それを「先に落とせる」と表示していたため、社長はルカリオを投げて一撃で失った。
+       → 1発で落とせるのは事実なので「殴る」は残すが、**言い切らない**。
+         抜かれる可能性と、その根拠（スカーフ採用率）を必ず添える。 */
+    const sc = oppScarfRate(oppName);
+    head='殴る'; cls='wn'; mark='△';
+    why = `${mu.myMove}なら1発。ただし<b>相手が最速なら先に動かれる</b>`
+        + (sc>=10 ? `（こだわりスカーフ採用${sc}%）` : '')
+        + `。こちら${mu.myS} 対 相手${mu.opS}`;
   }else if(pOHKO >= SURE_RATE){
     head='引く'; cls='ng'; mark='✕';
     why=`${koMoves[0].move}などで一撃。およそ${pOHKO}%の型が一撃技を持っている`;

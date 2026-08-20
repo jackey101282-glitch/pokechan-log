@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '49';
+const APP_VERSION = '50';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -339,7 +339,15 @@ function bestPlan(roster, targets, size, allOpp, fixedMega){
     const sug = PC.suggestPicks(rc, targets, Math.min(size, rc.length));
     return {plan:sug.top[0], mega:null, rc, backup:0, blind:[], all:sug.top.map(p=>({plan:p,rc,backup:0,blind:[]}))};
   }
-  pool.sort((a,b)=> b.plan.cover-a.plan.cover || b.backup-a.backup || b.plan.total-a.plan.total);
+  /* ★並べ方（2026-08-20 修正）。
+     以前は cover（何体を見られるか）が最優先だったため、
+     「広く浅く見られるが、実際に出てくる相手には勝てない3体」が常に1位になっていた。
+     → cover が同じなら、**いちばん苦しい対面がマシな案**を上に出す（worst）。
+       1体でも「手も足も出ない」対面があると、そこで試合が壊れるため。 */
+  pool.sort((a,b)=> b.plan.cover-a.plan.cover
+                 || (b.plan.worst||0)-(a.plan.worst||0)
+                 || b.backup-a.backup
+                 || b.plan.total-a.plan.total);
   // 同じ並びが重複しないように畳む
   const seen=new Set(), uniq=[];
   pool.forEach(p=>{ const k=[...p.plan.members].sort().join('|'); if(seen.has(k))return; seen.add(k); uniq.push(p); });
@@ -998,7 +1006,7 @@ function newBT(keepObs){
   return { opp:[], picks:[], mega:null, megaFixed:null, matrix:null,
            sel:null, me:null, meManual:false,
            hp:{}, oppHp:{}, obs:keepObs||{}, guardGone:{}, board:{},
-           seenOrder:[], done:{}, tsel:[], leadGuess:null };
+           seenOrder:[], done:{}, tsel:[], leadGuess:null, oppPredict:null };
 }
 let BT = newBT();
 
@@ -1103,7 +1111,19 @@ function btCompute(){
   const roster = currentRoster();
   if(!roster.length || !BT.opp.length){ BT.matrix=null; return; }
   const size = $('#fRule').value==='double' ? 4 : 3;
-  const bp = bestPlan(roster, BT.opp, size, BT.opp, BT.megaFixed);
+  /* ★2026-08-20 の重大な設計ミス（実戦7戦の分析で判明）。
+     記録タブは `bestPlan(roster, 予想された相手の3体, ...)` を渡していたのに、
+     **実戦で使うこのタブだけ相手6体をそのまま渡していた**。
+     相手6体を等しく見ると「広く浅く見られる駒」が必ず選ばれるため、
+     相手が誰でも同じ3体（カバルドン/メガルカリオ/カイリュー）が推奨され続け、
+     社長は6戦中5戦それに従って1勝4敗になった。**相手に合わせた選出になっていなかった。**
+     → 相手が実際に出してくる3体を予想し、それを潰せる3体を選ぶ。
+        6体全部は「予想が外れたときの保険（backup）」として引き続き見る。 */
+  const neutral = rosterForCalc(roster, null);
+  const pp = PC.predictPicks(BT.opp, BATTLES, neutral, size, META_TOP);
+  const targets = (pp && pp.picks && pp.picks.length) ? pp.picks : BT.opp;
+  BT.oppPredict = targets;
+  const bp = bestPlan(roster, targets, size, BT.opp, BT.megaFixed);
   BT.picks = bp.plan ? bp.plan.members : roster.slice(0,size).map(m=>m.name);
   BT.mega  = bp.mega;
   // メガ枠が選出に入っていなければ、そのメガは切れない。嘘を出さないよう必ず外す
@@ -1113,7 +1133,7 @@ function btCompute(){
      「選出はカバルドンが先頭なのに、対面ではメガルカリオが押されている」という状態になり、
      毎試合そこを押し直す無駄が発生していた。
      → 相手の先発予想に対していちばん強い駒を先頭に置き、対面の既定もそれに揃える。 */
-  const leadGuess = (PC.predictLead(BT.opp, BATTLES)||[])[0];
+  const leadGuess = (PC.predictLead(targets, BATTLES)||[])[0];
   if(leadGuess && BT.picks.length>1){
     const rcLead = rosterForCalc(roster, BT.mega);
     const scoreOf = n => {
