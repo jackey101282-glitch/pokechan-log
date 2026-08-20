@@ -4,17 +4,33 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="42">
+<meta name="app-version" content="43">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
+/* ─────────────────────────────────────────────────────────
+   配色の決まり（2026-08-20 全面見直し）
+   社長の指摘：「選出のところが赤く覆われていて、赤の理由が分からない」
+   デザイン指針（00_デザイン指針/LPデザイン・レシピ集.md）の物理量に合わせる：
+     ・色は3〜4系統＋差し色1。差し色の面積はビューポートの10%未満
+     ・ベタ塗りの合計は1画面の12%まで／淡色は1箇所5%まで
+     ・罫は横だけ。影で浮くカードの乱用なし。絵文字ゼロ
+   ★このツールでの色の意味は1本だけ：「危険度」。
+     赤＝落とされる／引く　橙＝五分・様子見　緑＝押せる
+     それ以外を赤くしない。装飾で赤を使わない。
+   ───────────────────────────────────────────────────────── */
 :root{
-  --bg:#f6f7fb; --card:#fff; --line:#e9edf4; --line2:#f2f5fa;
-  --fg:#2a3140; --muted:#8b97ab; --soft:#f8fafd;
-  --red:#ff5d5d; --redsoft:#fff0f0; --blue:#4d8bf5; --bluesoft:#eef4ff;
-  --win:#26b980; --winsoft:#e9f9f3; --lose:#f2685f; --losesoft:#feefee;
-  --warn:#f0a338; --warnsoft:#fff6e8;
-  --r:16px; --shadow:0 1px 2px rgba(28,40,64,.05), 0 6px 20px rgba(28,40,64,.05);
+  --bg:#f7f7f5; --card:#fff; --line:#e3e5e2; --line2:#eff0ed;
+  --fg:#23262b; --muted:#7c8189; --soft:#fafaf8;
+  /* 判断の色。彩度は80%前後に落として「うさん臭さ」を避ける */
+  --red:#c0392b; --redsoft:#fbf0ee; --blue:#3f6ea8; --bluesoft:#eef2f7;
+  --win:#2f7d5d; --winsoft:#eef4f0; --lose:#c0392b; --losesoft:#fbf0ee;
+  --warn:#b4762a; --warnsoft:#f8f2e8;
+  /* ★app.js が var(--grn)/var(--org) を使っているのに未定義で、
+     「打点が無い」「一撃で落ちる」等の色分けが効いていなかった（2026-08-20 発見）。別名で通す。 */
+  --grn:#2f7d5d; --org:#b4762a;
+  /* 角丸は汎用カードの記号なので浅くする。影は原則なし */
+  --r:6px; --shadow:none;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 /* 試合中の誤操作対策（2026-08-19 社長の指摘）
@@ -43,17 +59,16 @@ header.top{position:sticky;top:0;z-index:30;background:rgba(255,255,255,.9);back
 .who{font-size:11px;color:var(--muted);font-weight:400}
 .tabs{display:flex;gap:6px;margin-top:10px;overflow-x:auto;scrollbar-width:none}
 .tabs::-webkit-scrollbar{display:none}
-.tab{flex:0 0 auto;padding:8px 15px;border-radius:999px;border:1px solid var(--line);background:#fff;
+.tab{flex:0 0 auto;padding:8px 14px;border-radius:0;border:0;border-bottom:2px solid transparent;background:transparent;
   color:var(--muted);cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap}
-.tab.on{background:var(--red);border-color:var(--red);color:#fff;box-shadow:0 3px 10px rgba(255,93,93,.28)}
+.tab.on{color:var(--fg);border-bottom-color:var(--fg);background:transparent}
 main{padding:16px 0 80px}
 section[hidden]{display:none}
 
 /* card */
-.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px;box-shadow:var(--shadow)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:12px}
 .card h2{margin:0 0 12px;font-size:14px;font-weight:800;display:flex;align-items:center;gap:8px}
-.card h2 .num{width:20px;height:20px;border-radius:50%;background:var(--red);color:#fff;font-size:11px;
-  display:grid;place-items:center;flex:0 0 auto;font-weight:800}
+.card h2 .num{color:var(--muted);font-size:12px;font-weight:700;flex:0 0 auto}
 .card h2 .sub{font-weight:400;font-size:12px;color:var(--muted);margin-left:auto}
 .hint{font-size:12px;color:var(--muted);margin:-6px 0 10px}
 
@@ -62,38 +77,38 @@ label.f{display:block;margin:0 0 5px;font-size:12px;color:var(--muted);font-weig
 .row>*{flex:1 1 0;min-width:0}
 .field{margin-bottom:12px}
 input[type=text],input[type=number],input[type=date],input[type=email],input[type=password],select,textarea{
-  width:100%;background:var(--soft);border:1.5px solid var(--line);border-radius:11px;padding:10px 12px;outline:none;transition:.15s}
+  width:100%;background:var(--soft);border:1.5px solid var(--line);border-radius:5px;padding:10px 12px;outline:none;transition:.15s}
 input:focus,select:focus,textarea:focus{border-color:var(--blue);background:#fff}
 textarea{resize:vertical;min-height:62px}
 select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238b97ab' stroke-width='2' fill='none'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
 
-.btn{background:#fff;border:1.5px solid var(--line);border-radius:11px;padding:10px 15px;cursor:pointer;font-size:14px;font-weight:600;transition:.15s}
+.btn{background:#fff;border:1.5px solid var(--line);border-radius:5px;padding:10px 15px;cursor:pointer;font-size:14px;font-weight:600;transition:.15s}
 .btn:hover{border-color:#d7dfeb}
 .btn:active{transform:scale(.98)}
-.btn.primary{background:var(--red);border-color:var(--red);color:#fff;box-shadow:0 4px 14px rgba(255,93,93,.3)}
+.btn.primary{background:var(--fg);border-color:var(--fg);color:#fff}
 .btn.blue{background:var(--blue);border-color:var(--blue);color:#fff}
 .btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
 .btn.danger{color:var(--lose);border-color:#f7d5d2}
-.btn.sm{padding:6px 11px;font-size:12px;border-radius:9px}
+.btn.sm{padding:6px 11px;font-size:12px;border-radius:4px}
 .btn-full{width:100%;padding:14px;font-size:15px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 
 /* type chip */
-.tp{display:inline-flex;align-items:center;gap:3px;padding:2px 8px 2px 6px;border-radius:999px;font-size:10px;font-weight:800;color:#fff;letter-spacing:.03em;vertical-align:middle;line-height:1.3}
+.tp{display:inline-flex;align-items:center;gap:3px;padding:2px 7px 2px 5px;border-radius:3px;font-size:10px;font-weight:800;color:#fff;letter-spacing:.03em;vertical-align:middle;line-height:1.3}
 .tp svg{flex:0 0 auto;opacity:.95}
 
 /* よく当たる相手のクイック選択 */
 .quick{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
-.quick .qb{border:1.5px solid var(--line);background:#fff;border-radius:10px;padding:5px 9px;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+.quick .qb{border:1.5px solid var(--line);background:#fff;border-radius:4px;padding:5px 9px;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
 .quick .qb:hover{border-color:var(--blue);background:var(--bluesoft)}
 .quick .qb.dim{opacity:.35;pointer-events:none}
 /* 選択式のチップ。dim と違いタップできる（未選択でも押せないと記録できない） */
-.quick .qb.off{opacity:.55;border-style:dashed}
-.quick .qb.on{border-color:var(--red);background:var(--redsoft);color:var(--red)}
+.quick .qb.off{color:var(--muted);background:var(--soft)}
+.quick .qb.on{border-color:var(--fg);background:#fff;color:var(--fg);box-shadow:inset 0 -2px 0 var(--fg)}
 /* 折りたたみカードの見出し */
-.cardsum{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;
-  margin-bottom:14px;box-shadow:var(--shadow);font-size:14px;font-weight:800;cursor:pointer;
+.cardsum{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:13px 16px;
+  margin-bottom:12px;font-size:14px;font-weight:800;cursor:pointer;
   display:flex;align-items:center;gap:8px;list-style:none}
 .cardsum::-webkit-details-marker{display:none}
 .cardsum::after{content:'▾';margin-left:auto;color:var(--muted);font-weight:400}
@@ -101,16 +116,16 @@ details[open] > .cardsum::after{content:'▴'}
 .cardsum .sub{font-weight:400;font-size:12px;color:var(--muted);margin-left:auto}
 .cardsum .sub + *{margin-left:0}
 /* 実戦の主役ブロック */
-.nowhead{font-size:26px;font-weight:800;line-height:1.15}
+.nowhead{font-size:30px;font-weight:800;line-height:1.1;letter-spacing:-.02em}
 .hpwrap{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
 .hpwrap input[type=number]{width:92px;text-align:right;font-size:17px;font-weight:700}
 .seg{display:flex;gap:4px;flex-wrap:wrap}
-.seg button{border:1.5px solid var(--line);background:#fff;border-radius:9px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer}
-.seg button.on{border-color:var(--red);background:var(--redsoft);color:var(--red)}
+.seg button{border:1.5px solid var(--line);background:#fff;border-radius:4px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer}
+.seg button.on{border-color:var(--fg);background:var(--fg);color:#fff}
 .quick .qb .cnt{font-size:10px;color:var(--muted);font-weight:500}
 
 /* 対面ガイド */
-.mg{border:1.5px solid var(--line);border-radius:13px;padding:11px 12px;margin-bottom:8px;background:#fff}
+.mg{border:1.5px solid var(--line);border-radius:5px;padding:11px 12px;margin-bottom:8px;background:#fff}
 .mg .op{display:flex;align-items:center;gap:7px;font-weight:700;font-size:14px;margin-bottom:8px}
 .mg .ans{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line2);font-size:13px;flex-wrap:wrap}
 .mg .ans .rk{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:11px;font-weight:800;flex:0 0 auto}
@@ -121,7 +136,7 @@ details[open] > .cardsum::after{content:'▴'}
 
 /* pokemon chip */
 .pk{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1.5px solid var(--line);
-  border-radius:12px;padding:6px 10px;font-size:13px;font-weight:600}
+  border-radius:5px;padding:6px 10px;font-size:13px;font-weight:600}
 .pk .x{cursor:pointer;color:var(--muted);font-size:16px;line-height:1;margin-left:2px}
 .pk.sel{background:var(--bluesoft);border-color:var(--blue);color:#2a5fc4}
 .pk.tapp{cursor:pointer}
@@ -137,7 +152,7 @@ details[open] > .cardsum::after{content:'▴'}
 /* suggestion */
 .sug{position:relative}
 .sugbox{position:absolute;z-index:40;left:0;right:0;top:calc(100% + 4px);background:#fff;border:1.5px solid var(--line);
-  border-radius:12px;box-shadow:0 12px 32px rgba(28,40,64,.12);max-height:260px;overflow-y:auto}
+  border-radius:5px;box-shadow:0 12px 32px rgba(28,40,64,.12);max-height:260px;overflow-y:auto}
 .sugbox div{padding:9px 12px;cursor:pointer;font-size:14px;display:flex;align-items:center;gap:7px}
 .sugbox div:hover,.sugbox div.hi{background:var(--bluesoft)}
 .sugbox .mini{font-size:11px;color:var(--muted);margin-left:auto}
@@ -149,30 +164,30 @@ details[open] > .cardsum::after{content:'▴'}
 .res button.on.l{background:var(--losesoft);border-color:var(--lose);color:var(--lose)}
 
 /* suggestion box */
-.pick-card{border:1.5px solid var(--line);border-radius:13px;padding:12px;margin-bottom:9px;background:var(--soft)}
-.pick-card.best{border-color:var(--red);background:var(--redsoft)}
+.pick-card{border:1.5px solid var(--line);border-radius:5px;padding:12px;margin-bottom:9px;background:var(--soft)}
+.pick-card.best{border-color:var(--fg);border-left-width:3px}
 .pick-card .hd{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin-bottom:7px}
 .pick-card .hd b{color:var(--red);font-size:12px}
-.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
+.badge{display:inline-block;padding:2px 7px;border-radius:3px;font-size:11px;font-weight:700}
 .badge.ok{background:var(--winsoft);color:var(--win)}
 .badge.ng{background:var(--losesoft);color:var(--lose)}
 .badge.wn{background:var(--warnsoft);color:var(--warn)}
 
 /* turn log */
-.turn{border:1.5px solid var(--line);border-radius:13px;padding:11px 12px;margin-bottom:9px;background:#fff}
+.turn{border:1.5px solid var(--line);border-radius:5px;padding:11px 12px;margin-bottom:9px;background:#fff}
 .turn .th{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:8px}
 .turn .th .no{background:var(--fg);color:#fff;border-radius:7px;padding:1px 8px;font-size:11px}
 .side{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
 .side .lb{font-size:11px;font-weight:700;padding:2px 8px;border-radius:7px;flex:0 0 auto}
 .side .lb.me{background:var(--bluesoft);color:#2a5fc4}
 .side .lb.op{background:var(--redsoft);color:#c94a4a}
-.side select,.side input{flex:1 1 120px;min-width:110px;padding:7px 10px;font-size:16px;border-radius:9px}
+.side select,.side input{flex:1 1 120px;min-width:110px;padding:7px 10px;font-size:16px;border-radius:4px}
 /* iOSは16px未満の入力欄をタップすると自動でズームする。これが「横幅が変わる」の正体。
    入力欄は必ず16px以上にする */
 input,select,textarea{font-size:16px}
 .side .mgchk{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;
-  padding:6px 10px;border:1.5px solid var(--line);border-radius:9px;background:#fff;cursor:pointer;white-space:nowrap}
-.side .mgchk.on{border-color:var(--red);background:var(--redsoft);color:#c94a4a}
+  padding:6px 10px;border:1.5px solid var(--line);border-radius:4px;background:#fff;cursor:pointer;white-space:nowrap}
+.side .mgchk.on{border-color:var(--fg);background:var(--fg);color:#fff}
 .side .mgchk input{flex:0 0 auto;min-width:0;width:auto;margin:0}
 
 /* tables */
@@ -189,13 +204,13 @@ tr.bad .bar>i{background:var(--lose)}
 
 /* kpi */
 .kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
-.kpi{background:var(--soft);border:1px solid var(--line);border-radius:13px;padding:12px}
+.kpi{background:var(--soft);border:1px solid var(--line);border-radius:5px;padding:12px}
 .kpi .k{font-size:11px;color:var(--muted);font-weight:600}
 .kpi .v{font-size:28px;font-weight:800;line-height:1.2;letter-spacing:-.02em}
 .kpi .s{font-size:11px;color:var(--muted)}
 
 /* log entry */
-.log{border:1.5px solid var(--line);border-radius:13px;padding:12px;margin-bottom:10px;background:#fff}
+.log{border:1.5px solid var(--line);border-radius:5px;padding:12px;margin-bottom:10px;background:#fff}
 .log.win{border-left:4px solid var(--win)}
 .log.lose{border-left:4px solid var(--lose)}
 .log .head{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);margin-bottom:7px;flex-wrap:wrap}
@@ -203,17 +218,17 @@ tr.bad .bar>i{background:var(--lose)}
 .log .rz.win{color:var(--win)} .log .rz.lose{color:var(--lose)}
 .log .tm{font-size:13px;margin-bottom:3px}
 .log .tm .lbl{color:var(--muted);font-size:11px;margin-right:5px;font-weight:600}
-.log .why{font-size:13px;background:var(--soft);border-radius:10px;padding:8px 10px;margin-top:7px}
+.log .why{font-size:13px;background:var(--soft);border-radius:4px;padding:8px 10px;margin-top:7px}
 
 .muted{color:var(--muted)} .small{font-size:12px}
-.note{border-radius:11px;padding:11px 13px;font-size:13px}
+.note{border-radius:5px;padding:11px 13px;font-size:13px}
 .note.w{background:var(--warnsoft);color:#8a5c14}
 .note.g{background:var(--winsoft);color:#127a56}
 .note.r{background:var(--losesoft);color:#b03a32}
 .note.b{background:var(--bluesoft);color:#2a5fc4}
 
 /* damage calc */
-.dmgbar{height:26px;border-radius:9px;background:var(--line2);overflow:hidden;position:relative;margin:8px 0}
+.dmgbar{height:26px;border-radius:4px;background:var(--line2);overflow:hidden;position:relative;margin:8px 0}
 .dmgbar>i{display:block;height:100%;background:linear-gradient(90deg,#ffd6a5,#ff8f6b)}
 .dmgbar>span{position:absolute;inset:0;display:grid;place-items:center;font-size:12px;font-weight:800}
 
@@ -534,12 +549,12 @@ tr.bad .bar>i{background:var(--lose)}
   <div class="card"><h2>基本</h2><div class="kpis" id="kpis"></div></div>
   <div class="card"><h2>今のあなたへのフィードバック</h2><div id="feedback"></div></div>
   <!-- 2026-08-20 追加：負けた試合だけを見る。勝ちは分析しない（社長の方針） -->
-  <div class="card" style="border-color:var(--red)">
+  <div class="card" style="border-left:3px solid var(--fg)">
     <h2>敗因の内訳<span class="sub">負けた試合だけ</span></h2>
     <p class="hint">対戦タブの「試合が終わった」から数タップで溜まります。原因が偏っていれば、そこが次に直す場所です。</p>
     <div id="loseCause"></div>
   </div>
-  <div class="card" style="border-color:var(--red)">
+  <div class="card" style="border-left:3px solid var(--fg)">
     <h2>やられている技<span class="sub">同じ技を使う相手にも効きます</span></h2>
     <p class="hint">1回の負けを、その技を持つ環境全体への対策に広げます。<br>
       「この技でやられた」を記録すると、<b>同じ技を採用している他のポケモン</b>を実使用率から逆に引いて出します。</p>
@@ -651,15 +666,15 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=42"></script>
-<script src="./data/species.js?v=42"></script>
-<script src="./data/moves.js?v=42"></script>
-<script src="./data/principles.js?v=42"></script>
-<script src="./data/usage.js?v=42"></script>
-<script src="./data/teams.js?v=42"></script>
-<script src="./core.js?v=42"></script>
-<script src="./voice.js?v=42"></script>
+<script src="./supabase-config.js?v=43"></script>
+<script src="./data/species.js?v=43"></script>
+<script src="./data/moves.js?v=43"></script>
+<script src="./data/principles.js?v=43"></script>
+<script src="./data/usage.js?v=43"></script>
+<script src="./data/teams.js?v=43"></script>
+<script src="./core.js?v=43"></script>
+<script src="./voice.js?v=43"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=42"></script>
+<script src="./app.js?v=43"></script>
 </body>
 </html>

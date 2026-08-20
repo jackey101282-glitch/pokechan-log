@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '42';
+const APP_VERSION = '43';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -540,7 +540,7 @@ function renderLeadPredict(){
     </div>
 
     ${(()=>{ const t=[]; S.opp.forEach(n=>PC.oppTricks(PC.toBase(n)).forEach(([mv,why])=>t.push([n,mv,why])));
-      return t.length?`<div class="pick-card" style="border-color:var(--red);background:var(--redsoft)">
+      return t.length?`<div class="pick-card" style="border-left:3px solid var(--fg)">
         <div class="hd"><b>この並びで警戒する技</b></div>
         ${t.map(([n,mv,why])=>`<div class="small" style="padding:2px 0">・<b>${esc(n)}</b> の <b>${esc(mv)}</b> — ${esc(why)}</div>`).join('')}
       </div>`:''; })()}
@@ -666,7 +666,7 @@ $('#fMega').addEventListener('change',()=>{S.mega=$('#fMega').value||null;saveDr
 if($('#btTeam')) $('#btTeam').onchange=()=>{
   $('#fTeam').value=$('#btTeam').value;
   $('#fTeam').onchange();
-  BT.sel=null; BT.me=null; BT.matrix=null;
+  BT.sel=null; BT.me=null; BT.matrix=null; BT.seenOrder=[]; BT.done={};
   PC.clearMatchupCache(); if(window.VOICE) VOICE.reset();
   fillTeamSelects();
   safe('実戦',()=>{ btCompute(); btRender(); },'#btGrid');
@@ -1079,7 +1079,7 @@ function initBtUI(){
   // やり直しても、相手の技の観測だけは残す（次の試合でも同じ相手に当たるので価値がある）
   $('#btReset').onclick = ()=>{
     const obs = BT.obs;
-    BT={opp:[],picks:[],mega:null,matrix:null,sel:null,me:null,hp:{},obs:obs||{}};
+    BT={opp:[],picks:[],mega:null,matrix:null,sel:null,me:null,hp:{},obs:obs||{},seenOrder:[],done:{}};
     PC.clearMatchupCache(); $('#btVoice').value=''; btRender(); saveBtDraft();
   };
   loadBtDraft();
@@ -1165,10 +1165,10 @@ function btRender(){
 
   /* 選出は試合開始時に一度読むもの。試合中は「いまの対面」を見るので、折りたたんで高さを取らない。 */
   $('#btPlan').innerHTML = `<details open class="planbox">
-    <summary class="cardsum" style="border-color:var(--red);background:var(--redsoft)">
+    <summary class="cardsum" style="border-left:3px solid var(--fg)">
       <span>選出 <b>${BT.picks.map(n=>esc(dispName(rc,n))).join(' / ')}</b>${BT.mega?`<span class="muted"> ・メガ=${esc(BT.mega)}</span>`:'<span class="muted"> ・メガは切らない</span>'}</span>
     </summary>
-    <div class="card" style="border-color:var(--red);background:var(--redsoft)">
+    <div class="card" style="border-left:3px solid var(--fg)">
     ${(()=>{ const slots = megaSlotsOf(roster);
       if(slots.length<=1) return BT.mega?`<div class="small">メガは <b>${esc(BT.mega)}</b> に切る</div>`:'';
       return `<div class="small" style="margin-top:6px">メガをどれに切るか（変えると全部の判定が変わります）</div>
@@ -1225,7 +1225,7 @@ function btRender(){
     const CAUSES = ['構築の相性','選出ミス','技の相性','プレイングミス','事故（急所・命中）','わからない'];
     // やられた技の候補は、選んだ相手の実採用技をそのまま出す（打ち込ませない）
     const mvs = d.painMon ? (PC.oppMoveChoices(d.painMon)||[]).slice(0,10) : [];
-    box.innerHTML = `<div class="card" style="border-color:var(--red)">
+    box.innerHTML = `<div class="card" style="border-left:3px solid var(--fg)">
       <div class="small" style="font-weight:800;margin-bottom:6px">結果</div>
       <div class="quick">
         <button class="qb ${d.result==='win'?'on':'off'}" data-dn="result" data-dv="win">勝ち</button>
@@ -1277,7 +1277,8 @@ function btRender(){
     };
   };
   const doneBtn = $('#btDone');
-  if(doneBtn) doneBtn.onclick = ()=>{ BT.done={open:true, oppPick:[]}; btDoneRender(); };
+  // 相手の選出は、試合中にタップした順から自動で埋める（入れ直させない）
+  if(doneBtn) doneBtn.onclick = ()=>{ BT.done={open:true, oppPick:[...(BT.seenOrder||[])]}; btDoneRender(); };
   btDoneRender();
 
   /* 試合が終わったら、実戦タブで集めたもの（相手6体・選出・メガ枠・観測した技）を
@@ -1385,7 +1386,15 @@ function btNowRender(){
   }
 
   // 試合中はスクロールが命取りになるので、タイプは小さい丸だけにして1行に複数入れる
-  const oppChips = BT.opp.map(n=>`<button class="qb mini ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}">${typeDots(n)}${esc(n)}</button>`).join('');
+  /* ★相手が実際に出してきた順を、操作を増やさずに残す（社長の要望 2026-08-20）。
+     試合中に相手をタップする＝その相手が場に出た瞬間なので、タップ順がそのまま出現順になる。
+     3体そろえば相手の選出が確定し、「試合が終わった」にもそのまま入る。 */
+  BT.seenOrder = BT.seenOrder || [];
+  const ordOf = n => { const i=BT.seenOrder.indexOf(n); return i<0?'':'①②③'[i]||''; };
+  const oppChips = BT.opp.map(n=>{
+    const o=ordOf(n);
+    return `<button class="qb mini ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}">${o?`<b>${o}</b>`:''}${typeDots(n)}${esc(n)}</button>`;
+  }).join('');
   const myChips  = mine.map(m=>`<button class="qb mini ${m.label===BT.me?'on':'off'}" data-btme="${esc(m.label)}">${typeDots(m.name)}${esc(m.disp||m.label)}${m.demoted?'<span class="muted"> メガ無</span>':''}${inPick(m)?'':'<span class="muted"> 控</span>'}</button>`).join('');
 
   // 逆算の結果（自分が食らったダメージ）
@@ -1402,10 +1411,10 @@ function btNowRender(){
     </div>`;
 
   host.innerHTML = `
-  <div class="card" style="border-color:${c?`var(--${c.cls==='ok'?'grn':c.cls==='ng'?'red':'org'})`:'var(--line)'}">
+  <div class="card" style="${c?`border-left:4px solid var(--${c.cls==='ok'?'win':c.cls==='ng'?'red':'warn'})`:''}">
     <h2>いまの対面<span class="sub">相手/自分をタップで切替</span></h2>
     <div class="hpwrap">
-      <button class="btn ${window.VOICE&&VOICE.isOn()?'':'ghost'} sm" id="btSpeakBtn">${window.VOICE&&VOICE.isOn()?'🔊 音声ON':'🔇 音声OFF'}</button>
+      <button class="btn ${window.VOICE&&VOICE.isOn()?'':'ghost'} sm" id="btSpeakBtn">${window.VOICE&&VOICE.isOn()?'音声 ON':'音声 OFF'}</button>
       <span class="small muted">マナーモードのままで鳴ります</span>
     </div>
 
@@ -1440,7 +1449,7 @@ function btNowRender(){
       ${c.to?`<div class="small" style="margin-top:6px">引くなら → <b>${esc((mine.find(x=>x.name===c.to.name)||{}).disp || c.to.name)}</b>（${c.to.c.mark} ${esc(c.to.c.why)}）</div>`:''}
       ${swIn?`<div class="small" style="margin-top:6px">${esc(swIn.name)}に交代されたら → <b>${swIn.c.mark} ${esc(swIn.c.head)}</b>${swIn.c.to?`（${esc(swIn.c.to.name)}へ）`:''}</div>`:''}
     </div>
-    ${(c.todo&&c.todo.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-color:var(--blue);background:var(--bluesoft)">
+    ${(c.todo&&c.todo.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--blue)">
       <div class="small" style="font-weight:800;margin-bottom:4px">引く前にやること</div>
       ${c.todo.map(d=>`<div class="small" style="margin:3px 0">・${d.t}</div>`).join('')}
     </div>`:''}
@@ -1474,6 +1483,8 @@ function btNowRender(){
        画面には「殴る」と出ているのに、出ているのは場にいない別の駒、という事故が起きて
        実際に負けている。自動選択は最初の1回だけ（BT.me が未設定のとき）に限る。 */
     BT.sel=b.dataset.btopp;
+    // 出てきた順に記録する。3体で打ち切り（相手の選出は3体）
+    if(!BT.seenOrder.includes(BT.sel) && BT.seenOrder.length<3) BT.seenOrder.push(BT.sel);
     const pb=$('.planbox'); if(pb) pb.open=false;          // 試合が始まったら選出カードは畳む
     const iw=$('#btInputWrap'); if(iw) iw.open=false;
     btNowRender();
@@ -1864,7 +1875,7 @@ function renderVs(){
     <div class="small muted">与える割合 / 受ける割合　・　素早さ ${mu.myS} vs ${mu.opSNoScarf||mu.opS}${mu.opSScarf?`<span class="muted">（スカーフなら${mu.opSScarf}）</span>`:''}　${mu.faster?'<b>先制できる</b>':(mu.fasterAny?'型次第で先制':'<b>後手</b>')}</div>
   </div>
 
-  ${warn.length?`<div class="card" style="border-color:var(--red);background:var(--redsoft)">
+  ${warn.length?`<div class="card" style="border-left:3px solid var(--red)">
     <h2 style="margin-bottom:8px">気をつけること</h2>
     ${warn.map(w=>`<div class="small" style="padding:3px 0">・${w}</div>`).join('')}
   </div>`:''}
@@ -2086,8 +2097,8 @@ function renderAdvice(){
 
   const tags=[...new Set((window.PRINCIPLES||[]).flatMap(p=>p.tags||[]))];
   $('#adviceTags').innerHTML = tags.map(t=>
-    `<button class="qb ${ADVICE_TAG===t?'':''}" data-tag="${esc(t)}" style="${ADVICE_TAG===t?'border-color:var(--red);background:var(--redsoft)':''}">${esc(t)}</button>`).join('')
-    + `<button class="qb" data-tag="" style="${!ADVICE_TAG?'border-color:var(--red);background:var(--redsoft)':''}">すべて</button>`;
+    `<button class="qb ${ADVICE_TAG===t?'':''}" data-tag="${esc(t)}" style="${ADVICE_TAG===t?'border-color:var(--fg);background:var(--soft)':''}">${esc(t)}</button>`).join('')
+    + `<button class="qb" data-tag="" style="${!ADVICE_TAG?'border-color:var(--fg);background:var(--soft)':''}">すべて</button>`;
   $$('#adviceTags .qb').forEach(b=> b.onclick=()=>{ ADVICE_TAG=b.dataset.tag||null; renderAdvice(); });
 
   const list=(window.PRINCIPLES||[]).filter(p=>!ADVICE_TAG||(p.tags||[]).includes(ADVICE_TAG));
@@ -2097,7 +2108,7 @@ function adviceCard(p, highlight){
   const body = esc(p.body)
     .replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')
     .replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>');
-  return `<div class="card" style="${highlight?'border-color:var(--red);background:var(--redsoft)':''}">
+  return `<div class="card" style="${highlight?'border-left:3px solid var(--fg)':''}">
     <h2 style="margin-bottom:4px">${highlight?'<span class="num">!</span>':''}${esc(p.title)}</h2>
     <div class="small muted" style="margin-bottom:10px">${(p.tags||[]).map(t=>`#${esc(t)}`).join(' ')} ・ 出典: ${esc(p.src)}</div>
     <div style="font-size:14px"><p>${body}</p></div>
