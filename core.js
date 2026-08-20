@@ -1289,6 +1289,12 @@ function callIt(mine, oppName, opts){
   const dmgTxt = r => myMax
     ? `${Math.round(r.rate*myMax*0.94)}〜${Math.round(r.rateHi*myMax)}<span class="muted">(${pc(r.rate)}〜${pc(r.rateHi)}%)</span>`
     : `${pc(r.rate)}〜${pc(r.rateHi)}%`;
+  /* ★使用率データに無い相手は「（ドラゴン技）」のような推定しか出ない。
+     それを黙って出すと、社長が「技が何も登録されていない」と驚く（2026-08-20 ヌメルゴンで発生）。
+     判定の確からしさが落ちていることを、必ず本人に伝える。 */
+  if(mu.opEstimated) detail.push({k:'warn',
+    t:`<b>この相手は使用率データにありません</b>（環境上位の集計に入っていない＝あまり使われていない相手）。
+       技はタイプ一致で推定しているだけなので、<b>判定は目安</b>です。実際に撃たれた技をタップして記録すると精度が上がります`});
   const others = rows.filter(r=> !r.ohko && r.rate>=0.25).slice(0,4);
   if(others.length) detail.push({k:'info',
     t:`飛んでくる技：${others.map(r=>`${r.move}(${r.rateOf}%) ${dmgTxt(r)}`).join('、')}`});

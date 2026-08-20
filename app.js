@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '44';
+const APP_VERSION = '45';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1203,9 +1203,13 @@ function btRender(){
       return t.length?`<details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">相手の変化技・妨害技（${t.length}件）</summary>
         <div class="small" style="margin-top:6px">${t.map(x=>'・'+x).join('<br>')}</div></details>`:'';})()}
   </div></details>
-  <button class="btn primary btn-full" id="btDone" style="margin-bottom:8px">試合が終わった</button>
-  <div id="btDoneBox" style="margin-bottom:14px"></div>
-  <button class="btn ghost btn-full" id="btToRec" style="margin-bottom:14px">くわしく書く（記録タブへ送る）</button>`;
+`;
+  // 終了まわりは「いまの対面」の下に置く（btNowRender のあとに描く）
+  const endHost = $('#btEnd');
+  if(endHost) endHost.innerHTML = `
+    <button class="btn primary btn-full" id="btDone" style="margin-bottom:8px">試合が終わった</button>
+    <div id="btDoneBox" style="margin-bottom:14px"></div>
+    <button class="btn ghost btn-full" id="btToRec" style="margin-bottom:14px">くわしく書く（記録タブへ送る）</button>`;
 
   /* ---------- 試合が終わったら、その場で数タップだけ残す ----------
      社長の要望（2026-08-20）：
@@ -1300,9 +1304,17 @@ function btRender(){
       const res = await dbWrite('battles','insert',rec);
       $('#btDoneSave').disabled=false;
       if(!res.ok) return toast('保存に失敗: '+res.error.message, true);
-      BT.done={}; await loadBattles(); renderAll();
+      /* ★保存したら次の試合をすぐ始められる状態に戻す（社長の指摘 2026-08-20）。
+         相手の技の観測（BT.obs）だけは残す。同じ相手に何度も当たるので次の試合でも効くため。 */
+      const obs = BT.obs;
+      BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null,
+             hp:{}, oppHp:{}, obs:obs||{}, guardGone:{}, board:{}, seenOrder:[], done:{} };
+      PC.clearMatchupCache(); if(window.VOICE) VOICE.reset();
+      saveBtDraft();                      // 空になった状態を保存し直す（キーは 'pokechan_bt'）
+      await loadBattles(); renderAll();
+      window.scrollTo(0,0);
       res.dropped.length ? warnDropped(res.dropped)
-        : toast(`保存しました（通算 ${BATTLES.length} 戦）`);
+        : toast(`保存しました（通算 ${BATTLES.length} 戦）。次の試合をどうぞ`);
     };
   };
   const doneBtn = $('#btDone');
