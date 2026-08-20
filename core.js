@@ -264,6 +264,23 @@ function oppOffenseItem(name, cat, minRate){
   return best;
 }
 /** こだわりスカーフの採用率(%)。行動順がひっくり返るので型の想定に足す */
+/** 相手が「1発耐える」手段を持っている割合。
+ *  社長の実戦（2026-08-20）：
+ *   ・トリデプス（がんじょう80.5%）にカイリューのじしんが1残り → そのターンで返り討ち
+ *   ・マンムー（きあいのタスキ83.9%）にルカリオのインファイトが1残り → じしんを食らう
+ *  こちら側のタスキ／がんじょうは `myOneHitGuard` で見ていたのに、
+ *  **相手側は一切見ていなかった**。「1発で落とせる」は嘘になり、そこで試合が壊れる。 */
+function oppOneHitGuard(name){
+  if(name.startsWith('メガ')) return null;      // メガはメガストーン固定なのでタスキを持てない
+  const u = oppUsage(name); if(!u) return null;
+  const sash = (u.i||[]).find(x=> x[0]==='きあいのタスキ');
+  const ab   = (u.a||[]).find(x=> x[0]==='がんじょう');
+  const cand = [];
+  if(sash && sash[1] >= 20) cand.push({name:'きあいのタスキ', rate:sash[1]});
+  if(ab   && ab[1]   >= 20) cand.push({name:'がんじょう',   rate:ab[1]});
+  if(!cand.length) return null;
+  return cand.sort((a,b)=> b.rate-a.rate)[0];
+}
 function oppScarfRate(name){
   if(name.startsWith('メガ')) return 0;
   const u = oppUsage(name); if(!u) return 0;
@@ -1379,7 +1396,11 @@ function callIt(mine, oppName, opts){
 
   // 相手の残りHP(%)が分かっていれば、あと何発で落とせるかを補正する
   const oppLeft = (opts.oppHPPct!=null) ? Math.max(0.01, Math.min(1, opts.oppHPPct)) : 1;
-  const myHits = mu.myDmg>0 ? Math.max(1, Math.ceil(oppLeft / mu.myDmg)) : 99;
+  let myHits = mu.myDmg>0 ? Math.max(1, Math.ceil(oppLeft / mu.myDmg)) : 99;
+  /* ★相手のきあいのタスキ／がんじょうは、HP満タンからの1発を必ず耐える。
+     満タン(oppLeft>=1)のときだけ効くので、削れている相手には適用しない。 */
+  const opGuard = (oppLeft >= 1) ? oppOneHitGuard(oppName) : null;
+  if(opGuard && myHits <= 1) myHits = 2;
   // こちらの残りHPが分かっていれば、その割合で相手の必要打数を計算する
   const myLeft = (rd && rd.maxHP) ? rd.hpNow/rd.maxHP : 1;
   const guardN = mu.guard ? 1 : 0;
@@ -1448,6 +1469,8 @@ function callIt(mine, oppName, opts){
     t:`ここで<b>設置技</b>を置くと、相手6体すべてに効き続ける`});
   if(!mu.faster && mu.fasterAny && oppScarfRate(oppName)>=15)
     detail.push({k:'bad', t:`こだわりスカーフ採用${oppScarfRate(oppName)}%。持たれていると抜かれる`});
+  if(opGuard) detail.push({k:'bad',
+    t:`相手は<b>${opGuard.name}</b>（採用${opGuard.rate}%）で<b>満タンからの1発を耐えます</b>。1発で落とせる計算でも1残ることを前提に動くこと`});
   if(mu.myMove) detail.push({k:'info',
     t:`こちらの最大打点：<b>${mu.myMove}</b> ${pc(mu.myDmgLo)}〜${pc(mu.myDmgHi)}%（${myHits}発で落とせる）`});
   /* こちら側に置かれた設置技。「引く」と言っても、これがあると引き先が削れて次で落ちる。 */
@@ -1643,7 +1666,19 @@ function callIt(mine, oppName, opts){
     if(myHits<=1){
       todo.push({k:'bad', t:`<b>${up}は積まない。</b>${mu.myMove||'最大打点'}で1発なので、積む1ターンは相手に無償で渡すだけです`});
     }else if(mu.opHits>=3 && survives){
-      todo.push({k:'good', t:`<b>${up}</b> を積める（こちら${myHits}発／相手は落とすのに${mu.opHits}発かかる）`});
+      /* ★積みターンは相手に無償の1回を渡す。相手が状態異常を撒いてくるなら、その1回が敗着になる。
+         社長はカイリュー vs オオニューラでこれをやり、フェイタルクロー(93.5%)の追加効果で眠らされて負けた。
+         → 状態異常・妨害を高採用率で持つ相手には、積みを勧めない。 */
+      const risky = (oppTricks(oppName)||[]).map(x=>x[0]);
+      const statusMv = (oppMoveChoices(oppName)||[])
+        .filter(m=> m.rate>=20 && ['あくび','キノコのほうし','でんじは','おにび','どくどく','アンコール','ちょうはつ'].includes(m.name))
+        .map(m=>m.name);
+      const danger = [...new Set([...risky, ...statusMv])];
+      if(danger.length){
+        todo.push({k:'warn', t:`<b>${up}は勧めません。</b>相手の<b>${danger.slice(0,2).join('・')}</b>で、積んだ1ターンがそのまま敗着になります`});
+      }else{
+        todo.push({k:'good', t:`<b>${up}</b> を積める（こちら${myHits}発／相手は落とすのに${mu.opHits}発かかる）`});
+      }
     }
   }
 
@@ -2054,7 +2089,7 @@ function observedMoves(battles){
 
 global.PC = {
   TYPES, TYPE_COLOR, TYPE_ICON, CHART, NATURES, SPECIES, MOVES,
-  whoElseHas, movePlan, movePriority,
+  whoElseHas, movePlan, movePriority, oppOneHitGuard,
   loadData, effectiveness, statHP, statOther, natureMods, realStats, assumedStat,
   assumedSpreads, spreadStats, attackerLikeness, matchupVs, SP_TOTAL, SP_MAX,
   OPP_ABILITY, worstDefAbility, survivesOneHit, OPP_TRICKS, oppTricks,

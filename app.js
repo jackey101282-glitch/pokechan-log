@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '53';
+const APP_VERSION = '54';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1045,16 +1045,20 @@ function initBtUI(){
     if(!BT.tsel.length){ out.innerHTML=''; return; }
     // 選んだタイプを「全部持っている」種を出す。使用率順→なければ図鑑順
     const rank = n =>{ const u = PC.oppUsage(n); return u ? u.r : 999; };
-    const hit = Object.keys(PC.SPECIES)
+    /* ★上限14体で切っていたため、使用率の低い相手が候補に出てこなかった（社長の指摘 2026-08-20）。
+       デスバーン（使用率圏外）をタイプで探しても出ず、別のポケモンを登録して試合が壊れた。
+       → 全件出す。2タイプ選べば数体まで落ちるので、探す手間はむしろ減る。 */
+    const all = Object.keys(PC.SPECIES)
       .filter(n=> !BT.opp.includes(n) && BT.tsel.every(t=> PC.SPECIES[n].types.includes(t)))
-      .sort((a,b)=> rank(a)-rank(b) || a.length-b.length).slice(0,14);
+      .sort((a,b)=> rank(a)-rank(b) || a.length-b.length);
+    const hit = all;
     /* ★6体そろっていると押しても何も起きないのに、押せる見た目のままだった（社長の指摘 2026-08-20）。
        試合中はトーストを見落とすので、「押せない」と「なぜ押せないか」を候補欄に出す。 */
     const full = BT.opp.length>=6;
     out.innerHTML = hit.length
       ? `<div class="small ${full?'':'muted'}" style="width:100%${full?';color:var(--org);font-weight:700':''}">`
         + (full ? `もう6体入っています。入れ替えるには <b>上の「いま入っている6体」の × </b>で1体外してください`
-                : `${BT.tsel.join('・')} を持つ ${hit.length}体（使用率順）`) + '</div>'
+                : `${BT.tsel.join('・')} を持つ <b>${hit.length}体</b>（使用率順・全部出しています）${BT.tsel.length<2?'　<span class="muted">2つ目のタイプを押すと一気に絞れます</span>':''}`) + '</div>'
         + hit.map(n=>`<button class="qb mini ${full?'dim':''}" data-bto="${esc(n)}">${typeDots(n)}${esc(n)}${rank(n)<999?`<span class="muted"> ${rank(n)}位</span>`:''}</button>`).join('')
       : '<span class="small muted">この組み合わせのポケモンはいません</span>';
     $$('#btTypeOut [data-bto]').forEach(b=> b.onclick=()=>{
