@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '43';
+const APP_VERSION = '44';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1222,7 +1222,17 @@ function btRender(){
       const on = multi ? (d[key]||[]).includes(n) : d[key]===n;
       return `<button class="qb mini ${on?'on':'off'}" data-dn="${key}" data-dv="${esc(n)}">${typeDots(n)}${esc(n)}</button>`;
     }).join('');
-    const CAUSES = ['構築の相性','選出ミス','技の相性','プレイングミス','事故（急所・命中）','わからない'];
+    /* 敗因ごとに聞き方を変える。「一言メモ」と書かれても何を書けばいいか分からないため
+       （社長の要望 2026-08-20：プレイングミスなら"何がミスだったか"を聞いてほしい）。 */
+    const CAUSES = ['構築の相性','選出ミス','技の相性','プレイングミス','相手の立ち回り','事故（急所・命中）'];
+    const ASK = {
+      '構築の相性':'どの並びに詰んだ？（例：受け2枚で崩せなかった）',
+      '選出ミス':'どう選べばよかった？（例：ギャラドスを出すべきだった）',
+      '技の相性':'どの技が無かった／通らなかった？（例：鋼に打点が無い）',
+      'プレイングミス':'何がミスだった？（例：交代読みを外して裏に負担）',
+      '相手の立ち回り':'どんな立ち回り・コンボがきつかった？（例：あくび＋設置で回された）',
+      '事故（急所・命中）':'何が外れた／急所に当たった？'
+    };
     // やられた技の候補は、選んだ相手の実採用技をそのまま出す（打ち込ませない）
     const mvs = d.painMon ? (PC.oppMoveChoices(d.painMon)||[]).slice(0,10) : [];
     box.innerHTML = `<div class="card" style="border-left:3px solid var(--fg)">
@@ -1231,17 +1241,30 @@ function btRender(){
         <button class="qb ${d.result==='win'?'on':'off'}" data-dn="result" data-dv="win">勝ち</button>
         <button class="qb ${d.result==='lose'?'on':'off'}" data-dn="result" data-dv="lose">負け</button>
       </div>
-      <div class="small muted" style="margin-top:10px">相手が出してきた3体<span class="muted">（見えた分だけでOK）</span></div>
-      <div class="quick">${chips(BT.opp,'oppPick',true)}</div>
+      <div class="small" style="font-weight:800;margin-top:12px">相手の選出<span class="muted"> 出てきた順にタップ（①が初手）</span></div>
+      <div class="quick">${BT.opp.map(n=>{
+        const i=(d.oppPick||[]).indexOf(n);
+        return `<button class="qb mini ${i>=0?'on':'off'}" data-dn="oppPick" data-dv="${esc(n)}">${
+          i>=0?`<b>${'①②③'[i]||''}${i===0?' 初手':''}</b> `:''}${typeDots(n)}${esc(n)}</button>`;
+      }).join('')}</div>
+      <div class="small muted">${(d.oppPick||[]).length? `相手の選出：${d.oppPick.join(' → ')}${(d.oppPick||[]).length<3?'（見えた分だけでOK）':''}`
+        : '試合中にタップしていれば自動で入ります'}</div>
       ${d.result==='lose' ? `
         <div class="small" style="font-weight:800;margin-top:12px">なぜ負けたか</div>
         <div class="quick">${CAUSES.map(c=>
           `<button class="qb mini ${d.cause===c?'on':'off'}" data-dn="cause" data-dv="${esc(c)}">${esc(c)}</button>`).join('')}</div>
+        ${d.cause?`<div class="small muted" style="margin-top:8px">${esc(ASK[d.cause]||'一言メモ')}</div>
+          <textarea id="btDoneMemo" rows="2" placeholder="一言でOK。空でも保存できます">${esc(d.memo||'')}</textarea>`:''}
         <div class="small muted" style="margin-top:10px">いちばんきつかった相手</div>
         <div class="quick">${chips(BT.opp,'painMon',false)}</div>
         ${mvs.length?`<div class="small muted" style="margin-top:10px">やられた技</div>
           <div class="quick">${mvs.map(m=>
             `<button class="qb mini ${d.painMove===m.name?'on':'off'}" data-dn="painMove" data-dv="${esc(m.name)}">${esc(m.name)}<span class="muted"> ${m.rate}%</span></button>`).join('')}</div>`:''}
+        <div class="small muted" style="margin-top:10px">出しておけばよかった駒<span class="muted">（結果論でOK。溜まると選出の型になります）</span></div>
+        <div class="quick">${(currentRoster()||[]).map(m=>
+          `<button class="qb mini ${d.should===m.name?'on':'off'}" data-dn="should" data-dv="${esc(m.name)}">${typeDots(m.name)}${esc(m.name)}</button>`).join('')}</div>
+        <div class="small muted" style="margin-top:10px">あると良かった技<span class="muted">（駒は合っていたが技が足りなかったとき）</span></div>
+        <input type="text" id="btDoneWant" list="mvlist" placeholder="例：れいとうパンチ" value="${esc(d.want||'')}">
       ` : ''}
       <div class="hpwrap" style="margin-top:12px">
         <button class="btn primary" id="btDoneSave">この内容で保存</button>
@@ -1249,7 +1272,11 @@ function btRender(){
       </div>
       <div class="small muted" style="margin-top:6px">${d.result==='lose'?'空のままでも保存できます。分かるところだけで十分です':'勝ち試合は結果だけで十分です'}</div>
     </div>`;
+    const keepText = ()=>{ const m=$('#btDoneMemo'), w=$('#btDoneWant');
+      if(m) d.memo=m.value; if(w) d.want=w.value; };
+    ['#btDoneMemo','#btDoneWant'].forEach(sel=>{ const el=$(sel); if(el) el.oninput=keepText; });
     $$('#btDoneBox [data-dn]').forEach(b=> b.onclick=()=>{
+      keepText();
       const k=b.dataset.dn, v=b.dataset.dv;
       if(k==='oppPick'){ const a=d.oppPick||[]; const i=a.indexOf(v);
         if(i>=0) a.splice(i,1); else if(a.length<3) a.push(v); d.oppPick=a; }
@@ -1259,14 +1286,16 @@ function btRender(){
     });
     $('#btDoneCancel').onclick = ()=>{ BT.done={}; btDoneRender(); };
     $('#btDoneSave').onclick = async ()=>{
+      keepText();
       if(!d.result) return toast('勝ち／負けを選んでください',true);
       const rec={ user_id:USER.id, team_id:$('#fTeam').value||null, played_at:todayStr(),
         season:$('#fSeason').value||null, rule:$('#fRule').value||'single', rank:$('#fRank').value||null,
         opp_team:BT.opp, my_pick:BT.picks, opp_pick:d.oppPick||[], mega:BT.mega||null,
         turns:[], result:d.result,
         lose_cause:d.cause||null, pain_mon:d.painMon||null, pain_move:d.painMove||null,
-        reason:d.result==='lose' ? [d.cause,d.painMon&&`${d.painMon}がきつい`,d.painMove&&`${d.painMove}でやられた`]
-          .filter(Boolean).join(' / ') : null };
+        memo:(d.memo||'').trim()||null, should_pick:d.should||null, want_move:(d.want||'').trim()||null,
+        reason:d.result==='lose' ? [d.cause,d.painMon&&`${d.painMon}がきつい`,d.painMove&&`${d.painMove}でやられた`,
+          d.should&&`${d.should}を出すべきだった`,(d.memo||'').trim()].filter(Boolean).join(' / ') : null };
       $('#btDoneSave').disabled=true;
       const res = await dbWrite('battles','insert',rec);
       $('#btDoneSave').disabled=false;
@@ -2152,6 +2181,20 @@ function renderStats(){
         [{t:'敗因'},{t:'件数',num:1},{t:'割合',num:1}])
     : `<div class="small muted">まだありません。負けた試合のあと、対戦タブの「試合が終わった」で ${L.length?'敗因を選ぶと':'記録すると'}ここに溜まります</div>`;
 
+  /* 出しておけばよかった駒。結果論の積み重ねが、そのまま選出の型になる（社長の要望 2026-08-20） */
+  const sp={}; L.forEach(b=>{ if(b.should_pick) sp[b.should_pick]=(sp[b.should_pick]||0)+1; });
+  const spArr=Object.entries(sp).sort((a,b)=>b[1]-a[1]);
+  const memos = L.filter(b=>b.memo).slice(0,8);
+  if(spArr.length || memos.length){
+    $('#loseCause').innerHTML += `
+      ${spArr.length?`<div class="small" style="font-weight:800;margin-top:14px">出しておけばよかった駒</div>
+        <div class="small">${spArr.map(([n,c])=>`${esc(n)} <b>${c}回</b>`).join('　')}</div>
+        <div class="small muted">同じ駒が繰り返し出てくるなら、その駒は選出の基本に入れるべきです</div>`:''}
+      ${memos.length?`<div class="small" style="font-weight:800;margin-top:14px">負けたときのメモ</div>
+        ${memos.map(b=>`<div class="small" style="margin:4px 0;padding-left:10px;border-left:2px solid var(--line)">
+          <span class="muted">${esc(b.lose_cause||'')}${b.pain_mon?`・${esc(b.pain_mon)}`:''}</span><br>${esc(b.memo)}</div>`).join('')}`:''}`;
+  }
+
   /* やられた技 → 同じ技を持つ他のポケモンへ広げる。ここが「1回の負けを環境対策に変える」部分 */
   const pm = {};
   L.forEach(b=>{ if(b.pain_move) { pm[b.pain_move]=pm[b.pain_move]||{n:0, by:{}};
@@ -2172,6 +2215,12 @@ function renderStats(){
         </div>`;
       }).join('')
     : '<div class="small muted">まだありません。負けたときに「やられた技」を1タップ選ぶだけで溜まります</div>';
+
+  const wm={}; L.forEach(b=>{ if(b.want_move) wm[b.want_move]=(wm[b.want_move]||0)+1; });
+  const wmArr=Object.entries(wm).sort((a,b)=>b[1]-a[1]);
+  if(wmArr.length) $('#painMoves').innerHTML += `<div class="small" style="font-weight:800;margin-top:14px">あると良かった技</div>
+    <div class="small">${wmArr.map(([m,c])=>`${esc(m)} <b>${c}回</b>`).join('　')}</div>
+    <div class="small muted">2回以上出てきた技は、技構成を変える理由になります</div>`;
 
   const opp={};
   B.forEach(b=> new Set(b.opp_team||[]).forEach(p=>{opp[p]=opp[p]||{n:0,w:0};opp[p].n++;if(b.result==='win')opp[p].w++;}));

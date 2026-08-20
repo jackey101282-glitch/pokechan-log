@@ -62,6 +62,9 @@ alter table public.battles add column if not exists lose_cause text;
 alter table public.battles add column if not exists pain_mon   text;
 alter table public.battles add column if not exists pain_move  text;
 alter table public.battles add column if not exists pain_my    text;
+alter table public.battles add column if not exists memo        text;
+alter table public.battles add column if not exists should_pick text;
+alter table public.battles add column if not exists want_move   text;
 
 create index if not exists battles_user_played_idx on public.battles (user_id, played_at desc, created_at desc);
 create index if not exists battles_team_idx        on public.battles (team_id);

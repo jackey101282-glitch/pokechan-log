@@ -13,3 +13,11 @@ alter table public.battles add column if not exists lose_cause text;  -- 構築�
 alter table public.battles add column if not exists pain_mon   text;  -- いちばんきつかった相手
 alter table public.battles add column if not exists pain_move  text;  -- やられた技
 alter table public.battles add column if not exists pain_my    text;  -- やられたこちらの駒
+
+-- ---------- 2026-08-20 追加(2)：敗因を「言葉」で残す ----------
+-- 社長の要望：「プレイングミスを選んだとき、何がミスだったのかを一言入れたい。
+--   相手の立ち回りを選んだら、どういうコンボがきつかったのかを入れたい。
+--   結果論でも『こういうポケモンを選んでおけば勝てた』『この技があれば良かった』を溜めたい」
+alter table public.battles add column if not exists memo        text;  -- 一言メモ（敗因の中身）
+alter table public.battles add column if not exists should_pick text;  -- 出しておけばよかった駒
+alter table public.battles add column if not exists want_move   text;  -- あると良かった技
