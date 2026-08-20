@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '61';
+const APP_VERSION = '62';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -941,6 +941,10 @@ function newBT(keepObs){
            seenOrder:[], done:{}, tsel:[], leadGuess:null, oppPredict:null,
            /* ★名前検索の先頭候補（Enterで足す用）。ここに書かないと
               リセット後に undefined になって Enter が黙って効かなくなる（v48と同じ事故） */
+           /* ★試合中のダメージ記録（v62・社長の要望）。
+              dealt[相手名] = [{move,pct}] … こちらが与えた実測ダメージ
+              pending      = 次にHPを更新したときに紐づける技名 */
+           dealt:{}, pending:null,
            _searchTop:null,
            /* 前回の盤面を古いとして捨てたか（開いたときに1度だけ知らせる） */
            _staleDropped:false };
@@ -1570,8 +1574,10 @@ function btNowRender(){
     <div class="hpwrap">
       <span class="small muted">相手の残りHP</span>
       <div class="seg" id="btOppHp">
-        ${[100,75,50,25,10].map(v=>`<button class="${oppPct===v?'on':''}" data-btop="${v}">${v}%</button>`).join('')}
+        ${[100,90,75,60,50,40,25,10].map(v=>`<button class="${oppPct===v?'on':''}" data-btop="${v}">${v}</button>`).join('')}
       </div>
+      <button class="btn ghost sm" data-btopd="-5">−5</button>
+      <button class="btn ghost sm" data-btopd="5">＋5</button>
     </div>
 
     <div class="small muted" style="margin-top:12px">自分</div>
@@ -1594,6 +1600,34 @@ function btNowRender(){
       ${swIn?`<div class="small" style="margin-top:6px">${esc(swIn.name)}に交代されたら → <b>${swIn.c.mark} ${esc(swIn.c.head)}</b>${swIn.c.to?`（${esc(swIn.c.to.name)}へ）`:''}</div>`:''}
     </div>
     ${(c.moves&&c.moves.rows&&c.moves.rows.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--fg)">
+      ${(()=>{ /* ★この相手に、これまで何を撃って何%削ったか（v62）。
+           社長の要望「相手が交代して、また出てきたときに、すでにこの相手にはこれを何回撃っているかが分かるように」。
+           実測が入っていれば、計算より実測を優先して「あと何発」を出す。 */
+        const log = (BT.dealt && BT.dealt[BT.sel]) || [];
+        if(!log.length) return '';
+        const byMove = {};
+        log.forEach(x=>{ const k=x.move||'（技を選ばずに更新）';
+          byMove[k]=byMove[k]||{n:0,sum:0}; byMove[k].n++; byMove[k].sum+=x.pct; });
+        const rows = Object.entries(byMove).map(([m,v])=>
+          `${esc(m)} ${v.n}回で <b>${v.sum}%</b>${v.n>1?`<span class="muted">（1発あたり約${Math.round(v.sum/v.n)}%）</span>`:''}`);
+        /* 実測の1発あたりから「あと何発」を出す。計算値とズレていたらそれも出す。 */
+        const best = Object.entries(byMove).filter(([m,v])=>m!=='（技を選ばずに更新）'&&v.sum>0)
+          .map(([m,v])=>({m, per:v.sum/v.n})).sort((a,b)=>b.per-a.per)[0];
+        let left = '';
+        if(best){
+          const need = Math.ceil(oppPct / best.per);
+          const calc = (c.moves.rows||[]).find(r=>r.name===best.m);
+          const calcNeed = calc && calc.hi>0 ? Math.ceil((oppPct/100)/calc.hi) : null;
+          left = `<div class="small" style="margin-top:4px">実測だと <b>${esc(best.m)}</b> であと <b>${need}発</b>`
+               + `<span class="muted">（残り${oppPct}%・1発 約${Math.round(best.per)}%）</span>`
+               + (calcNeed!=null && calcNeed!==need
+                   ? `<span style="color:var(--org)"> ／ 計算では${calcNeed}発。<b>実測を優先してください</b></span>` : '')
+               + `</div>`;
+        }
+        return `<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--blue)">
+          <div class="small" style="font-weight:800;margin-bottom:4px">この相手に与えたダメージ</div>
+          <div class="small">${rows.join('<br>')}</div>${left}</div>`;
+      })()}
       <div class="small" style="font-weight:800">撃つ技${c.moves.best?` … <b>${esc(c.moves.best.name)}</b>`:''}</div>
       ${c.moves.why?`<div class="small muted" style="margin-bottom:6px">${c.moves.why}</div>`:''}
       ${c.moves.rows.map(r=>{
@@ -1606,7 +1640,11 @@ function btNowRender(){
           + `<span class="muted"> ${r.hits}発${r.acc<100?`・命中${r.acc}%`:''}${r.eff>1?'・こうかばつぐん':r.eff<1?'・いまひとつ':''}</span>`
           + (r.through&&r.through.length?`<span class="muted"> ／交代先 ${r.through.length}体に通る</span>`
                                         :`<span class="muted" style="color:var(--org)"> ／交代先に通らない</span>`);
-        return `<div class="small" style="margin:3px 0;${on?'font-weight:700':''}">${on?'▶ ':'・'}${pri}${esc(r.name)} … ${body}</div>`;
+        /* ★「撃った」を1タップで残せるようにする（v62・社長の要望）。
+           押しても画面は変わらない。次に相手の残りHPを押した瞬間に、その技のダメージとして記録される。 */
+        const shot = (!r.status && !r.immune)
+          ? ` <button class="qb mini" data-btshot="${esc(r.name)}" style="padding:1px 7px;font-size:11px">撃った</button>` : '';
+        return `<div class="small" style="margin:3px 0;${on?'font-weight:700':''}">${on?'▶ ':'・'}${pri}${esc(r.name)} … ${body}${shot}</div>`;
       }).join('')}
     </div>`:''}
     ${(c.todo&&c.todo.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--blue)">
@@ -1650,7 +1688,29 @@ function btNowRender(){
     btNowRender();
   });
   $$('#btNow [data-btme]').forEach(b=> b.onclick=()=>{ BT.me=b.dataset.btme; BT.meManual=true; btNowRender(); });
-  $$('#btNow [data-btop]').forEach(b=> b.onclick=()=>{ BT.oppHp[BT.sel]=+b.dataset.btop; btNowRender(); saveBtDraft(); });
+  /* ★相手の残りHPを更新したら、その差分を「直前に撃った技」に紐づけて残す（v62）。
+     社長の要望「何を撃ったことでどのくらい減ったかを残したい」。
+     技を指定していなければ、割合の変化だけ記録する（技名なし）。 */
+  const setOppHp = v=>{
+    const before = BT.oppHp[BT.sel]!=null ? BT.oppHp[BT.sel] : 100;
+    const after  = Math.max(0, Math.min(100, v));
+    if(after < before){
+      BT.dealt[BT.sel] = BT.dealt[BT.sel] || [];
+      BT.dealt[BT.sel].push({move: BT.pending || null, pct: before-after});
+    }
+    BT.pending = null;
+    BT.oppHp[BT.sel] = after;
+    btNowRender(); saveBtDraft();
+  };
+  $$('#btNow [data-btop]').forEach(b=> b.onclick=()=> setOppHp(+b.dataset.btop));
+  $$('#btNow [data-btopd]').forEach(b=> b.onclick=()=>
+    setOppHp((BT.oppHp[BT.sel]!=null?BT.oppHp[BT.sel]:100) + (+b.dataset.btopd)));
+  /* 「この技を撃った」。押しても画面は変えない（試合中の視線を動かさない）。
+     次にHPを更新した瞬間に、その技のダメージとして残る。 */
+  $$('#btNow [data-btshot]').forEach(b=> b.onclick=()=>{
+    BT.pending = b.dataset.btshot;
+    toast(`${BT.pending} を撃った → 相手の残りHPを押してください`);
+  });
   $$('#btNow [data-bthp]').forEach(b=> b.onclick=()=>{ BT.hp[BT.me]=maxHP; btNowRender(); saveBtDraft(); });
   $$('#btNow [data-btguard]').forEach(b=> b.onclick=()=>{
     BT.guardGone[BT.me] = b.dataset.btguard==='1'; PC.clearMatchupCache(); btNowRender(); saveBtDraft(); });
@@ -1814,7 +1874,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp,
+    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
@@ -1825,7 +1885,7 @@ function loadBtDraft(){
     if(d.opp) BT.opp=d.opp;
     if(d.megaFixed) BT.megaFixed=d.megaFixed;
     if(fresh){
-      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp;
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
       // 黙って捨てると「さっき入れた状態が消えた」と見えるので、捨てたことは伝える
@@ -2369,6 +2429,59 @@ function renderUpgrade(B, L){
   const box = (title, body, note) =>
     `<div class="mg"><div class="op">${title}</div><div class="small">${body}</div>` +
     (note?`<div class="small muted" style="margin-top:4px">${note}</div>`:'') + '</div>';
+
+  /* ★⓪ ツールの推奨と、実際の選出のズレ（2026-08-21・v62・社長の要望）。
+     「ツールで提案された3体じゃないポケモンで勝ったパターンが見たい。
+       ツールがミスっていれば僕の判断に寄せる、僕がミスっていればツールの判断に寄せる」
+     推奨は**いまのエンジンで計算し直す**（当時の版ではなく、いまの版が何と言うかが知りたいため）。
+     過去の記録を使うので、その試合より後の記録は予想に使わない（未来を見ない）。 */
+  {
+    const size = $('#fRule').value==='double' ? 4 : 3;
+    const neutral = rosterForCalc(roster, null);
+    const old2new = [...B].reverse();                 // 古い順
+    const rows = old2new.map((b,i)=>{
+      const team = b.opp_team||[], act = b.my_pick||[];
+      if(team.length<3 || act.length<size) return null;
+      let rec = [];
+      try{
+        const past = old2new.slice(0,i).reverse();     // その時点までの記録だけ
+        const pp = PC.predictPicks(team, past, neutral, size, META_TOP);
+        const bp = bestPlan(roster, (pp.picks&&pp.picks.length)?pp.picks:team, size, team, null);
+        rec = (bp.plan && bp.plan.members) || [];
+      }catch(e){ return null; }
+      if(rec.length<size) return null;
+      const same = [...rec].sort().join('|') === [...act].sort().join('|');
+      const diff = rec.filter(n=>!act.includes(n));
+      return {b, rec, act, same, diff, win: b.result==='win'};
+    }).filter(Boolean).reverse();                      // 新しい順に戻す
+
+    if(rows.length){
+      const s = rows.filter(r=>r.same), d = rows.filter(r=>!r.same);
+      const wins = a=>a.filter(r=>r.win).length;
+      const winDiff = d.filter(r=>r.win);
+      out.push(box('ツールの推奨と、実際の選出',
+        `<b>推奨どおり出した</b> … ${s.length}戦 ${wins(s)}勝${s.length-wins(s)}敗` +
+        (s.length>=UP_MIN?`（${pct(wins(s),s.length)}%）`:'<span class="muted">（母数不足）</span>') +
+        `<br><b>違う選出をした</b> … ${d.length}戦 ${wins(d)}勝${d.length-wins(d)}敗` +
+        (d.length>=UP_MIN?`（${pct(wins(d),d.length)}%）`:'<span class="muted">（母数不足）</span>') +
+        (winDiff.length
+          ? `<hr style="border:0;border-top:1px solid var(--line2);margin:8px 0">` +
+            `<b style="color:var(--org)">推奨と違う選出で勝った ${winDiff.length}戦</b>` +
+            `<div class="small" style="margin-top:5px">` +
+            winDiff.slice(0,6).map(r=>
+              `相手：${esc((r.b.opp_pick&&r.b.opp_pick.length?r.b.opp_pick:r.b.opp_team).join('/'))}<br>` +
+              `　ツール：<span class="muted">${esc(r.rec.join('/'))}</span><br>` +
+              `　実際　：<b>${esc(r.act.join('/'))}</b>` +
+              (r.diff.length?`　<span class="muted">（出さなかった：${esc(r.diff.join('・'))}）</span>`:'')
+            ).join('<hr style="border:0;border-top:1px dotted var(--line2);margin:6px 0">') +
+            `</div>`
+          : ''),
+        d.length < UP_MIN
+          ? `推奨と違う選出は${d.length}戦だけです。あと${UP_MIN-d.length}戦で比べられるようになります`
+          : `<b>違う選出の方が勝っているなら、ツールの点数のつけ方が間違っています。</b>` +
+            `そのときは「出さなかった駒」を教えてください。なぜツールがそれを推したかを調べて直します`));
+    }
+  }
 
   /* ① 自分の駒の選出率と勝率。使っていない枠＝構築の穴 */
   const mine = {};

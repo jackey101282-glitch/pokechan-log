@@ -359,6 +359,11 @@ const GRAVE_MOVES = {
   'おはかまいり':'倒れた味方1体につき威力+50（初期50）',
   'しっぺがえし':'後攻なら威力2倍'
 };
+/** おはかまいり系の実効威力。fallen = 相手側で倒れている数（0〜5） */
+function graveMovePower(name, base, fallen){
+  if(name !== 'おはかまいり') return base;
+  return base + 50 * Math.max(0, Math.min(5, fallen||0));
+}
 const WEATHER_SPEED = {
   'すなあらし':'すなかき', 'にほんばれ':'ようりょくそ', 'あめ':'すいすい', 'ゆき':'ゆきかき'
 };
@@ -572,7 +577,10 @@ function calcDamage(o){
   const eff = effectiveness(mv.type, defTypes);
   if(eff === 0) return { eff:0, min:0, max:0, rolls:[], pctMin:0, pctMax:0, note:['タイプ相性で無効'] };
 
-  let power = mv.power;
+  /* ★おはかまいりは倒れた味方の数で威力が上がる（v62）。
+     社長は相手の3体目（＝2体落ちている＝威力150）に一撃で落とされている。
+     威力50のまま計算していたので、3分の1に過小評価していた。 */
+  let power = graveMovePower(mv.name, mv.power, (o.field && o.field.oppFallen) || 0);
   let atk = o.attacker.atkStat;
   let def = o.defender.defStat;
 
@@ -1068,7 +1076,8 @@ function movePlan(mine, oppName, opts){
         defender:{name:oppName, defStat:def, hp:sp.stats.h, types:os.types, ability:oppAb, item:'',
                   rank: mv.cat==='物'? (st.opDefRank||0) : (st.opSpdRank||0), hpRatio:1},
         move:mv, field:{ weather:st.weather||'', reflect:!!st.opReflect, lightscreen:!!st.opLightscreen,
-                         auroraveil:!!st.opAuroraveil, burn: mv.cat==='物' && !!st.myBurn }, flags:{}
+                         auroraveil:!!st.opAuroraveil, burn: mv.cat==='物' && !!st.myBurn,
+                         oppFallen: st.myFallen||0 }, flags:{}
       });
       if(r.error) return;
       effV = r.eff;
@@ -1273,7 +1282,8 @@ function bestThreat(oppName, mine, opp, known, st){
                 types:ms.types, ability:mine.ability||'', item:mine.item||'',
                 rank: mv.cat==='物'? (st.myDefRank||0) : (st.mySpdRank||0), hpRatio:1},
       move:mv, field:{ weather:st.weather||'', reflect:!!st.myReflect, lightscreen:!!st.myLightscreen,
-                       auroraveil:!!st.myAuroraveil, burn: mv.cat==='物' && !!st.opBurn }, flags:{}
+                       auroraveil:!!st.myAuroraveil, burn: mv.cat==='物' && !!st.opBurn,
+                       oppFallen: st.opFallen||0 }, flags:{}
     });
     if(r.error) return;
     if(r.eff===0){                                    // タイプ相性で無効＝この技には出し得る
@@ -1795,10 +1805,13 @@ function callIt(mine, oppName, opts){
      終盤ほど大幅に過小評価する。盤面の「何体落ちたか」はツールが持っていないので、
      数字は出さずに**仕組みだけ必ず伝える**（推測で数字を出さない）。 */
   (mu.oppRows||[]).filter(r=> GRAVE_MOVES[r.move] && r.rateOf>=20).forEach(r=>{
+    const f = (st && st.opFallen) || 0;
     detail.push({k:'bad',
       t:`<b>${r.move}</b>（採用${Math.round(r.rateOf)}%）は<b>${GRAVE_MOVES[r.move]}</b>。`
-        + `ここに出ている ${pc(r.rate)}〜${pc(r.rateHi)}% は<b>相手がまだ1体も落ちていない場合</b>の数字です。`
-        + `終盤はこれより大きく増えます`});
+        + (f>0
+            ? `相手は<b>${f}体</b>落ちているので<b>威力${graveMovePower(r.move,50,f)}</b>で計算しています（${pc(r.rate)}〜${pc(r.rateHi)}%）`
+            : `いまは<b>0体</b>落ちている前提（威力50）です。`
+              + `<b>相手が落ちるたびに盤面の「相手が落ちた数」を上げてください</b>。上げないとこの数字は嘘になります`)});
   });
   /* ★連続技（v55）。1発ぶんで計算していたせいで実戦2敗している。
      ただし2〜5連撃は「全段当たったとき」を最悪ケースとして出しているので、
@@ -2635,6 +2648,6 @@ global.PC = {
   bestOffense, bestThreat, immuneType, myOneHitGuard, myRoles, supportValue, oppUsage, oppTypeItem,
   readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana,
-  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect
+  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect, graveMovePower, GRAVE_MOVES
 };
 })(window);
