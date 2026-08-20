@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '54';
+const APP_VERSION = '55';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -279,80 +279,13 @@ function currentTeam(){ return TEAMS.find(t=>t.id===$('#fTeam').value); }
 /** 相性計算に渡す形。
  *  1バトルでメガシンカできるのは1体だけなので、メガ枠が複数ある構築では
  *  「選ばなかった方」をメガ前の姿として計算する（メガの数値で二重取りしない）。 */
-function rosterForCalc(roster, megaChoice){
-  const megaSlots = roster.filter(m=>PC.isMegaForm(m.name)).map(m=>m.name);
-  return roster.map(m=>{
-    const demote = PC.isMegaForm(m.name) && megaSlots.length>1 && megaChoice && megaChoice!==m.name;
-    const calcName = demote ? PC.toBase(m.name) : m.name;
-    return {
-      label:m.name,                    // 表示・選出の照合はこちら
-      name:calcName,                   // 計算に使う姿
-      // 画面に出す名前は「実際に計算した姿」。メガ枠を別に切るなら メガ前の名前で出さないと嘘になる
-      disp: demote ? PC.toBase(m.name) : m.name,
-      demoted:demote,
-      stats:PC.realStats(calcName, m.sp, m.nature),
-      moves:(m.moves||[]).filter(Boolean),
-      ability: demote ? '' : (m.ability||''),
-      item:    demote ? '' : (m.item||'')
-    };
-  }).filter(m=>m.stats);
-}
-/** 表示名。メガ枠を別に切る駒は「メガ前の姿」で出す（メガできないのにメガ名で出すのは嘘） */
-function dispName(rc, label){
-  const r = (rc||[]).find(x=> x.label===label);
-  return r ? (r.disp || r.label) : label;
-}
-/** この構築が持つメガ枠。複数あればどれを切るかで結果が変わる */
-function megaSlotsOf(roster){ return roster.filter(m=>PC.isMegaForm(m.name)).map(m=>m.name); }
-/** メガの切り方を総当たりして、いちばん良い選出を返す。
- *  第一基準＝予想した相手3体への強さ、第二基準＝予想が外れた時に相手6体をどれだけ見れるか。 */
-function bestPlan(roster, targets, size, allOpp, fixedMega){
-  const slots = megaSlotsOf(roster);
-  /* ★社長が手でメガ枠を決めているなら、その前提だけで選出を組む。
-     これをやっていなかったので「メガ=メガクチート なのに選出3体にクチートがいない」
-     という矛盾した提案が出ていた（2026-08-19 の指摘）。 */
-  const choices = fixedMega ? [fixedMega] : (slots.length>1 ? slots : [null]);
-  const pool = [];
-  choices.forEach(ch=>{
-    const rc = rosterForCalc(roster, ch);
-    const sug = PC.suggestPicks(rc, targets, Math.min(size, rc.length));
-    sug.top.forEach(c=>{
-      // 選んだメガが選出に入っていない案は、メガを切る意味がないので除外
-      if(ch && !c.members.includes(ch)) return;
-      // メガ枠が1枚だけの構築でも、それが選出に入るなら「そこに切る」と明示する
-      const mega = ch || (slots.length===1 && c.members.includes(slots[0]) ? slots[0] : null);
-      // 予想が外れた場合の保険：相手6体のうち何体を見れるか
-      let backup = 0, blind = [];
-      (allOpp||targets).forEach(o=>{
-        const ok = c.members.some(n=>{
-          const m = rc.find(r=>r.label===n) || {name:n};
-          const mu = PC.matchup(m,{name:effOpp(o)});
-          return mu && mu.winsRace;
-        });
-        ok ? backup++ : blind.push(o);
-      });
-      pool.push({plan:c, mega, rc, backup, blind});
-    });
-  });
-  if(!pool.length){
-    const rc = rosterForCalc(roster, null);
-    const sug = PC.suggestPicks(rc, targets, Math.min(size, rc.length));
-    return {plan:sug.top[0], mega:null, rc, backup:0, blind:[], all:sug.top.map(p=>({plan:p,rc,backup:0,blind:[]}))};
-  }
-  /* ★並べ方（2026-08-20 修正）。
-     以前は cover（何体を見られるか）が最優先だったため、
-     「広く浅く見られるが、実際に出てくる相手には勝てない3体」が常に1位になっていた。
-     → cover が同じなら、**いちばん苦しい対面がマシな案**を上に出す（worst）。
-       1体でも「手も足も出ない」対面があると、そこで試合が壊れるため。 */
-  pool.sort((a,b)=> b.plan.cover-a.plan.cover
-                 || (b.plan.worst||0)-(a.plan.worst||0)
-                 || b.backup-a.backup
-                 || b.plan.total-a.plan.total);
-  // 同じ並びが重複しないように畳む
-  const seen=new Set(), uniq=[];
-  pool.forEach(p=>{ const k=[...p.plan.members].sort().join('|'); if(seen.has(k))return; seen.add(k); uniq.push(p); });
-  return {...uniq[0], all:uniq.slice(0,3)};
-}
+/* ★これらの実体は core.js に移設した（画面が無くても検証できるようにするため）。
+   ここは呼び出し方を変えないための薄いラッパ。effOpp（相手のメガ反映）だけ画面側から渡す。 */
+const rosterForCalc = (roster, megaChoice)=> PC.rosterForCalc(roster, megaChoice);
+const megaSlotsOf   = roster=> PC.megaSlotsOf(roster);
+const dispName      = (rc, label)=> PC.dispName(rc, label);
+const bestPlan      = (roster, targets, size, allOpp, fixedMega)=>
+  PC.bestPlan(roster, targets, size, allOpp, fixedMega, effOpp);
 function currentRoster(){
   const t=currentTeam(); if(!t) return [];
   if(t.roster && t.roster.length) return t.roster;
@@ -1535,11 +1468,6 @@ function btNowRender(){
   host.innerHTML = `
   <div class="card" style="${c?`border-left:4px solid var(--${c.cls==='ok'?'win':c.cls==='ng'?'red':'warn'})`:''}">
     <h2>いまの対面<span class="sub">相手/自分をタップで切替</span></h2>
-    <div class="hpwrap">
-      <button class="btn ${window.VOICE&&VOICE.isOn()?'':'ghost'} sm" id="btSpeakBtn">${window.VOICE&&VOICE.isOn()?'音声 ON':'音声 OFF'}</button>
-      <span class="small muted">マナーモードのままで鳴ります</span>
-    </div>
-
     <div class="small muted">相手</div>
     <div class="quick" style="margin-top:4px">${oppChips}</div>
     ${(()=>{ const ti = PC.teamItemsOf(PC.toBase(BT.sel)) || [];

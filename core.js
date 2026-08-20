@@ -264,6 +264,37 @@ function oppOffenseItem(name, cat, minRate){
   return best;
 }
 /** こだわりスカーフの採用率(%)。行動順がひっくり返るので型の想定に足す */
+/* ★連続技（2026-08-21 追加・v55）。
+   これを入れていなかったせいで、実戦2敗の原因を作った。
+   マスカーニャの トリプルアクセル を「威力20の1発」として計算していたため、
+   カイリュー vs マスカーニャ が「◎殴る（負ける型が無い）」と表示されていた。
+   実際は 20→40→60 の3連撃（合計120相当）で、こおり4倍のカイリューは一撃で落ちる。
+   社長は試合3でカバルドンとカイリューを同時に失っている。
+   ゲッコウガの みずしゅりけん（威力15×2〜5回＋先制）も同じ理由で3分の1に過小評価していた。
+
+   avg = 実戦で期待できる合計威力の倍率／max = 全段当たったときの倍率（一撃判定に使う）
+   2〜5回の技は 2:35% 3:35% 4:15% 5:15% なので期待値3.1回。
+   ネズミざん は10連撃だが1段ごとに命中90%判定なので期待値は約5.9回（0.9の累積）。
+
+   ★もう一つ重要な性質：連続技は1段目で
+     きあいのタスキ／ばけのかわ／がんじょう／マルチスケイル(満タン) を剥がし、
+     残りの段でそのまま殴ってくる。「1発耐える」は連続技には通用しない。 */
+const MULTI_HIT = {
+  'トリプルアクセル':{avg:6.0, max:6.0, n:3,  why:'3連撃（威力20→40→60）'},
+  'みずしゅりけん': {avg:3.1, max:5.0, n:'2〜5', why:'2〜5連撃・先制'},
+  'つららばり':     {avg:3.1, max:5.0, n:'2〜5', why:'2〜5連撃'},
+  'タネマシンガン': {avg:3.1, max:5.0, n:'2〜5', why:'2〜5連撃'},
+  'ミサイルばり':   {avg:3.1, max:5.0, n:'2〜5', why:'2〜5連撃'},
+  'ロックブラスト': {avg:3.1, max:5.0, n:'2〜5', why:'2〜5連撃'},
+  'ボーンラッシュ': {avg:3.1, max:5.0, n:'2〜5', why:'2〜5連撃'},
+  'スイープビンタ': {avg:3.1, max:5.0, n:'2〜5', why:'2〜5連撃'},
+  'ネズミざん':     {avg:5.9, max:10.0,n:'最大10', why:'最大10連撃'},
+  'ダブルウイング': {avg:2.0, max:2.0, n:2,  why:'2連撃'},
+  'ダブルアタック': {avg:2.0, max:2.0, n:2,  why:'2連撃'}
+};
+/** 連続技ならその情報を返す。単発技なら null */
+function multiHitOf(name){ return (name && MULTI_HIT[name]) || null; }
+
 /** 相手が「1発耐える」手段を持っている割合。
  *  社長の実戦（2026-08-20）：
  *   ・トリデプス（がんじょう80.5%）にカイリューのじしんが1残り → そのターンで返り討ち
@@ -551,22 +582,31 @@ function calcDamage(o){
     d = Math.floor(d * otherMod);
     rolls.push(Math.max(1, d));
   }
-  const min = rolls[0], max = rolls[rolls.length-1];
+  let min = rolls[0], max = rolls[rolls.length-1];
+  /* ★連続技はここで合計ぶんに引き伸ばす。
+     min には期待回数、max には全段当たった場合をかける（＝一撃で落ちるかは max で見る）。 */
+  const mh = multiHitOf(mv.name);
+  if(mh){
+    min = Math.floor(min * mh.avg);
+    max = Math.floor(max * mh.max);
+    notes.push(`${mv.name} は${mh.why}（合計で計算）`);
+  }
   const hp = o.defender.hp || 1;
   const pctMin = min/hp*100, pctMax = max/hp*100;
 
-  // 確定数
+  // 確定数。連続技は1ターンぶんが min〜max なので、乱数の並びも同じ倍率で見る
+  const rollsEff = mh ? rolls.map(v=> Math.floor(v * mh.avg)) : rolls;
   let ko = '';
   for(let n=1;n<=6;n++){
     if(min*n >= hp){ ko = `確定${n}発`; break; }
     if(max*n >= hp){
-      const cnt = rolls.filter(v=> v*n >= hp).length;
+      const cnt = rollsEff.filter(v=> v*n >= hp).length;
       ko = `乱数${n}発（${Math.round(cnt/16*100)}%）`; break;
     }
   }
   if(!ko) ko = '7発以上';
 
-  return { eff, min, max, rolls, pctMin, pctMax, ko, note:notes };
+  return { eff, min, max, rolls, pctMin, pctMax, ko, note:notes, multi: mh ? mv.name : null };
 }
 
 /* ---------- メガシンカの対応表 ----------
@@ -1087,12 +1127,16 @@ function matchupVs(mine, oppName, opp, known, st){
   // 相手の最大乱数で何発か。ここを見ていなかったので「2発耐える」が実際は一撃だった
   let opHitsHi = thr.rateHi>0 ? Math.ceil(1/thr.rateHi) : 99;
   const guard = myOneHitGuard(mine);
-  if(guard){ if(opHits<99) opHits += 1; if(opHitsHi<99) opHitsHi += 1; }
+  /* ★連続技はタスキ／ばけのかわ／がんじょうを1段目で剥がし、残りの段で殴ってくる。
+     ここで無条件に +1 していたので、タスキのキラフロルもミミッキュも実際より安全に見えていた。 */
+  const guardBroken = !!multiHitOf(thr.move);
+  if(guard && !guardBroken){ if(opHits<99) opHits += 1; if(opHitsHi<99) opHitsHi += 1; }
   // ばけのかわ／がんじょうは1発を確実に無効化する＝必要打数が1増える
   if(myHits<99 && survivesOneHit(oppName)) myHits += 1;
 
   // 先に落とせるか（同じ発数なら速い方が勝ち）
   const winsRace = myHits < opHits || (myHits === opHits && faster);
+  const guardEff = (guard && !guardBroken) ? guard : '';   // 実際に効いている1発耐え
 
   /* ★「受けられる」ことの価値。
      相手の打点が薄くて4発以上かかるなら、こちらが殴り切れなくてもその対面は"止まっている"。
@@ -1116,7 +1160,7 @@ function matchupVs(mine, oppName, opp, known, st){
 
   // 「ほぼ確実に持っている技(採用60%以上)」だけで見た場合の必要打数
   const sureDmg  = thr.sure ? thr.sure.rate : 0;
-  const sureHits = sureDmg>0 ? Math.ceil(1/sureDmg) + (guard?1:0) : 99;
+  const sureHits = sureDmg>0 ? Math.ceil(1/sureDmg) + ((guard && !multiHitOf(thr.sure&&thr.sure.move))?1:0) : 99;
   const winsRaceSure = myHits < sureHits || (myHits === sureHits && faster);
 
   return { kind:opp.kind, label:opp.label, weight:opp.weight, oppItem:opp.item||'',
@@ -1129,7 +1173,8 @@ function matchupVs(mine, oppName, opp, known, st){
            wallsIt, stallsIt, roles:role,
            sureHits, winsRaceSure, threatRate: thr.threatRate||0, hitting: thr.hitting||[],
            oppRows: thr.rows||[], immuneMoves: thr.immune||[],
-           opHits, opHitsHi, guard };
+           opHits, opHitsHi, guard: guardEff, guardRaw: guard, guardBroken,
+           opMultiHit: multiHitOf(thr.move) ? thr.move : null };
 }
 
 /* 同じ (自分の個体 × 相手) の組み合わせは何度も出てくるので結果を使い回す */
@@ -1322,7 +1367,9 @@ function readDamage(mine, oppName, hpNow, field, known, st){
   /* あと何発耐えるか。タスキ／ばけのかわ／がんじょうは満タンからの1発を無効化する。 */
   const worstRow = all.reduce((a,b)=> b.max>a.max ? b : a, all[0]);
   const guard = myOneHitGuard(mine);
-  const guardAlive = !!guard && (guard!=='きあいのタスキ' ? hpNow>0 : hpNow>=maxHP);
+  /* ★連続技は1段目で剥がすので「あと1発耐える」は成立しない（v55） */
+  const guardAlive = !!guard && !multiHitOf(worstRow.move)
+                     && (guard!=='きあいのタスキ' ? hpNow>0 : hpNow>=maxHP);
   const survives = dmg => dmg<=0 ? 99 : Math.max(0, Math.ceil(hpNow / dmg)) + (guardAlive?1:0);
 
   const out = {
@@ -1399,19 +1446,25 @@ function callIt(mine, oppName, opts){
   let myHits = mu.myDmg>0 ? Math.max(1, Math.ceil(oppLeft / mu.myDmg)) : 99;
   /* ★相手のきあいのタスキ／がんじょうは、HP満タンからの1発を必ず耐える。
      満タン(oppLeft>=1)のときだけ効くので、削れている相手には適用しない。 */
-  const opGuard = (oppLeft >= 1) ? oppOneHitGuard(oppName) : null;
+  let opGuard = (oppLeft >= 1) ? oppOneHitGuard(oppName) : null;
+  /* ★こちらの打点が連続技なら、相手のタスキ／がんじょうは1段目で剥がれる。
+     v54で相手の「1発耐える」を入れた裏返しで、ここを見ないと逆に過大に警戒することになる。 */
+  if(opGuard && multiHitOf(mu.myMove)) opGuard = null;
   if(opGuard && myHits <= 1) myHits = 2;
   // こちらの残りHPが分かっていれば、その割合で相手の必要打数を計算する
   const myLeft = (rd && rd.maxHP) ? rd.hpNow/rd.maxHP : 1;
-  const guardN = mu.guard ? 1 : 0;
-
-  // 技ごとに「こちらに勝てるか」を判定し、勝てる技の採用率を足す（上限100%）
+  /* ★1発耐える手段は「技ごと」に判定する（v55の修正）。
+     連続技だけがタスキ／ばけのかわ／がんじょうを貫通する。
+     ここを技ごとにせず一律で消したところ、トリプルアクセルを持つ相手に対して
+     ばけのかわが単発技にも効かない扱いになり、ミミッキュが不当に✕になった。 */
   const rows = (mu.oppRows||[]).map(r=>{
-    const hits = r.rate>0 ? Math.ceil(myLeft / r.rate) + guardN : 99;
+    const gN = (mu.guardRaw && !multiHitOf(r.move)) ? 1 : 0;
+    const hits = r.rate>0 ? Math.ceil(myLeft / r.rate) + gN : 99;
     const beats = hits < myHits || (hits === myHits && !mu.faster);
-    const ohko  = r.rateHi >= myLeft && guardN===0;
-    return {...r, hits, beats, ohko};
+    const ohko  = r.rateHi >= myLeft && gN===0;
+    return {...r, hits, beats, ohko, piercesGuard: gN===0 && !!mu.guardRaw};
   });
+  const guardN = mu.guard ? 1 : 0;
   // 採用率の合計。小数の誤差が出るので必ず丸める（71.80000000000001% と出ていた）
   const sumRate = list => Math.round(Math.min(100, list.reduce((a,b)=> a + (b.rateOf||0), 0)));
   const pLose = sumRate(rows.filter(r=> r.beats));      // 負ける型の割合
@@ -1471,6 +1524,17 @@ function callIt(mine, oppName, opts){
     detail.push({k:'bad', t:`こだわりスカーフ採用${oppScarfRate(oppName)}%。持たれていると抜かれる`});
   if(opGuard) detail.push({k:'bad',
     t:`相手は<b>${opGuard.name}</b>（採用${opGuard.rate}%）で<b>満タンからの1発を耐えます</b>。1発で落とせる計算でも1残ることを前提に動くこと`});
+  /* ★連続技（v55）。1発ぶんで計算していたせいで実戦2敗している。
+     ただし2〜5連撃は「全段当たったとき」を最悪ケースとして出しているので、
+     何連撃を見た数字なのかを必ず併記する（鉄則⑥：確度を落として根拠を出す）。 */
+  (mu.oppRows||[]).filter(r=> multiHitOf(r.move) && r.rateOf>=20).slice(0,2).forEach(r=>{
+    const mh = multiHitOf(r.move);
+    const g = myOneHitGuard(mine);
+    detail.push({k:'bad',
+      t:`<b>${r.move}</b>（採用${Math.round(r.rateOf)}%）は<b>${mh.why}</b>。合計で ${pc(r.rate)}〜${pc(r.rateHi)}%`
+        + `（上は全段当たった場合）`
+        + (g ? `。<b>${g}は1段目で剥がされます</b>` : '')});
+  });
   if(mu.myMove) detail.push({k:'info',
     t:`こちらの最大打点：<b>${mu.myMove}</b> ${pc(mu.myDmgLo)}〜${pc(mu.myDmgHi)}%（${myHits}発で落とせる）`});
   /* こちら側に置かれた設置技。「引く」と言っても、これがあると引き先が削れて次で落ちる。 */
@@ -2087,14 +2151,93 @@ function observedMoves(battles){
   return out;
 }
 
+/* ★選出の組み立て（2026-08-20 に app.js から移設）。
+   ここに置いた理由：画面が無いと選出エンジンを検証できず、実戦記録を機械的に再計算できなかった。
+   app.js 側は薄いラッパで呼ぶだけにしてあるので、画面の呼び出し方は変えていない。 */
+function rosterForCalc(roster, megaChoice){
+  const megaSlots = roster.filter(m=>isMegaForm(m.name)).map(m=>m.name);
+  return roster.map(m=>{
+    const demote = isMegaForm(m.name) && megaSlots.length>1 && megaChoice && megaChoice!==m.name;
+    const calcName = demote ? toBase(m.name) : m.name;
+    return {
+      label:m.name,                    // 表示・選出の照合はこちら
+      name:calcName,                   // 計算に使う姿
+      // 画面に出す名前は「実際に計算した姿」。メガ枠を別に切るなら メガ前の名前で出さないと嘘になる
+      disp: demote ? toBase(m.name) : m.name,
+      demoted:demote,
+      stats:realStats(calcName, m.sp, m.nature),
+      moves:(m.moves||[]).filter(Boolean),
+      ability: demote ? '' : (m.ability||''),
+      item:    demote ? '' : (m.item||'')
+    };
+  }).filter(m=>m.stats);
+}
+/** 表示名。メガ枠を別に切る駒は「メガ前の姿」で出す（メガできないのにメガ名で出すのは嘘） */
+function dispName(rc, label){
+  const r = (rc||[]).find(x=> x.label===label);
+  return r ? (r.disp || r.label) : label;
+}
+/** この構築が持つメガ枠。複数あればどれを切るかで結果が変わる */
+function megaSlotsOf(roster){ return roster.filter(m=>isMegaForm(m.name)).map(m=>m.name); }
+/** メガの切り方を総当たりして、いちばん良い選出を返す。
+ *  第一基準＝予想した相手3体への強さ、第二基準＝予想が外れた時に相手6体をどれだけ見れるか。 */
+function bestPlan(roster, targets, size, allOpp, fixedMega, effOpp){
+  effOpp = effOpp || (n=>n);   // 相手のメガを反映する関数。画面側から渡す（node検証では素通し）
+  const slots = megaSlotsOf(roster);
+  /* ★社長が手でメガ枠を決めているなら、その前提だけで選出を組む。
+     これをやっていなかったので「メガ=メガクチート なのに選出3体にクチートがいない」
+     という矛盾した提案が出ていた（2026-08-19 の指摘）。 */
+  const choices = fixedMega ? [fixedMega] : (slots.length>1 ? slots : [null]);
+  const pool = [];
+  choices.forEach(ch=>{
+    const rc = rosterForCalc(roster, ch);
+    const sug = suggestPicks(rc, targets, Math.min(size, rc.length));
+    sug.top.forEach(c=>{
+      // 選んだメガが選出に入っていない案は、メガを切る意味がないので除外
+      if(ch && !c.members.includes(ch)) return;
+      // メガ枠が1枚だけの構築でも、それが選出に入るなら「そこに切る」と明示する
+      const mega = ch || (slots.length===1 && c.members.includes(slots[0]) ? slots[0] : null);
+      // 予想が外れた場合の保険：相手6体のうち何体を見れるか
+      let backup = 0, blind = [];
+      (allOpp||targets).forEach(o=>{
+        const ok = c.members.some(n=>{
+          const m = rc.find(r=>r.label===n) || {name:n};
+          const mu = matchup(m,{name:effOpp(o)});
+          return mu && mu.winsRace;
+        });
+        ok ? backup++ : blind.push(o);
+      });
+      pool.push({plan:c, mega, rc, backup, blind});
+    });
+  });
+  if(!pool.length){
+    const rc = rosterForCalc(roster, null);
+    const sug = suggestPicks(rc, targets, Math.min(size, rc.length));
+    return {plan:sug.top[0], mega:null, rc, backup:0, blind:[], all:sug.top.map(p=>({plan:p,rc,backup:0,blind:[]}))};
+  }
+  /* ★並べ方（2026-08-20 修正）。
+     以前は cover（何体を見られるか）が最優先だったため、
+     「広く浅く見られるが、実際に出てくる相手には勝てない3体」が常に1位になっていた。
+     → cover が同じなら、**いちばん苦しい対面がマシな案**を上に出す（worst）。
+       1体でも「手も足も出ない」対面があると、そこで試合が壊れるため。 */
+  pool.sort((a,b)=> b.plan.cover-a.plan.cover
+                 || (b.plan.worst||0)-(a.plan.worst||0)
+                 || b.backup-a.backup
+                 || b.plan.total-a.plan.total);
+  // 同じ並びが重複しないように畳む
+  const seen=new Set(), uniq=[];
+  pool.forEach(p=>{ const k=[...p.plan.members].sort().join('|'); if(seen.has(k))return; seen.add(k); uniq.push(p); });
+  return {...uniq[0], all:uniq.slice(0,3)};
+}
+
 global.PC = {
   TYPES, TYPE_COLOR, TYPE_ICON, CHART, NATURES, SPECIES, MOVES,
-  whoElseHas, movePlan, movePriority, oppOneHitGuard,
+  whoElseHas, movePlan, movePriority, oppOneHitGuard, multiHitOf, MULTI_HIT,
   loadData, effectiveness, statHP, statOther, natureMods, realStats, assumedStat,
   assumedSpreads, spreadStats, attackerLikeness, matchupVs, SP_TOTAL, SP_MAX,
   OPP_ABILITY, worstDefAbility, survivesOneHit, OPP_TRICKS, oppTricks,
   MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
-  predictPicks, backtestPicks,
+  predictPicks, backtestPicks, rosterForCalc, megaSlotsOf, dispName, bestPlan,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
   bestOffense, bestThreat, immuneType, myOneHitGuard, myRoles, supportValue, oppUsage, oppTypeItem,
   readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
