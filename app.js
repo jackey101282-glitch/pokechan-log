@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '62';
+const APP_VERSION = '63';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1749,6 +1749,24 @@ function btBoardCard(st){
     <summary class="small ${n?'':'muted'}" style="cursor:pointer">
       盤面の状態（積み・天候・状態異常・壁・設置）${n?`<b style="color:var(--org)"> ${n}件 反映中</b>`:''}</summary>
     <div class="small" style="margin-top:8px">
+      ${(()=>{ /* ★倒れた数（v62）。おはかまいり（イダイトウ98.9%・ハカドッグ88.6%）は
+           倒れた味方1体につき威力+50。ここを入れないと、終盤の被ダメージが3分の1に見える。
+           社長は相手の3体目のイダイトウ（＝2体落ち・威力150）に一撃で落とされている。
+           押すのは試合中に2回だけなので、ワンアクションとして許容できる。 */
+        const stepper = (label, key, max)=>{
+          const v = st[key]||0;
+          return `<div class="hpwrap" style="gap:6px">
+            <span class="small muted" style="min-width:88px">${label}</span>
+            <div class="seg">
+              <button data-bbstep="${key}" data-bv="-1">−</button>
+              <button class="${v?'on':''}" data-bbstep="${key}" data-bv="0" style="min-width:44px">${v}体</button>
+              <button data-bbstep="${key}" data-bv="1">＋</button>
+            </div>
+            ${v?`<span class="small muted" style="color:var(--org)">おはかまいり 威力${50+50*v}</span>`:''}
+          </div>`;
+        };
+        return stepper('相手が落ちた数','opFallen') + stepper('自分が落ちた数','myFallen');
+      })()}
       ${rankRow('相手の攻撃','opAtkRank')}
       ${rankRow('相手の素早さ','opSpeRank')}
       ${rankRow('自分の攻撃','myAtkRank')}
@@ -1796,7 +1814,11 @@ function btBindBoard(){
   $$('#btNow [data-bbstep]').forEach(b=> b.onclick=()=>{
     const k=b.dataset.bbstep, d=+b.dataset.bv;
     const cur = BT.board[k]||0;
-    BT.board[k] = d===0 ? 0 : Math.max(-6, Math.min(6, cur + d));   // 真ん中を押すと0に戻る
+    /* ★倒れた数は 0〜5。能力ランクの −6〜+6 と同じ範囲にすると、
+       マイナスの「落ちた数」という意味のない値が入る（v62） */
+    const isCount = (k==='opFallen' || k==='myFallen');
+    const lo = isCount ? 0 : -6, hi = isCount ? 5 : 6;
+    BT.board[k] = d===0 ? 0 : Math.max(lo, Math.min(hi, cur + d));   // 真ん中を押すと0に戻る
     if(!BT.board[k]) delete BT.board[k];
     PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   });
