@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '56';
+const APP_VERSION = '57';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -939,9 +939,75 @@ function newBT(keepObs){
   return { opp:[], picks:[], mega:null, megaFixed:null, matrix:null,
            sel:null, me:null, meManual:false,
            hp:{}, oppHp:{}, obs:keepObs||{}, guardGone:{}, board:{},
-           seenOrder:[], done:{}, tsel:[], leadGuess:null, oppPredict:null };
+           seenOrder:[], done:{}, tsel:[], leadGuess:null, oppPredict:null,
+           /* ★名前検索の先頭候補（Enterで足す用）。ここに書かないと
+              リセット後に undefined になって Enter が黙って効かなくなる（v48と同じ事故） */
+           _searchTop:null,
+           /* 前回の盤面を古いとして捨てたか（開いたときに1度だけ知らせる） */
+           _staleDropped:false };
 }
 let BT = newBT();
+
+/* ★ローマ字で相手を探せるようにする（2026-08-21・PC操作になったため）。
+   社長は **相手を特定できずに間違って登録して2敗している**（デスバーンをゴルーグ、レパルダスをブラッキー）。
+   選出は90秒しかないのに、PCだと日本語IMEに切り替える手間が乗る。
+   「desuba」で デスバーン が出れば、その手間がゼロになる。
+   ローマ字はヘボン式・訓令式の両方を受ける（si/shi, ti/chi, tu/tsu, hu/fu, zi/ji）。 */
+const ROMA = {
+  'キャ':'kya','キュ':'kyu','キョ':'kyo','シャ':'sya','シュ':'syu','ショ':'syo',
+  'チャ':'tya','チュ':'tyu','チョ':'tyo','ニャ':'nya','ニュ':'nyu','ニョ':'nyo',
+  'ヒャ':'hya','ヒュ':'hyu','ヒョ':'hyo','ミャ':'mya','ミュ':'myu','ミョ':'myo',
+  'リャ':'rya','リュ':'ryu','リョ':'ryo','ギャ':'gya','ギュ':'gyu','ギョ':'gyo',
+  'ジャ':'zya','ジュ':'zyu','ジョ':'zyo','ビャ':'bya','ビュ':'byu','ビョ':'byo',
+  'ピャ':'pya','ピュ':'pyu','ピョ':'pyo','ヂャ':'zya','ヂュ':'zyu','ヂョ':'zyo',
+  'ア':'a','イ':'i','ウ':'u','エ':'e','オ':'o','カ':'ka','キ':'ki','ク':'ku','ケ':'ke','コ':'ko',
+  'サ':'sa','シ':'si','ス':'su','セ':'se','ソ':'so','タ':'ta','チ':'ti','ツ':'tu','テ':'te','ト':'to',
+  'ナ':'na','ニ':'ni','ヌ':'nu','ネ':'ne','ノ':'no','ハ':'ha','ヒ':'hi','フ':'hu','ヘ':'he','ホ':'ho',
+  'マ':'ma','ミ':'mi','ム':'mu','メ':'me','モ':'mo','ヤ':'ya','ユ':'yu','ヨ':'yo',
+  'ラ':'ra','リ':'ri','ル':'ru','レ':'re','ロ':'ro','ワ':'wa','ヲ':'wo','ン':'n',
+  'ガ':'ga','ギ':'gi','グ':'gu','ゲ':'ge','ゴ':'go','ザ':'za','ジ':'zi','ズ':'zu','ゼ':'ze','ゾ':'zo',
+  'ダ':'da','ヂ':'zi','ヅ':'zu','デ':'de','ド':'do','バ':'ba','ビ':'bi','ブ':'bu','ベ':'be','ボ':'bo',
+  'パ':'pa','ピ':'pi','プ':'pu','ペ':'pe','ポ':'po',
+  'ァ':'a','ィ':'i','ゥ':'u','ェ':'e','ォ':'o','ャ':'ya','ュ':'yu','ョ':'yo','ッ':'','ー':''
+};
+/** カタカナ名 → ローマ字。訓令式で作り、照合側でヘボン式も吸収する */
+function toRoma(name){
+  const kata = name.replace(/[ぁ-ん]/g, ch=>String.fromCharCode(ch.charCodeAt(0)+0x60));
+  let out='';
+  for(let i=0;i<kata.length;i++){
+    const one = kata[i];
+    /* ★促音は「次の子音を重ねる」。これを空文字にしていたので
+       ゲッコウガ が gekouga になり、素直に打った gekkouga で出てこなかった。 */
+    if(one==='ッ'){
+      const nxt = ROMA[kata.slice(i+1,i+3)] !== undefined ? ROMA[kata.slice(i+1,i+3)]
+                : ROMA[kata[i+1]] !== undefined ? ROMA[kata[i+1]] : '';
+      if(nxt && /^[a-z]/.test(nxt) && !'aiueo'.includes(nxt[0])) out += nxt[0];
+      continue;
+    }
+    const two = kata.slice(i,i+2);
+    if(ROMA[two]!==undefined){ out+=ROMA[two]; i++; continue; }
+    out += (ROMA[one]!==undefined) ? ROMA[one] : '';
+  }
+  return out;
+}
+/** ヘボン式・訓令式の揺れを1つに寄せる（si/shi どちらで打っても当たるように） */
+function romaKey(s){
+  return s.toLowerCase()
+    .replace(/shi/g,'si').replace(/chi/g,'ti').replace(/tsu/g,'tu')
+    .replace(/fu/g,'hu').replace(/ji/g,'zi').replace(/sha/g,'sya')
+    .replace(/shu/g,'syu').replace(/sho/g,'syo').replace(/cha/g,'tya')
+    .replace(/chu/g,'tyu').replace(/cho/g,'tyo').replace(/ja/g,'zya')
+    .replace(/ju/g,'zyu').replace(/jo/g,'zyo').replace(/[^a-z]/g,'')
+    /* ★長音の揺れを吸収する。名前側の「ー」は文字が消えるので デスバーン → desuban になるが、
+       人が素直に打つのは desubaan。両側で母音の連続を1つに畳んで、どちらでも当たるようにする。
+       ついでに ou→o（ゲッコウガ gekkouga / gekkoga のどちらでも当たる）。 */
+    .replace(/([aiueo])\1+/g,'$1').replace(/ou/g,'o');
+}
+const _romaCache = new Map();
+function romaOf(name){
+  if(!_romaCache.has(name)) _romaCache.set(name, romaKey(toRoma(name)));
+  return _romaCache.get(name);
+}
 
 function initBtUI(){
   /* ★2026-08-19 修正：ここが「上書き」だったせいで、
@@ -1012,10 +1078,17 @@ function initBtUI(){
     const kana = t => t.replace(/[ぁ-ん]/g, c=>String.fromCharCode(c.charCodeAt(0)+0x60))
                        .replace(/[ー－]/g,'').replace(/[ァィゥェォャュョッ]/g,'');
     const k = kana(q);
+    /* ★ローマ字でも探せる（PC操作・IME切替の手間をゼロにする）。
+       半角英字だけの入力はローマ字とみなす。かなが混じっていれば従来どおり名前照合。 */
+    const isRoma = /^[A-Za-z]+$/.test(q);
+    const rk = isRoma ? romaKey(q) : '';
     const hit = Object.keys(PC.SPECIES)
-      .filter(n=> !BT.opp.includes(n) && kana(n).includes(k))
-      .sort((a,b)=> kana(a).indexOf(k)-kana(b).indexOf(k) || a.length-b.length)
+      .filter(n=> !BT.opp.includes(n) && (isRoma ? romaOf(n).includes(rk) : kana(n).includes(k)))
+      .sort((a,b)=> isRoma
+        ? (romaOf(a).indexOf(rk)-romaOf(b).indexOf(rk) || a.length-b.length)
+        : (kana(a).indexOf(k)-kana(b).indexOf(k) || a.length-b.length))
       .slice(0,10);
+    BT._searchTop = hit[0] || null;      // Enterで先頭を足すために覚えておく
     const full = BT.opp.length>=6;
     box.innerHTML = hit.length
       ? (full?`<div class="small" style="width:100%;color:var(--org);font-weight:700">もう6体入っています。入れ替えるには <b>× </b>で1体外してください</div>`:'')
@@ -1029,6 +1102,17 @@ function initBtUI(){
   };
   BT._searchRender = btSearchRender;
   $('#btSearch').oninput = btSearchRender;
+  /* ★Enterで先頭候補を足す。PCではマウスに手を移す1動作が丸ごと消える（v57） */
+  $('#btSearch').onkeydown = e=>{
+    if(e.key !== 'Enter') return;
+    e.preventDefault();
+    const n = BT._searchTop;
+    if(!n) return;
+    if(BT.opp.length>=6) return toast('6匹までです。× で1体外してください', true);
+    BT.opp.push(n); $('#btSearch').value=''; BT._searchTop=null;
+    btCompute(); btRender(); btSearchRender(); $('#btSearch').focus();
+    toast(`${n} を足しました（いま${BT.opp.length}/6）`);
+  };
 
   $('#btVoiceRun').onclick = ()=> safe('実戦', ()=>{
     const r = PC.parseBattleText($('#btVoice').value.trim());
@@ -1041,6 +1125,11 @@ function initBtUI(){
     PC.clearMatchupCache(); $('#btVoice').value=''; btRender(); saveBtDraft();
   };
   loadBtDraft();
+  /* 古い盤面を捨てたときは、必ず本人に知らせる（黙って消すと不信の元になる） */
+  if(BT._staleDropped){
+    BT._staleDropped = false;
+    setTimeout(()=> toast('前の試合の盤面（状態異常・天候・壁・残りHP）は消しました', true), 400);
+  }
 }
 
 /** 相手6体が決まった時点で、全部の対面を先に計算しておく */
@@ -1710,14 +1799,34 @@ function btBindSeen(){
   const clr=$('#btSeenClear');
   if(clr) clr.onclick=()=>{ delete BT.obs[key]; PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft(); };
 }
-/** 実戦モードの観測・HPは、次に開いたときも残す */
+/** 実戦モードの観測・HPは、次に開いたときも残す。
+ *  ★ただし「その1試合かぎりのもの」は持ち越さない（2026-08-21 修正）。
+ *  実際に localStorage に `mySleep:1`（自分がねむり）が残り続けていて、
+ *  ページを開き直しただけの新しい試合で「ねむりで動けない」前提の助言が出ていた。
+ *  盤面・残りHP・ガードの消費は**その試合のもの**なので、時間が経っていたら捨てる。
+ *  相手6体と観測した技は次の試合でも役に立つので残す。
+ *  30分：1試合はどんなに長くても十数分。誤爆でリロードした直後は残したい。 */
+const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
-  try{ localStorage.setItem('pokechan_bt', JSON.stringify({obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board})); }catch(e){}
+  try{ localStorage.setItem('pokechan_bt', JSON.stringify({
+    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp,
+    megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
+    t: Date.now() })); }catch(e){}
 }
 function loadBtDraft(){
   try{ const d=JSON.parse(localStorage.getItem('pokechan_bt')||'{}');
-    if(d.obs) BT.obs=d.obs; if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp;
-    if(d.megaFixed) BT.megaFixed=d.megaFixed; if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board; }catch(e){}
+    const fresh = d.t && (Date.now() - d.t) < BT_FRESH_MS;
+    if(d.obs) BT.obs=d.obs;
+    if(d.opp) BT.opp=d.opp;
+    if(d.megaFixed) BT.megaFixed=d.megaFixed;
+    if(fresh){
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp;
+      if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
+    }else if(d.board && Object.keys(d.board).length){
+      // 黙って捨てると「さっき入れた状態が消えた」と見えるので、捨てたことは伝える
+      BT._staleDropped = true;
+    }
+  }catch(e){}
 }
 
 function btDetail(){

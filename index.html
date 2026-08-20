@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="56">
+<meta name="app-version" content="57">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -46,6 +46,17 @@ body{background:var(--bg);color:var(--fg);font-size:15px;line-height:1.65;
 button,input,select,textarea{font:inherit;color:inherit}
 a{color:var(--blue)}
 .wrap{max-width:860px;margin:0 auto;padding:0 14px;width:100%}
+/* ★PC（横1180px以上）だけ、対戦タブを2列にして幅を広げる。
+   .wrap 自体は860pxのままにしてある（他のタブの1行を長くしすぎないため）。
+   ここだけ画面中央で外へ広げる。 */
+@media (min-width:1180px){
+  /* 対戦タブだけ、画面中央で外へ広げる。#toast は section の外にあるので transform の影響を受けない */
+  #tab-bt{ width:min(1280px, calc(100vw - 48px)); margin-left:50%; transform:translateX(-50%); }
+  /* 選出（左）と いまの対面（右）を横に並べる */
+  .btcols{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);
+           gap:16px; align-items:start; }
+  .btcols > div{ min-width:0 }
+}
 
 /* header */
 header.top{position:sticky;top:0;z-index:30;background:rgba(255,255,255,.9);backdrop-filter:blur(12px);
@@ -396,7 +407,7 @@ tr.bad .bar>i{background:var(--lose)}
       <div id="btTypeOut" class="quick" style="margin-top:6px"></div>
       <div style="height:12px"></div>
       <label class="f">名前で探す（1〜2文字でOK。出てきたら押すだけ）</label>
-      <input type="text" id="btSearch" placeholder="らい／アーマ／ガブ …" autocomplete="off">
+      <input type="text" id="btSearch" placeholder="らい／アーマ／desuba … ローマ字OK・Enterで先頭を追加" autocomplete="off">
       <div id="btSearchOut" class="quick" style="margin-top:6px"></div>
       <div style="height:10px"></div>
       <label class="f">声でまとめて言う（複数まとめてOK）</label>
@@ -411,8 +422,14 @@ tr.bad .bar>i{background:var(--lose)}
       <div id="btOppChips" class="pklist" style="margin-top:10px"></div>
     </div>
   </details>
-  <div id="btPlan"></div>
-  <div id="btNow"></div>
+  <!-- ★PCでは選出と「いまの対面」を横に並べる（2026-08-21）。
+       社長はスマホで対戦しながらPCでこれを操作するので、
+       タブや上下スクロールで往復させないことがそのまま時間の節約になる。
+       狭い画面では従来どおり縦1列のまま（CSSの @media だけで切り替えている）。 -->
+  <div class="btcols">
+    <div id="btPlan"></div>
+    <div id="btNow"></div>
+  </div>
   <!-- ★「試合が終わった」は"いまの対面"の下に置く。
        この対面でどうなったか → その結果を残す、という流れになるため（社長の指摘 2026-08-20）。 -->
   <div id="btEnd"></div>
@@ -684,18 +701,18 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=56"></script>
-<script src="./data/species.js?v=56"></script>
-<script src="./data/moves.js?v=56"></script>
-<script src="./data/principles.js?v=56"></script>
-<script src="./data/usage.js?v=56"></script>
-<script src="./data/teams.js?v=56"></script>
-<script src="./core.js?v=56"></script>
+<script src="./supabase-config.js?v=57"></script>
+<script src="./data/species.js?v=57"></script>
+<script src="./data/moves.js?v=57"></script>
+<script src="./data/principles.js?v=57"></script>
+<script src="./data/usage.js?v=57"></script>
+<script src="./data/teams.js?v=57"></script>
+<script src="./core.js?v=57"></script>
 <!-- ★音声（読み上げ）は 2026-08-21 に停止。社長の判定「9種すべて不自然」＋
      スマホで対戦しPCでこのアプリを操作する運用になったため、読み上げの必要が無くなった。
      コードとクリップは残してあるので、この1行を戻せば復活する。
-<script src="./voice.js?v=56"></script> -->
+<script src="./voice.js?v=57"></script> -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=56"></script>
+<script src="./app.js?v=57"></script>
 </body>
 </html>
