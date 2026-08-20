@@ -1085,28 +1085,58 @@ function movePlan(mine, oppName, opts){
      PLACED[name] は「未設置なら undefined」なので、素直に否定するだけでよい。 */
   const HAZ = ['ステルスロック','まきびし','どくびし','ねばねばネット'];
   const hazard = rows.find(r=> r.status && HAZ.includes(r.name) && !PLACED[r.name]);
-  const sleeper = rows.find(r=> r.status && ['あくび','キノコのほうし','おにび','どくどく','でんじは'].includes(r.name));
+  /* ★通らないと分かっている技を推さない（v58）。
+     ステロ済みの盤面で「あくび」を勧めながら、同じ行に
+     「相手はすでに状態異常＝あくびは入らない」と書いていた。推奨と根拠が矛盾していた。 */
+  const sleeper = rows.find(r=> r.status
+    && ['あくび','キノコのほうし','おにび','どくどく','でんじは'].includes(r.name)
+    && !(r.blockers||[]).length);
 
   let best = null, why = '';
-  if(koPri){ best = koPri; why = `先制技で確実に落とせる（優先度+${koPri.pri}）`; }
-  else if(koAny){ best = koAny; why = koAny.acc<100 ? `1発で落とせる（命中${koAny.acc}%）` : '1発で落とせる'; }
-  else if(opts.likelySwitch && hazard){
+  /* ★相手が眠っている間に何をするか（2026-08-21・v58）。社長の質問そのもの：
+     「あくびで相手が眠り、じしんで削れる時、削り切るべきなのか、
+       ふきとばしでステロを当ててまた眠らせに行くべきかが分からない」
+     眠りは起きるまで数ターン。その数ターンで**何ができるか**で決める。
+       ・2発以内で落とせる → 眠っている間に落とせる。**削り切るのが最も確実**
+       ・3発以上かかる → 起きて反撃される。その前に**設置を置く**。置き終わっていれば
+         **ふきとばしで流す**（交代先が設置を踏む＝眠っている相手を無傷で逃がさない） */
+  const opAsleep = !!(st.opSleep || st.opFreeze);
+  const phaze = rows.find(r=> r.status && ['ふきとばし','ドラゴンテール','ほえる'].includes(r.name));
+  if(opAsleep && top && top.hi>0){
+    const n = Math.ceil(leftPct/top.hi);
+    if(n <= 2){
+      best = top;
+      why = `相手は動けません。<b>${top.name}なら${n}発</b>で落とせます。`
+          + `起きる前に落とし切るのがいちばん確実です`;
+    }else if(hazard){
+      best = hazard;
+      why = `相手は動けませんが、<b>${top.name}では${n}発</b>かかります（起きて反撃されます）。`
+          + `この動けないターンは<b>${hazard.name}</b>に使ってください`;
+    }else if(phaze){
+      best = phaze;
+      why = `相手は動けず、設置も置き終わっています。<b>${phaze.name}</b>で流すと、`
+          + `出てくる駒が設置を踏みます（眠っている相手を無傷で逃がさない）`;
+    }
+  }
+  if(!best && koPri){ best = koPri; why = `先制技で確実に落とせる（優先度+${koPri.pri}）`; }
+  else if(!best && koAny){ best = koAny; why = koAny.acc<100 ? `1発で落とせる（命中${koAny.acc}%）` : '1発で落とせる'; }
+  else if(!best && opts.likelySwitch && hazard){
     best = hazard;
     why = `1発では落とせず、この対面なら相手は<b>交代してくる</b>。中途半端に殴るより${hazard.name}を置く方が得`;
   }
   /* ★打点が薄い（3発以上かかる）なら、殴るより設置。
      相手6体に効き続ける設置の方が、1回17%の攻撃より明らかに得になる（v57）。
      上位勢の座談会「一生設置してるわけじゃなく、じしんとステロの押し所が難しい」への回答。 */
-  else if(hazard && top && top.hi>0 && Math.ceil(leftPct/top.hi) >= 3){
+  else if(!best && hazard && top && top.hi>0 && Math.ceil(leftPct/top.hi) >= 3){
     best = hazard;
     why = `いちばん強い技でも${Math.ceil(leftPct/top.hi)}発かかります。`
         + `殴るより<b>${hazard.name}</b>の方が、相手6体に効き続けるぶん得`;
   }
-  else if(opts.likelySwitch && sleeper){
+  else if(!best && opts.likelySwitch && sleeper){
     best = sleeper;
     why = `1発では落とせず、相手は<b>交代してくる</b>。${sleeper.name}を入れて次につなぐ方が得`;
   }
-  else if(top){
+  else if(!best && top){
     best = top;
     why = `いちばん削れる（${Math.round(top.lo*100)}〜${Math.round(top.hi*100)}%）`;
     // 交代されても通る技が別にあるなら、そこも伝える
