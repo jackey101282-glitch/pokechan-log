@@ -345,6 +345,36 @@ function unknownMoveSlots(name){
   const sum = u.m.reduce((a,b)=> a + (b[1]||0), 0);
   return Math.max(0, 4 - sum/100);
 }
+/* ★天候で素早さが2倍になる特性（2026-08-21・v58）。**丸ごと見ていなかった。**
+   社長がハカドッグに負けた試合で表面化した。ハカドッグは **すなかき 67.1%**。
+   そして社長の軸は **カバルドン（すなおこし）＝出た瞬間に砂が降る**。
+   つまり **自分で相手を加速させている**のに、ツールは相手の素早さを砂なしのまま出していた。
+   ハカドッグ S132 → 砂で **264**。メガルカリオ(164)は抜かれる。
+   該当（採用率20%以上）：
+     すなかき … ハカドッグ67.1%／ドリュウズ28.8%
+     ようりょくそ … ウツボット94.6%／リーフィア90%／フシギバナ70.1%
+     すいすい … ツンベアー38.5% */
+/* 倒れた味方の数で威力が上がる技。データは初期威力しか持っていない */
+const GRAVE_MOVES = {
+  'おはかまいり':'倒れた味方1体につき威力+50（初期50）',
+  'しっぺがえし':'後攻なら威力2倍'
+};
+const WEATHER_SPEED = {
+  'すなあらし':'すなかき', 'にほんばれ':'ようりょくそ', 'あめ':'すいすい', 'ゆき':'ゆきかき'
+};
+/** その天候で素早さが2倍になる特性を持っているか。使用率データから採用率つきで返す */
+function weatherSpeedAbility(name, weather){
+  const want = WEATHER_SPEED[weather]; if(!want) return null;
+  const u = oppUsage(name);
+  if(u && u.a){
+    const hit = (u.a||[]).find(x=> x[0]===want && x[1] >= 20);
+    return hit ? {name:want, rate:hit[1]} : null;
+  }
+  // 使用率データが無い種は、既知の特性表で見る（採用率は出せない）
+  const list = OPP_ABILITY[toBase(name)] || [];
+  return list.includes(want) ? {name:want, rate:null} : null;
+}
+
 function oppScarfRate(name){
   if(name.startsWith('メガ')) return 0;
   const u = oppUsage(name); if(!u) return 0;
@@ -1245,6 +1275,19 @@ function matchupVs(mine, oppName, opp, known, st){
   // 積み・まひ・おいかぜは行動順をひっくり返すので、素早さにも必ず効かせる
   myS = Math.floor(myS * rankMul(st.mySpeRank||0)) * (st.myParalysis?0.5:1) * (st.myTailwind?2:1);
   opS = Math.floor(opS * rankMul(st.opSpeRank||0)) * (st.opParalysis?0.5:1) * (st.opTailwind?2:1);
+  /* ★天候で素早さが2倍になる特性（v58）。ここを見ていなかったので、
+     砂を撒いた瞬間にハカドッグ(すなかき)に抜かれることを一度も警告できていなかった。
+     こちら側にも同じ規則を当てる（構築に該当者がいれば効く）。 */
+  /* ★この駒の特性が天候を作るなら、天候は「確実に起きる」ので織り込む（推測ではない）。
+     カバルドン（すなおこし）は場に出た時点で砂が降る。
+     以前は st.weather が空だと砂なしで計算していたので、
+     カバルドン vs ハカドッグ(すなかき67.1%) を「◎」と言い切っていた。 */
+  const WEATHER_MAKER = {'すなおこし':'すなあらし','ひでり':'にほんばれ','あめふらし':'あめ','ゆきふらし':'ゆき'};
+  const effWeather = st.weather || WEATHER_MAKER[mine.ability||''] || '';
+  const opWS = weatherSpeedAbility(oppName, effWeather);
+  if(opWS) opS *= 2;
+  const myWA = mine.ability || '';
+  if(effWeather && WEATHER_SPEED[effWeather] === myWA) myS *= 2;
   myS = Math.floor(myS); opS = Math.floor(opS);
   const faster = myS > opS;
 
@@ -1303,7 +1346,7 @@ function matchupVs(mine, oppName, opp, known, st){
            wallsIt, stallsIt, roles:role,
            sureHits, winsRaceSure, threatRate: thr.threatRate||0, hitting: thr.hitting||[],
            oppRows: thr.rows||[], immuneMoves: thr.immune||[], opAtkAbility: thr.atkAbility||null,
-           opHits, opHitsHi, guard: guardEff, guardRaw: guard, guardBroken,
+           opHits, opHitsHi, guard: guardEff, guardRaw: guard, guardBroken, opWeatherSpeed: opWS, effWeather,
            opMultiHit: multiHitOf(thr.move) ? thr.move : null };
 }
 
@@ -1652,8 +1695,36 @@ function callIt(mine, oppName, opts){
     t:`ここで<b>設置技</b>を置くと、相手6体すべてに効き続ける`});
   if(!mu.faster && mu.fasterAny && oppScarfRate(oppName)>=15)
     detail.push({k:'bad', t:`こだわりスカーフ採用${oppScarfRate(oppName)}%。持たれていると抜かれる`});
+  /* ★天候で相手が2倍速になる（v58）。社長がハカドッグに負けた原因。 */
+  if(mu.opWeatherSpeed){
+    detail.push({k:'bad',
+      t:`いまの天候で相手は<b>${mu.opWeatherSpeed.name}</b>`
+        + (mu.opWeatherSpeed.rate!=null?`（採用${mu.opWeatherSpeed.rate}%）`:'')
+        + `。素早さが<b>2倍＝${mu.opS}</b>になっています（こちら ${mu.myS}）`});
+  }else{
+    /* まだ天候が出ていなくても、**この駒を出した瞬間に自分で天候を作る**なら先に言う。
+       カバルドン（すなおこし）は場に出ただけで砂が降る＝自分で相手を加速させる。 */
+    const MAKER = {'すなおこし':'すなあらし','ひでり':'にほんばれ','あめふらし':'あめ','ゆきふらし':'ゆき'};
+    const w = MAKER[mine.ability||''];
+    const ws = w ? weatherSpeedAbility(oppName, w) : null;
+    if(ws){
+      detail.push({k:'bad',
+        t:`<b>${mine.ability}</b>で${w}になります。相手は<b>${ws.name}</b>`
+          + (ws.rate!=null?`（採用${ws.rate}%）`:'')
+          + `なので、<b>出した瞬間に相手の素早さが2倍</b>になります。この相手の前にこの駒を置かないこと`});
+    }
+  }
   if(opGuard) detail.push({k:'bad',
     t:`相手は<b>${opGuard.name}</b>（採用${opGuard.rate}%）で<b>満タンからの1発を耐えます</b>。1発で落とせる計算でも1残ることを前提に動くこと`});
+  /* ★倒れた味方の数で威力が上がる技（v58）。データ上は威力50の固定なので、
+     終盤ほど大幅に過小評価する。盤面の「何体落ちたか」はツールが持っていないので、
+     数字は出さずに**仕組みだけ必ず伝える**（推測で数字を出さない）。 */
+  (mu.oppRows||[]).filter(r=> GRAVE_MOVES[r.move] && r.rateOf>=20).forEach(r=>{
+    detail.push({k:'bad',
+      t:`<b>${r.move}</b>（採用${Math.round(r.rateOf)}%）は<b>${GRAVE_MOVES[r.move]}</b>。`
+        + `ここに出ている ${pc(r.rate)}〜${pc(r.rateHi)}% は<b>相手がまだ1体も落ちていない場合</b>の数字です。`
+        + `終盤はこれより大きく増えます`});
+  });
   /* ★連続技（v55）。1発ぶんで計算していたせいで実戦2敗している。
      ただし2〜5連撃は「全段当たったとき」を最悪ケースとして出しているので、
      何連撃を見た数字なのかを必ず併記する（鉄則⑥：確度を落として根拠を出す）。 */
@@ -2149,6 +2220,108 @@ function normKana(s){
   const small = {'ぁ':'あ','ぃ':'い','ぅ':'う','ぇ':'え','ぉ':'お','ゃ':'や','ゅ':'ゆ','ょ':'よ','っ':'つ','ゎ':'わ'};
   return t.replace(/[ぁぃぅぇぉゃゅょっゎ]/g, c=>small[c]).replace(/[ｰ－—]/g,'ー');
 }
+/* ★種族名の検索を1本にまとめる（2026-08-21・v58）。
+   社長が「ハカドッグが検索で出てこなかった」で1敗した。原因は**濁点**。
+   「ハカドッ**ク**」と打つと出てこない。見せ合いの小さい文字では グ／ク を読み違える。
+   しかも同じ用途の検索が**3か所に別実装**であった（鉄則⑤の違反）：
+     ①対戦タブ … ひらがな→カタカナ＋ローマ字。濁点は見ていない
+     ②記録タブ・構築タブ … `name.includes(q)` だけ。ひらがなで打つと1件も出ない
+     ③core.js の `normKana()`＋`editDistance()` … いちばん正しいのに、音声メモでしか使っていなかった
+   → ③を全部の入口で使う。313種で濁点を落としても**名前の衝突は0件**であることを確認済み。 */
+
+/** ローマ字化（訓令式）。app側と同じ規則をcoreに置き、検索を1本にする */
+const ROMA_TBL = {
+  'キャ':'kya','キュ':'kyu','キョ':'kyo','シャ':'sya','シュ':'syu','ショ':'syo',
+  'チャ':'tya','チュ':'tyu','チョ':'tyo','ニャ':'nya','ニュ':'nyu','ニョ':'nyo',
+  'ヒャ':'hya','ヒュ':'hyu','ヒョ':'hyo','ミャ':'mya','ミュ':'myu','ミョ':'myo',
+  'リャ':'rya','リュ':'ryu','リョ':'ryo','ギャ':'gya','ギュ':'gyu','ギョ':'gyo',
+  'ジャ':'zya','ジュ':'zyu','ジョ':'zyo','ビャ':'bya','ビュ':'byu','ビョ':'byo',
+  'ピャ':'pya','ピュ':'pyu','ピョ':'pyo','ヂャ':'zya','ヂュ':'zyu','ヂョ':'zyo',
+  'ア':'a','イ':'i','ウ':'u','エ':'e','オ':'o','カ':'ka','キ':'ki','ク':'ku','ケ':'ke','コ':'ko',
+  'サ':'sa','シ':'si','ス':'su','セ':'se','ソ':'so','タ':'ta','チ':'ti','ツ':'tu','テ':'te','ト':'to',
+  'ナ':'na','ニ':'ni','ヌ':'nu','ネ':'ne','ノ':'no','ハ':'ha','ヒ':'hi','フ':'hu','ヘ':'he','ホ':'ho',
+  'マ':'ma','ミ':'mi','ム':'mu','メ':'me','モ':'mo','ヤ':'ya','ユ':'yu','ヨ':'yo',
+  'ラ':'ra','リ':'ri','ル':'ru','レ':'re','ロ':'ro','ワ':'wa','ヲ':'wo','ン':'n',
+  'ガ':'ga','ギ':'gi','グ':'gu','ゲ':'ge','ゴ':'go','ザ':'za','ジ':'zi','ズ':'zu','ゼ':'ze','ゾ':'zo',
+  'ダ':'da','ヂ':'zi','ヅ':'zu','デ':'de','ド':'do','バ':'ba','ビ':'bi','ブ':'bu','ベ':'be','ボ':'bo',
+  'パ':'pa','ピ':'pi','プ':'pu','ペ':'pe','ポ':'po',
+  'ァ':'a','ィ':'i','ゥ':'u','ェ':'e','ォ':'o','ャ':'ya','ュ':'yu','ョ':'yo','ー':''
+};
+function toRomaji(name){
+  const kata = String(name||'').replace(/[ぁ-ん]/g, ch=>String.fromCharCode(ch.charCodeAt(0)+0x60));
+  let out='';
+  for(let i=0;i<kata.length;i++){
+    const one = kata[i];
+    if(one==='ッ'){                       // 促音は次の子音を重ねる（gekkouga）
+      const nx = ROMA_TBL[kata.slice(i+1,i+3)] || ROMA_TBL[kata[i+1]] || '';
+      if(nx && !'aiueo'.includes(nx[0])) out += nx[0];
+      continue;
+    }
+    const two = kata.slice(i,i+2);
+    if(ROMA_TBL[two]!==undefined){ out+=ROMA_TBL[two]; i++; continue; }
+    out += (ROMA_TBL[one]!==undefined) ? ROMA_TBL[one] : '';
+  }
+  return out;
+}
+/** ローマ字の揺れを1つに寄せる。ヘボン式／訓令式／長音／促音の揺れ、そして**濁点**まで吸収する */
+function romajiKey(s){
+  return String(s||'').toLowerCase()
+    .replace(/shi/g,'si').replace(/chi/g,'ti').replace(/tsu/g,'tu')
+    .replace(/fu/g,'hu').replace(/ji/g,'zi')
+    .replace(/sha/g,'sya').replace(/shu/g,'syu').replace(/sho/g,'syo')
+    .replace(/cha/g,'tya').replace(/chu/g,'tyu').replace(/cho/g,'tyo')
+    .replace(/ja/g,'zya').replace(/ju/g,'zyu').replace(/jo/g,'zyo')
+    .replace(/[^a-z]/g,'')
+    .replace(/([aiueo])\1+/g,'$1').replace(/ou/g,'o')   // 長音の揺れ
+    .replace(/([kstnhmyrwgzdbp])\1+/g,'$1')             // 促音の揺れ（hakkadoggu も当たる）
+    .replace(/[gz]/g,c=> c==='g'?'k':'s')                 // ★濁点を落とす
+    .replace(/[db]/g,c=> c==='d'?'t':'h')
+    .replace(/p/g,'h').replace(/v/g,'u');
+}
+/** 検索用のキー。濁点・小書き・長音・ひらがな／カタカナの違いを全部潰す */
+function nameKey(s){
+  return normKana(s).replace(/[ー]/g,'');
+}
+const _keyCache = new Map();
+function keysOf(name){
+  if(!_keyCache.has(name)) _keyCache.set(name, {k:nameKey(name), r:romajiKey(toRomaji(name))});
+  return _keyCache.get(name);
+}
+
+/** 種族名を探す。全部の入口（対戦タブ・記録タブ・構築タブ）はこれを使うこと。
+ *  戻り値: {list:[名前], fuzzy:boolean}  fuzzy=true は「もしかして」候補 */
+function searchSpecies(query, opts){
+  opts = opts || {};
+  const q = String(query||'').trim();
+  const all = Object.keys(SPECIES)
+    .filter(n=> !(opts.noMega && isMegaForm(n)))
+    .filter(n=> !(opts.exclude||[]).includes(n));
+  if(!q) return {list: all.slice(0, opts.limit||12), fuzzy:false};
+
+  const isRoma = /^[A-Za-z]+$/.test(q);
+  const qk = isRoma ? romajiKey(q) : nameKey(q);
+  const keyOf = n => isRoma ? keysOf(n).r : keysOf(n).k;
+
+  const hit = all.filter(n=> keyOf(n).includes(qk))
+    .sort((a,b)=> keyOf(a).indexOf(qk)-keyOf(b).indexOf(qk) || a.length-b.length);
+  if(hit.length) return {list: hit.slice(0, opts.limit||12), fuzzy:false};
+
+  /* ★0件で終わらせない。1〜2文字の打ち間違いを拾って「もしかして」を出す。
+     「見つかりません」で終わると、社長は登録をあきらめるか、別のポケモンを入れてしまう（実際に3敗している）。 */
+  const near = all.map(n=>({n, d: editDistance(qk, keyOf(n))}))
+    .filter(x=> x.d <= Math.max(1, Math.min(2, Math.floor(qk.length/3))))
+    .sort((a,b)=> a.d-b.d || a.n.length-b.n.length);
+  if(near.length) return {list: near.slice(0, opts.limit||8).map(x=>x.n), fuzzy:true};
+
+  /* それでも0件なら、打ちかけ（頭3文字以上が一致）だけ拾う。
+     ★ここを2文字にしていたら、でたらめな入力に無関係な候補が10件出た。
+     **間違った候補を出すのは、0件で返すより悪い**（社長が違うポケモンを登録して負けている）。 */
+  const part = qk.length>=3
+    ? all.filter(n=> keyOf(n).startsWith(qk.slice(0,3))).sort((a,b)=> a.length-b.length)
+    : [];
+  return {list: part.slice(0, 5), fuzzy: part.length>0};
+}
+
 function editDistance(a,b){
   const m=a.length,n=b.length; if(!m) return n; if(!n) return m;
   let prev=[...Array(n+1).keys()], cur=new Array(n+1);
@@ -2386,6 +2559,7 @@ global.PC = {
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
   bestOffense, bestThreat, immuneType, myOneHitGuard, myRoles, supportValue, oppUsage, oppTypeItem,
   readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
-  similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana
+  similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana,
+  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED
 };
 })(window);

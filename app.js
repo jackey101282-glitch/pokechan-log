@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '57';
+const APP_VERSION = '58';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -134,13 +134,12 @@ function makeSpeciesSource(noMega){
   return q=>{
     const seen = {};
     BATTLES.forEach(b=> (b.opp_team||[]).forEach(n=> seen[n]=(seen[n]||0)+1));
-    const hit = n => !q || n.includes(q);
-    let list = SPECIES_NAMES.filter(hit);
-    if(noMega) list = list.filter(n=> !PC.isMegaForm(n));
+    /* ★ここも PC.searchSpecies() に統一（v58）。
+       以前は `n.includes(q)` だけで、**ひらがなで打つと1件も出なかった**。 */
+    const list = PC.searchSpecies(q, {noMega:!!noMega, limit:40}).list;
     return list.sort((a,b)=>{
       const d=(seen[b]||0)-(seen[a]||0); if(d) return d;
-      const ai=a.indexOf(q), bi=b.indexOf(q);
-      return (ai<0?99:ai)-(bi<0?99:bi) || a.length-b.length;
+      return 0;                                  // 並びは searchSpecies が決めた順を尊重する
     }).map(n=>{
       const tags=[];
       if(seen[n]) tags.push(`過去${seen[n]}回`);
@@ -948,67 +947,10 @@ function newBT(keepObs){
 }
 let BT = newBT();
 
-/* ★ローマ字で相手を探せるようにする（2026-08-21・PC操作になったため）。
-   社長は **相手を特定できずに間違って登録して2敗している**（デスバーンをゴルーグ、レパルダスをブラッキー）。
-   選出は90秒しかないのに、PCだと日本語IMEに切り替える手間が乗る。
-   「desuba」で デスバーン が出れば、その手間がゼロになる。
-   ローマ字はヘボン式・訓令式の両方を受ける（si/shi, ti/chi, tu/tsu, hu/fu, zi/ji）。 */
-const ROMA = {
-  'キャ':'kya','キュ':'kyu','キョ':'kyo','シャ':'sya','シュ':'syu','ショ':'syo',
-  'チャ':'tya','チュ':'tyu','チョ':'tyo','ニャ':'nya','ニュ':'nyu','ニョ':'nyo',
-  'ヒャ':'hya','ヒュ':'hyu','ヒョ':'hyo','ミャ':'mya','ミュ':'myu','ミョ':'myo',
-  'リャ':'rya','リュ':'ryu','リョ':'ryo','ギャ':'gya','ギュ':'gyu','ギョ':'gyo',
-  'ジャ':'zya','ジュ':'zyu','ジョ':'zyo','ビャ':'bya','ビュ':'byu','ビョ':'byo',
-  'ピャ':'pya','ピュ':'pyu','ピョ':'pyo','ヂャ':'zya','ヂュ':'zyu','ヂョ':'zyo',
-  'ア':'a','イ':'i','ウ':'u','エ':'e','オ':'o','カ':'ka','キ':'ki','ク':'ku','ケ':'ke','コ':'ko',
-  'サ':'sa','シ':'si','ス':'su','セ':'se','ソ':'so','タ':'ta','チ':'ti','ツ':'tu','テ':'te','ト':'to',
-  'ナ':'na','ニ':'ni','ヌ':'nu','ネ':'ne','ノ':'no','ハ':'ha','ヒ':'hi','フ':'hu','ヘ':'he','ホ':'ho',
-  'マ':'ma','ミ':'mi','ム':'mu','メ':'me','モ':'mo','ヤ':'ya','ユ':'yu','ヨ':'yo',
-  'ラ':'ra','リ':'ri','ル':'ru','レ':'re','ロ':'ro','ワ':'wa','ヲ':'wo','ン':'n',
-  'ガ':'ga','ギ':'gi','グ':'gu','ゲ':'ge','ゴ':'go','ザ':'za','ジ':'zi','ズ':'zu','ゼ':'ze','ゾ':'zo',
-  'ダ':'da','ヂ':'zi','ヅ':'zu','デ':'de','ド':'do','バ':'ba','ビ':'bi','ブ':'bu','ベ':'be','ボ':'bo',
-  'パ':'pa','ピ':'pi','プ':'pu','ペ':'pe','ポ':'po',
-  'ァ':'a','ィ':'i','ゥ':'u','ェ':'e','ォ':'o','ャ':'ya','ュ':'yu','ョ':'yo','ッ':'','ー':''
-};
-/** カタカナ名 → ローマ字。訓令式で作り、照合側でヘボン式も吸収する */
-function toRoma(name){
-  const kata = name.replace(/[ぁ-ん]/g, ch=>String.fromCharCode(ch.charCodeAt(0)+0x60));
-  let out='';
-  for(let i=0;i<kata.length;i++){
-    const one = kata[i];
-    /* ★促音は「次の子音を重ねる」。これを空文字にしていたので
-       ゲッコウガ が gekouga になり、素直に打った gekkouga で出てこなかった。 */
-    if(one==='ッ'){
-      const nxt = ROMA[kata.slice(i+1,i+3)] !== undefined ? ROMA[kata.slice(i+1,i+3)]
-                : ROMA[kata[i+1]] !== undefined ? ROMA[kata[i+1]] : '';
-      if(nxt && /^[a-z]/.test(nxt) && !'aiueo'.includes(nxt[0])) out += nxt[0];
-      continue;
-    }
-    const two = kata.slice(i,i+2);
-    if(ROMA[two]!==undefined){ out+=ROMA[two]; i++; continue; }
-    out += (ROMA[one]!==undefined) ? ROMA[one] : '';
-  }
-  return out;
-}
-/** ヘボン式・訓令式の揺れを1つに寄せる（si/shi どちらで打っても当たるように） */
-function romaKey(s){
-  return s.toLowerCase()
-    .replace(/shi/g,'si').replace(/chi/g,'ti').replace(/tsu/g,'tu')
-    .replace(/fu/g,'hu').replace(/ji/g,'zi').replace(/sha/g,'sya')
-    .replace(/shu/g,'syu').replace(/sho/g,'syo').replace(/cha/g,'tya')
-    .replace(/chu/g,'tyu').replace(/cho/g,'tyo').replace(/ja/g,'zya')
-    .replace(/ju/g,'zyu').replace(/jo/g,'zyo').replace(/[^a-z]/g,'')
-    /* ★長音の揺れを吸収する。名前側の「ー」は文字が消えるので デスバーン → desuban になるが、
-       人が素直に打つのは desubaan。両側で母音の連続を1つに畳んで、どちらでも当たるようにする。
-       ついでに ou→o（ゲッコウガ gekkouga / gekkoga のどちらでも当たる）。 */
-    .replace(/([aiueo])\1+/g,'$1').replace(/ou/g,'o');
-}
-const _romaCache = new Map();
-function romaOf(name){
-  if(!_romaCache.has(name)) _romaCache.set(name, romaKey(toRoma(name)));
-  return _romaCache.get(name);
-}
-
+/* ★種族名の検索は core.js の PC.searchSpecies() に一本化した（2026-08-21・v58）。
+   以前はここに独自のローマ字実装を置いていたが、記録タブ・構築タブは別実装で、
+   しかもどれも**濁点の揺れを見ていなかった**。社長が「ハカドッグが出てこない」で1敗している。
+   同じ用途の検索を画面ごとに書かないこと（鉄則⑤）。 */
 function initBtUI(){
   /* ★2026-08-19 修正：ここが「上書き」だったせいで、
      ボタンで選んだ相手が「読み取る」を押した瞬間に全部消えていた。社長が選出に間に合わず1戦落としている。
@@ -1077,23 +1019,18 @@ function initBtUI(){
     if(!q){ box.innerHTML=''; return; }
     const kana = t => t.replace(/[ぁ-ん]/g, c=>String.fromCharCode(c.charCodeAt(0)+0x60))
                        .replace(/[ー－]/g,'').replace(/[ァィゥェォャュョッ]/g,'');
-    const k = kana(q);
-    /* ★ローマ字でも探せる（PC操作・IME切替の手間をゼロにする）。
-       半角英字だけの入力はローマ字とみなす。かなが混じっていれば従来どおり名前照合。 */
-    const isRoma = /^[A-Za-z]+$/.test(q);
-    const rk = isRoma ? romaKey(q) : '';
-    const hit = Object.keys(PC.SPECIES)
-      .filter(n=> !BT.opp.includes(n) && (isRoma ? romaOf(n).includes(rk) : kana(n).includes(k)))
-      .sort((a,b)=> isRoma
-        ? (romaOf(a).indexOf(rk)-romaOf(b).indexOf(rk) || a.length-b.length)
-        : (kana(a).indexOf(k)-kana(b).indexOf(k) || a.length-b.length))
-      .slice(0,10);
+    /* ★ひらがな・カタカナ・ローマ字・濁点の揺れ・1〜2文字の打ち間違いまで、全部ここが吸収する */
+    const res = PC.searchSpecies(q, {exclude:BT.opp, limit:10});
+    const hit = res.list;
     BT._searchTop = hit[0] || null;      // Enterで先頭を足すために覚えておく
     const full = BT.opp.length>=6;
     box.innerHTML = hit.length
       ? (full?`<div class="small" style="width:100%;color:var(--org);font-weight:700">もう6体入っています。入れ替えるには <b>× </b>で1体外してください</div>`:'')
+        /* ★完全一致が無いときは「もしかして」と明示する。黙って似た名前を出すと、
+           違うポケモンを登録したことに気づけない（実際に3敗している） */
+        + (res.fuzzy?`<div class="small" style="width:100%;color:var(--org)">完全に一致する名前はありません。<b>もしかして：</b></div>`:'')
         + hit.map(n=>`<button class="qb mini ${full?'dim':''}" data-bs="${esc(n)}">${typeDots(n)}${esc(n)}</button>`).join('')
-      : '<span class="small muted">見つかりません</span>';
+      : '<span class="small muted">見つかりません。<b>上の「タイプで探す」</b>なら、名前が分からなくても必ず見つかります</span>';
     $$('#btSearchOut [data-bs]').forEach(b=> b.onclick=()=>{
       if(BT.opp.length>=6) return toast('6匹までです。× で1体外してください',true);
       BT.opp.push(b.dataset.bs); $('#btSearch').value='';
@@ -2743,10 +2680,9 @@ $('#impRun').onclick = async ()=>{
 let SF = { list:[] };
 function initStatForm(){
   if(!$('#sfName')) return;
-  autocomplete('#sfName','#sfNameSug', q=>{
-    const hit=n=>!q||n.includes(q);
-    return Object.keys(PC.SPECIES).filter(hit).sort((a,b)=>a.indexOf(q)-b.indexOf(q)||a.length-b.length).slice(0,12);
-  }, n=>{ $('#sfName').value=n; sfSolveShow(); });
+  autocomplete('#sfName','#sfNameSug',
+    q=> PC.searchSpecies(q, {limit:12}).list,
+    n=>{ $('#sfName').value=n; sfSolveShow(); });
   ['#sfH','#sfA','#sfB','#sfC','#sfD','#sfS','#sfName'].forEach(id=> $(id).addEventListener('input', sfSolveShow));
   $('#sfAdd').onclick = ()=> safe('登録', sfAdd, '#sfMsg');
   $('#sfSave').onclick = ()=> safe('保存', sfSave, '#sfMsg');
