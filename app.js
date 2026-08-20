@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '64';
+const APP_VERSION = '65';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -945,6 +945,10 @@ function newBT(keepObs){
               dealt[相手名] = [{move,pct}] … こちらが与えた実測ダメージ
               pending      = 次にHPを更新したときに紐づける技名 */
            dealt:{}, pending:null,
+           /* ★実際に場に出した自分の駒（v65）。
+              保存していた my_pick は **ツールの推奨（BT.picks）** で、
+              社長が実際に出した3体ではなかった。分析の土台が崩れていた。 */
+           usedMine:[],
            _searchTop:null,
            /* 前回の盤面を古いとして捨てたか（開いたときに1度だけ知らせる） */
            _staleDropped:false };
@@ -1348,6 +1352,23 @@ function btRender(){
         <button class="qb ${d.result==='win'?'on':'off'}" data-dn="result" data-dv="win">勝ち</button>
         <button class="qb ${d.result==='lose'?'on':'off'}" data-dn="result" data-dv="lose">負け</button>
       </div>
+      ${(()=>{ /* ★実際に出した3体（v65）。ここを記録していなかったため、
+           保存されていた「こちらの選出」は**ツールの推奨**で、社長が本当に出した3体ではなかった。
+           試合中に「自分」チップで押した駒が初期値なので、ふつうは確認するだけで済む。 */
+        const rc2 = rosterForCalc(currentRoster(), BT.mega);
+        const cur = (d.myPick && d.myPick.length) ? d.myPick : (BT.usedMine||[]).slice(0,3);
+        const ok = cur.length===3;
+        return `<div class="small" style="font-weight:800;margin-top:12px">
+            実際に出した3体<span class="muted"> ${ok?'合っていればそのまま':'タップして選んでください'}</span></div>
+          <div class="quick">${rc2.map(m=>{
+            const i = cur.indexOf(m.label);
+            return `<button class="qb mini ${i>=0?'on':'off'}" data-dn="myPick" data-dv="${esc(m.label)}">${
+              i>=0?`<b>${'①②③'[i]||''}</b> `:''}${typeDots(m.name)}${esc(m.disp||m.label)}</button>`;
+          }).join('')}</div>
+          <div class="small ${ok?'muted':''}" style="${ok?'':'color:var(--org)'}">${
+            ok ? `実際に出した3体：${cur.join(' → ')}`
+               : `<b>${cur.length}体しか選ばれていません。</b>ツールの推奨ではなく、あなたが実際に出した3体を残します`}</div>`;
+      })()}
       <div class="small" style="font-weight:800;margin-top:12px">相手の選出<span class="muted"> 出てきた順にタップ（①が初手）</span></div>
       <div class="quick">${BT.opp.map(n=>{
         const i=(d.oppPick||[]).indexOf(n);
@@ -1388,6 +1409,13 @@ function btRender(){
       const k=b.dataset.dn, v=b.dataset.dv;
       if(k==='oppPick'){ const a=d.oppPick||[]; const i=a.indexOf(v);
         if(i>=0) a.splice(i,1); else if(a.length<3) a.push(v); d.oppPick=a; }
+      /* 実際に出した3体。初期値は試合中に押した駒。押し直しで修正できる（v65） */
+      else if(k==='myPick'){
+        const a = (d.myPick && d.myPick.length) ? d.myPick : (BT.usedMine||[]).slice(0,3);
+        const i = a.indexOf(v);
+        if(i>=0) a.splice(i,1); else if(a.length<3) a.push(v);
+        d.myPick = a;
+      }
       else if(k==='causes'){ const a=d.causes||[]; const i=a.indexOf(v);
         if(i>=0) a.splice(i,1); else a.push(v); d.causes=a; }   // 敗因は複数選べる（原因は1つとは限らない）
       else d[k] = (d[k]===v ? null : v);
@@ -1398,9 +1426,19 @@ function btRender(){
     $('#btDoneSave').onclick = async ()=>{
       keepText();
       if(!d.result) return toast('勝ち／負けを選んでください',true);
+      /* ★実際に出した3体が入っていないと、分析の土台が壊れる（v65の修正点そのもの）。
+         入っていなければ、試合中に押した駒で補う。それも無ければ止める。 */
+      if(!d.myPick || !d.myPick.length) d.myPick = (BT.usedMine||[]).slice(0,3);
+      /* ★ここでツールの推奨を代わりに入れない。それをやっていたのが今回の不具合の正体。
+         分からないまま埋めるより、1タップ聞く方がよい。 */
+      if(d.myPick.length < 3) return toast('「実際に出した3体」をタップしてください（分析がこれで決まります）', true);
       const rec={ user_id:USER.id, team_id:$('#fTeam').value||null, played_at:todayStr(),
         season:$('#fSeason').value||null, rule:$('#fRule').value||'single', rank:$('#fRank').value||null,
-        opp_team:BT.opp, my_pick:BT.picks, opp_pick:d.oppPick||[], mega:BT.mega||null,
+        /* ★my_pick は「実際に出した3体」。以前はここに BT.picks（＝ツールの推奨）を
+           そのまま入れていたため、**社長が推奨と違う選出をしても記録は推奨のまま**だった。
+           駒ごとの勝率も選出別の勝率も、実際の選出ではなく推奨に対する数字になっていた（v65で修正）。 */
+        opp_team:BT.opp, my_pick:d.myPick,
+        opp_pick:d.oppPick||[], mega:BT.mega||null,
         turns:[], result:d.result,
         lose_cause:(d.causes||[]).join(' / ')||null, pain_mon:d.painMon||null, pain_move:d.painMove||null,
         memo:(d.memo||'').trim()||null, should_pick:d.should||null, want_move:(d.want||'').trim()||null,
@@ -1506,6 +1544,11 @@ function btNowRender(){
     BT.me = lead ? lead.label : (mine.filter(inPick)[0]||mine[0]).label;
   }
   const me = mine.find(m=>m.label===BT.me) || mine[0];
+  /* ★ここで BT.usedMine に足さないこと（v65）。
+     既定の選択は「ツールが推奨した初手」なので、社長が押していないのに
+     「出した」と記録され、**推奨で埋める**という直したはずの不具合が形を変えて戻る。
+     記録するのは社長が実際にチップを押したときだけ。押していなければ
+     試合終了の画面で1タップ確認してもらう。 */
   const maxHP = me.stats ? me.stats.h : 0;
   BT.hp = BT.hp||{}; BT.oppHp = BT.oppHp||{};
   const hp = BT.hp[me.label]!=null ? BT.hp[me.label] : maxHP;
@@ -1687,7 +1730,14 @@ function btNowRender(){
     const iw=$('#btInputWrap'); if(iw) iw.open=false;
     btNowRender();
   });
-  $$('#btNow [data-btme]').forEach(b=> b.onclick=()=>{ BT.me=b.dataset.btme; BT.meManual=true; btNowRender(); });
+  $$('#btNow [data-btme]').forEach(b=> b.onclick=()=>{
+    BT.me=b.dataset.btme; BT.meManual=true;
+    /* ★出した順に記録する。試合終了時の「実際に出した3体」の初期値になる（v65）。
+       追加のタップは要らない。社長はどのみちこのチップを押している。 */
+    BT.usedMine = BT.usedMine || [];
+    if(!BT.usedMine.includes(BT.me)) BT.usedMine.push(BT.me);
+    saveBtDraft(); btNowRender();
+  });
   /* ★相手の残りHPを更新したら、その差分を「直前に撃った技」に紐づけて残す（v62）。
      社長の要望「何を撃ったことでどのくらい減ったかを残したい」。
      技を指定していなければ、割合の変化だけ記録する（技名なし）。 */
