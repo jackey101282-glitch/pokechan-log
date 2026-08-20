@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '46';
+const APP_VERSION = '47';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -2199,6 +2199,119 @@ function rateRow(label,w,n,bad,extra){
   const p=pct(w,n);
   return `<tr class="${bad?'bad':''}"><td>${esc(label)}<div class="bar"><i style="width:${p}%"></i></div></td>${extra||''}<td class="num">${n}</td><td class="num">${p}%</td></tr>`;
 }
+/* ---------- 構築のアップグレード提案 ----------
+   社長の要望（2026-08-20）：
+   「メモや敗因をちゃんと分析して『こうするべき』を出してほしい。
+     アシレーヌにルカリオを勧められたが、実際に倒したのはカイリューだった、みたいなズレを溜めて、
+     環境に合わせて構築をアップグレードしていきたい。
+     自分の6体の使用率もカウントして、使わない駒／重い相手への対策を出したい」
+
+   ★設計方針：**母数を必ず出す。足りないときは断定しない。**
+     少ない試合数で「この駒を切れ」と言うのは、運と実力の区別がつかないまま構築を壊す行為なので、
+     3戦未満は「まだ判定できません（あと◯戦）」と正直に出す。 */
+const UP_MIN = 3;                      // これ未満の母数では結論を出さない
+function renderUpgrade(B, L){
+  const host = $('#upgrade'); if(!host) return;
+  const roster = currentRoster();
+  if(!B.length || !roster.length){
+    host.innerHTML = '<div class="small muted">記録がまだありません。試合が終わったら対戦タブから残してください</div>';
+    return;
+  }
+  const out = [];
+  const box = (title, body, note) =>
+    `<div class="mg"><div class="op">${title}</div><div class="small">${body}</div>` +
+    (note?`<div class="small muted" style="margin-top:4px">${note}</div>`:'') + '</div>';
+
+  /* ① 自分の駒の選出率と勝率。使っていない枠＝構築の穴 */
+  const mine = {};
+  roster.forEach(m=> mine[m.name] = {n:0, w:0});
+  B.forEach(b=> (b.my_pick||[]).forEach(n=>{ if(mine[n]){ mine[n].n++; if(b.result==='win') mine[n].w++; } }));
+  /* ★name と件数の両方を n と書いてしまい、名前が数字で表示される不具合を出した（2026-08-20）。
+     同じ轍を踏まないよう、名前は name、件数は cnt と別の名前にしてある。 */
+  const rows = Object.entries(mine).map(([name,v])=>({name, cnt:v.n, w:v.w}))
+    .sort((a,b)=> a.cnt-b.cnt);
+  out.push(box('駒ごとの選出率と勝率',
+    rows.map(r=>`${esc(r.name)} … <b>${r.cnt}回</b>（${pct(r.cnt,B.length)}%）` +
+      (r.cnt>=UP_MIN?` 勝率 <b>${pct(r.w,r.cnt)}%</b>`:' <span class="muted">勝率はまだ出せません</span>')).join('<br>'),
+    (()=>{ const dead = rows.filter(r=> B.length>=6 && r.cnt<=Math.max(1, Math.floor(B.length*0.15)));
+      return dead.length
+        ? `<b>${dead.map(r=>esc(r.name)).join('・')}</b> はほとんど選出していません。この枠が仕事をしていないなら、
+           重い相手への対策に替える価値があります（下の②を参照）`
+        : (B.length<6 ? `あと${6-B.length}戦で「使っていない枠」の判定が出せます` : '極端に出していない枠はありません'); })()));
+
+  /* ② 相手別：勝てない相手と、そのとき何を出していたか。
+        ここが「アシレーヌにはルカリオではなくカイリューだった」を拾う場所。 */
+  const per = {};
+  B.forEach(b=> new Set(b.opp_team||[]).forEach(o=>{
+    per[o] = per[o] || {n:0, w:0, by:{}};
+    per[o].n++; if(b.result==='win') per[o].w++;
+    (b.my_pick||[]).forEach(m=>{ per[o].by[m]=per[o].by[m]||{n:0,w:0}; per[o].by[m].n++; if(b.result==='win') per[o].by[m].w++; });
+  }));
+  const hard = Object.entries(per).filter(([,v])=> v.n>=UP_MIN).map(([o,v])=>({o,...v, r:v.w/v.n}))
+    .sort((a,b)=> a.r-b.r).slice(0,4);
+  if(hard.length){
+    out.push(box('この相手がいるときの実測',
+      hard.map(h=>{
+        const best = Object.entries(h.by).filter(([,v])=>v.n>=2).map(([m,v])=>({m,...v,r:v.w/v.n}))
+          .sort((a,b)=> b.r-a.r);
+        const tool = (()=>{ const rc = rosterForCalc(roster, null);
+          const cand = rc.map(m=>({m, c:PC.callIt(m, h.o, {})})).filter(x=>x.c)
+            .sort((a,b)=> b.c.mu.score-a.c.mu.score)[0];
+          return cand ? cand.m.name : null; })();
+        const actual = best[0];
+        const gap = (tool && actual && actual.m!==tool && actual.n>=2 && actual.r>0.5)
+          ? `<br><span style="color:var(--org)">ツールの推奨は <b>${esc(tool)}</b> ですが、
+             実際は <b>${esc(actual.m)}</b> を出した ${actual.n}戦で ${pct(actual.w,actual.n)}% 勝っています。
+             次はこちらを試す価値があります</span>` : '';
+        return `<b>${esc(h.o)}</b> … ${h.n}戦 ${h.w}勝${h.n-h.w}敗（勝率 ${pct(h.w,h.n)}%）` +
+          (best.length?`<br>出した駒：${best.map(x=>`${esc(x.m)} ${x.w}勝${x.n-x.w}敗`).join('、')}`:'') + gap;
+      }).join('<hr style="border:0;border-top:1px solid var(--line2);margin:8px 0">'),
+      '「ツールの推奨」は相性計算だけの結論です。実測が上回るなら、実測を優先してください'));
+  } else {
+    const near = Object.entries(per).map(([o,v])=>({o,n:v.n})).sort((a,b)=>b.n-a.n)[0];
+    out.push(box('この相手がいるときの実測',
+      near ? `いちばん多く当たっているのは <b>${esc(near.o)}</b>（${near.n}戦）です`
+           : '記録がまだありません',
+      near ? `あと${Math.max(0,UP_MIN-near.n)}戦で相手別の判定を出せます（${UP_MIN}戦以上で表示）`
+           : ''));
+  }
+
+  /* ③ 手持ちに答えが無い相手。構築を変える理由になるのはここだけ */
+  if(hard.length){
+    const rc = rosterForCalc(roster, null);
+    const noAnswer = hard.filter(h=>{
+      return !rc.some(m=>{ const c=PC.callIt(m, h.o, {}); return c && (c.head==='殴る'||c.head==='受ける'||c.head==='削る'); });
+    });
+    if(noAnswer.length){
+      out.push(box('手持ちに答えが無い相手',
+        noAnswer.map(h=>{
+          const t = (PC.SPECIES[h.o]||{}).types||[];
+          const weak = PC.TYPES ? PC.TYPES.filter(a=> PC.effectiveness(a, t) > 1) : [];
+          return `<b>${esc(h.o)}</b>（${h.n}戦 勝率${pct(h.w,h.n)}%）<br>` +
+                 `6体の誰も「殴る／受ける」に届きません。有効なタイプ：<b>${weak.join('・')}</b>`;
+        }).join('<br><br>'),
+        '<b>ここが構築を変えるべき唯一の根拠です。</b>選出やプレイングでは解決しません'));
+    }
+  }
+
+  /* ④ 記録から出た具体的な要望（既に集計済みのものを行動に変える） */
+  const sp={}, wm={};
+  L.forEach(b=>{ if(b.should_pick) sp[b.should_pick]=(sp[b.should_pick]||0)+1;
+                 if(b.want_move)  wm[b.want_move]=(wm[b.want_move]||0)+1; });
+  const spTop = Object.entries(sp).filter(([,c])=>c>=2).sort((a,b)=>b[1]-a[1]);
+  const wmTop = Object.entries(wm).filter(([,c])=>c>=2).sort((a,b)=>b[1]-a[1]);
+  if(spTop.length||wmTop.length){
+    out.push(box('自分で「こうすべきだった」と書いたもの',
+      [ spTop.length?`<b>出しておけばよかった駒</b>：${spTop.map(([n,c])=>`${esc(n)}（${c}回）`).join('、')}
+          → 基本選出に入れることを検討してください`:'',
+        wmTop.length?`<b>あると良かった技</b>：${wmTop.map(([m,c])=>`${esc(m)}（${c}回）`).join('、')}
+          → 技構成を変える理由になります`:''].filter(Boolean).join('<br>'),
+      '2回以上出てきたものだけを載せています（1回は運と区別がつかないため）'));
+  }
+
+  host.innerHTML = out.join('');
+}
+
 function renderStats(){
   const B=statSet(), w=B.filter(b=>b.result==='win').length;
   const rec=B.slice(0,20), rw=rec.filter(b=>b.result==='win').length;
@@ -2263,6 +2376,8 @@ function renderStats(){
   if(wmArr.length) $('#painMoves').innerHTML += `<div class="small" style="font-weight:800;margin-top:14px">あると良かった技</div>
     <div class="small">${wmArr.map(([m,c])=>`${esc(m)} <b>${c}回</b>`).join('　')}</div>
     <div class="small muted">2回以上出てきた技は、技構成を変える理由になります</div>`;
+
+  renderUpgrade(B, L);
 
   const opp={};
   B.forEach(b=> new Set(b.opp_team||[]).forEach(p=>{opp[p]=opp[p]||{n:0,w:0};opp[p].n++;if(b.result==='win')opp[p].w++;}));
