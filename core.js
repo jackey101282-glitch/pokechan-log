@@ -787,6 +787,129 @@ function immuneType(ability){ return IMMUNE_BY_ABILITY[ability] || null; }
 const REP_POWER = 90;   // 相手のタイプ一致技の代表威力
 
 /** 自分の最大打点（相手のHPに対する割合 0〜1）と技名。opp は assumedSpreads() の1要素 */
+/* ---------- 技の優先度（先制技） ----------
+   社長の要望（2026-08-20）：
+   「バレットパンチ・ふいうち・かげうちのような先制技を考慮したい。
+     素早さが近くて残りHPも近いなら、先に出せる技を選ぶべき」
+   MOVES データに優先度が無かったので、ここに持たせる。出典は本作の技仕様。
+   ※ふいうちは「相手が攻撃技を選んでいるときだけ成功」する条件つき。数字だけで決めない。 */
+const MOVE_PRIORITY = {
+  'まもる':4, 'みきり':4, 'こらえる':4, 'ファストガード':3, 'ねこだまし':3,
+  'しんそく':2, 'ふいうち':1, 'かげうち':1, 'バレットパンチ':1, 'こおりのつぶて':1,
+  'マッハパンチ':1, 'みずしゅりけん':1, 'アクアジェット':1, 'でんこうせっか':1,
+  'つぶらなひとみ':1, 'アクセルロック':1, 'ジェットパンチ':1, 'しんくうは':1, 'グラススライダー':1,
+  'ふきとばし':-6, 'ドラゴンテール':-6, 'ともえなげ':-6, 'ほえる':-6, 'ゆうわく':-6, 'トリックルーム':-7
+};
+const PRIORITY_NOTE = {
+  'ふいうち':'相手が攻撃技を選んでいるときだけ成功。交代・変化技を選ばれると不発',
+  'ねこだまし':'出したターンだけ。相手をひるませる',
+  'ドラゴンテール':'後攻。当てると相手を強制交代させる',
+  'ふきとばし':'後攻。相手を強制交代させる（積みを流せる）'
+};
+function movePriority(name){ return MOVE_PRIORITY[name] || 0; }
+
+/** いま撃てる技を1つずつ比べる。
+ *  社長の要望（2026-08-20）：
+ *  「どっちの技を打つべきか。相手に引っ込められることまで考えて選びたい。
+ *    こっちを打ったらこのくらい、こっちならこのくらい、が知りたい」
+ *  @param others 相手の控え（交代されたときに、その技が通るかを見る）
+ */
+function movePlan(mine, oppName, opts){
+  opts = opts || {};
+  const st = opts.st || {};
+  const os = SPECIES[oppName]; if(!os || !mine.stats) return null;
+  const spreads = assumedSpreads(oppName);
+  const oppAb = worstDefAbility(oppName);
+  const oppImm = immuneType(oppAb);
+  const leftPct = (opts.oppHPPct!=null) ? Math.max(0.01, Math.min(1, opts.oppHPPct)) : 1;
+
+  const rows = (mine.moves||[]).map(name=>{
+    const mv = MOVES[name];
+    if(!mv) return null;
+    const pri = movePriority(name);
+    if(!mv.power || mv.cat==='変'){
+      return { name, type:mv.type, cat:mv.cat, power:0, acc:mv.acc||100, pri,
+               status:true, note:PRIORITY_NOTE[name]||'' };
+    }
+    if(mv.type === oppImm) return { name, type:mv.type, cat:mv.cat, power:mv.power, acc:mv.acc||100,
+                                    pri, immune:true, note:`${oppAb}で無効` };
+    // 相手の3つの想定型すべてで計算し、いちばん硬い型を基準にする（過大評価しない）
+    let lo=1e9, hi=1e9, effV=1;
+    spreads.forEach(sp=>{
+      const def = mv.cat==='物' ? sp.stats.b : sp.stats.d;
+      const r = calcDamage({
+        attacker:{name:mine.name, atkStat: mv.cat==='物'? mine.stats.a : mine.stats.c,
+                  types:SPECIES[mine.name].types, ability:mine.ability||'', item:mine.item||'',
+                  rank: mv.cat==='物'? (st.myAtkRank||0) : (st.mySpaRank||0), hpRatio:1,
+                  intimidated: !!st.myIntimidated},
+        defender:{name:oppName, defStat:def, hp:sp.stats.h, types:os.types, ability:oppAb, item:'',
+                  rank: mv.cat==='物'? (st.opDefRank||0) : (st.opSpdRank||0), hpRatio:1},
+        move:mv, field:{ weather:st.weather||'', reflect:!!st.opReflect, lightscreen:!!st.opLightscreen,
+                         auroraveil:!!st.opAuroraveil, burn: mv.cat==='物' && !!st.myBurn }, flags:{}
+      });
+      if(r.error) return;
+      effV = r.eff;
+      const l = r.min/sp.stats.h, h = r.max/sp.stats.h;
+      if(l < lo) lo = l;                       // いちばん硬い型＝いちばん低い割合
+      if(h < hi) hi = h;
+    });
+    if(lo===1e9) return { name, type:mv.type, cat:mv.cat, power:mv.power, acc:mv.acc||100, pri, immune:true };
+    const hits = hi>0 ? Math.ceil(leftPct/hi) : 99;
+    return { name, type:mv.type, cat:mv.cat, power:mv.power, acc:mv.acc||100, pri, eff:effV,
+             lo, hi, hits, koNow: hi >= leftPct, note:PRIORITY_NOTE[name]||'' };
+  }).filter(Boolean);
+
+  /* 相手が引っ込めることを想定する。控えの誰に通るかを技ごとに見る。 */
+  const others = (opts.others||[]).filter(n=> n!==oppName && SPECIES[n]);
+  rows.forEach(r=>{
+    if(r.status || r.immune || !r.hi){ r.through = []; return; }
+    r.through = others.filter(n=>{
+      const o2 = assumedSpreads(n)[0]; if(!o2) return false;
+      const ab2 = worstDefAbility(n);
+      if(MOVES[r.name] && MOVES[r.name].type === immuneType(ab2)) return false;
+      return effectiveness(MOVES[r.name].type, SPECIES[n].types) >= 1;
+    });
+  });
+
+  // 撃つべき技を決める
+  const dmg = rows.filter(r=> !r.status && !r.immune && r.hi>0);
+  const koPri = dmg.filter(r=> r.koNow && r.pri>0).sort((a,b)=> b.pri-a.pri || b.hi-a.hi)[0];
+  const koAny = dmg.filter(r=> r.koNow).sort((a,b)=> b.acc-a.acc || b.hi-a.hi)[0];
+  const top   = dmg.sort((a,b)=> b.hi-a.hi)[0];
+  /* ★相手に引っ込められることを想定する（社長の要望 2026-08-20）。
+     こちらが有利で、しかも1発で落とせないなら、相手は高い確率で交代してくる。
+     そこに中途半端な攻撃を当てても、交代先が受けて終わり＝1ターンを捨てることになる。
+     その1ターンは、設置技や状態異常に使う方が、試合全体では得。 */
+  const PLACED = { 'ステルスロック': st.opRocks, 'まきびし': st.opSpikes,
+                   'どくびし': st.opTSpikes, 'ねばねばネット': st.opSticky };
+  /* ★三項演算子の優先順位を間違えて、設置技が一度も選ばれない式になっていた（2026-08-20 修正）。
+     PLACED[name] は「未設置なら undefined」なので、素直に否定するだけでよい。 */
+  const HAZ = ['ステルスロック','まきびし','どくびし','ねばねばネット'];
+  const hazard = rows.find(r=> r.status && HAZ.includes(r.name) && !PLACED[r.name]);
+  const sleeper = rows.find(r=> r.status && ['あくび','キノコのほうし','おにび','どくどく','でんじは'].includes(r.name));
+
+  let best = null, why = '';
+  if(koPri){ best = koPri; why = `先制技で確実に落とせる（優先度+${koPri.pri}）`; }
+  else if(koAny){ best = koAny; why = koAny.acc<100 ? `1発で落とせる（命中${koAny.acc}%）` : '1発で落とせる'; }
+  else if(opts.likelySwitch && hazard){
+    best = hazard;
+    why = `1発では落とせず、この対面なら相手は<b>交代してくる</b>。中途半端に殴るより${hazard.name}を置く方が得`;
+  }
+  else if(opts.likelySwitch && sleeper){
+    best = sleeper;
+    why = `1発では落とせず、相手は<b>交代してくる</b>。${sleeper.name}を入れて次につなぐ方が得`;
+  }
+  else if(top){
+    best = top;
+    why = `いちばん削れる（${Math.round(top.lo*100)}〜${Math.round(top.hi*100)}%）`;
+    // 交代されても通る技が別にあるなら、そこも伝える
+    const wide = dmg.filter(r=> r!==top && r.through && r.through.length > (top.through||[]).length)
+                    .sort((a,b)=> b.through.length-a.through.length)[0];
+    if(wide) why += `。交代を読むなら<b>${wide.name}</b>（控え${wide.through.length}体に通る）`;
+  }
+  return { rows, best, why };
+}
+
 function bestOffense(mine, oppName, opp, st){
   st = st || {};
   const os = SPECIES[oppName]; if(!os) return {rate:0, move:null};
@@ -1318,7 +1441,9 @@ function callIt(mine, oppName, opts){
     t:`飛んでくる技：${others.map(r=>`${r.move}(${r.rateOf}%) ${dmgTxt(r)}`).join('、')}`});
   if(mu.guard) detail.push({k:'good', t:`${mu.guard}で1発は耐える`});
   if(mu.wallsAll) detail.push({k:'good',
-    t:`相手はこちらを落とすのに<b>${mu.opHits}発</b>かかる。急いで殴らなくていい対面`});
+    t: mu.opDmg>0
+       ? `相手はこちらを落とすのに<b>${mu.opHits}発</b>かかる。急いで殴らなくていい対面`
+       : `<b>相手の技はこちらに通りません</b>（無効・または効果が薄い）。好きなだけ仕事ができる対面`});
   if(mu.roles && mu.roles.hazard && mu.wallsAll) detail.push({k:'good',
     t:`ここで<b>設置技</b>を置くと、相手6体すべてに効き続ける`});
   if(!mu.faster && mu.fasterAny && oppScarfRate(oppName)>=15)
@@ -1433,10 +1558,11 @@ function callIt(mine, oppName, opts){
     /* 殴り切れないが、相手の打点も通らず、こちらは回復を持っている＝受け切れる。
        ここを「打点なし＝引く」と切っていたので、受けの駒が選出に出てこなかった。 */
     head='受ける'; cls='ok'; mark='○';
-    why=`相手はこちらを落とすのに${mu.opHits}発かかる。回復で受け切れる`;
+    why= mu.opDmg>0 ? `相手はこちらを落とすのに${mu.opHits}発かかる。回復で受け切れる`
+                    : `相手の技がこちらに通らない。回復で受け切れる`;
   }else if(mu.wallsAll && (mu.roles&&(mu.roles.hazard||mu.roles.status||mu.roles.phase))){
     head='盤面を作る'; cls='ok'; mark='○';
-    why=`相手の打点が薄い（${mu.opHits}発）。殴り合わず${
+    why=`${mu.opDmg>0?`相手の打点が薄い（${mu.opHits}発）`:'相手の技が通らない'}。殴り合わず${
       mu.roles.hazard?'設置':mu.roles.status?'状態異常':'流し'}で仕事をする`;
   }else if(myHits >= 5){
     // 5発以上＝実戦では回復・交代・積みで必ず巻き返される
@@ -1521,7 +1647,16 @@ function callIt(mine, oppName, opts){
     }
   }
 
-  return { head, cls, mark, why, detail, todo, mu, read:rd, myHits, pLose, pOHKO,
+  /* 技ごとの比較（どれを撃つか）。相手が引くことも織り込む */
+  const moves = movePlan(mine, oppName, {
+    st, oppHPPct:opts.oppHPPct, others:opts.oppTeam||[],
+    /* 相手が引いてくる／殴り合いにならない対面では、設置技や状態異常の方が価値が高い。
+       「盤面を作る」「受ける」と結論しておきながら攻撃技を勧めるのは矛盾なので、ここも含める。 */
+    likelySwitch: ((head==='殴る' || head==='削る') && myHits>=2)
+                  || head==='盤面を作る' || head==='受ける' || head==='様子見'
+  });
+
+  return { head, cls, mark, why, detail, todo, moves, mu, read:rd, myHits, pLose, pOHKO,
            koMoves, badMoves, rows, immune: mu.immuneMoves||[],
            to: bench.length ? {name:bench[0].r.name, c:bench[0].c} : null,
            bench: bench.slice(0,3).map(x=>({name:x.r.name, c:x.c})) };
@@ -1919,7 +2054,7 @@ function observedMoves(battles){
 
 global.PC = {
   TYPES, TYPE_COLOR, TYPE_ICON, CHART, NATURES, SPECIES, MOVES,
-  whoElseHas,
+  whoElseHas, movePlan, movePriority,
   loadData, effectiveness, statHP, statOther, natureMods, realStats, assumedStat,
   assumedSpreads, spreadStats, attackerLikeness, matchupVs, SP_TOTAL, SP_MAX,
   OPP_ABILITY, worstDefAbility, survivesOneHit, OPP_TRICKS, oppTricks,

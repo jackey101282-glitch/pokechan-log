@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '52';
+const APP_VERSION = '53';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1486,7 +1486,8 @@ function btNowRender(){
   BT.board = BT.board || {};
   const st = BT.board;
   const c = me.stats ? PC.callIt(me, o, {roster: pickRoster.length?pickRoster:rc,
-                                         myHP:hp, oppHPPct:oppPct/100, known:seen, guardGone:gGone, st}) : null;
+                                         myHP:hp, oppHPPct:oppPct/100, known:seen, guardGone:gGone, st,
+                                         oppTeam: BT.opp}) : null;
   const rd = c && c.read;
 
   /* 相手が交代してきた時の答え。試合中いちばん聞かれる択なので、画面と音声の両方に出す。
@@ -1566,6 +1567,22 @@ function btNowRender(){
       ${c.to?`<div class="small" style="margin-top:6px">引くなら → <b>${esc((mine.find(x=>x.name===c.to.name)||{}).disp || c.to.name)}</b>（${c.to.c.mark} ${esc(c.to.c.why)}）</div>`:''}
       ${swIn?`<div class="small" style="margin-top:6px">${esc(swIn.name)}に交代されたら → <b>${swIn.c.mark} ${esc(swIn.c.head)}</b>${swIn.c.to?`（${esc(swIn.c.to.name)}へ）`:''}</div>`:''}
     </div>
+    ${(c.moves&&c.moves.rows&&c.moves.rows.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--fg)">
+      <div class="small" style="font-weight:800">撃つ技${c.moves.best?` … <b>${esc(c.moves.best.name)}</b>`:''}</div>
+      ${c.moves.why?`<div class="small muted" style="margin-bottom:6px">${c.moves.why}</div>`:''}
+      ${c.moves.rows.map(r=>{
+        const on = c.moves.best && r.name===c.moves.best.name;
+        const pri = r.pri>0 ? `<span class="badge g">先制+${r.pri}</span> ` : (r.pri<0? `<span class="badge w">後攻</span> `:'');
+        let body;
+        if(r.immune) body = '<span class="muted">無効</span>';
+        else if(r.status) body = `<span class="muted">変化技${r.note?' — '+esc(r.note):''}</span>`;
+        else body = `<b>${Math.round(r.lo*100)}〜${Math.round(r.hi*100)}%</b>`
+          + `<span class="muted"> ${r.hits}発${r.acc<100?`・命中${r.acc}%`:''}${r.eff>1?'・こうかばつぐん':r.eff<1?'・いまひとつ':''}</span>`
+          + (r.through&&r.through.length?`<span class="muted"> ／交代先 ${r.through.length}体に通る</span>`
+                                        :`<span class="muted" style="color:var(--org)"> ／交代先に通らない</span>`);
+        return `<div class="small" style="margin:3px 0;${on?'font-weight:700':''}">${on?'▶ ':'・'}${pri}${esc(r.name)} … ${body}</div>`;
+      }).join('')}
+    </div>`:''}
     ${(c.todo&&c.todo.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--blue)">
       <div class="small" style="font-weight:800;margin-bottom:4px">引く前にやること</div>
       ${c.todo.map(d=>`<div class="small" style="margin:3px 0">・${d.t}</div>`).join('')}
