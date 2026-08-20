@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '45';
+const APP_VERSION = '46';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -666,7 +666,7 @@ $('#fMega').addEventListener('change',()=>{S.mega=$('#fMega').value||null;saveDr
 if($('#btTeam')) $('#btTeam').onchange=()=>{
   $('#fTeam').value=$('#btTeam').value;
   $('#fTeam').onchange();
-  BT.sel=null; BT.me=null; BT.matrix=null; BT.seenOrder=[]; BT.done={};
+  BT.sel=null; BT.me=null; BT.meManual=false; BT.matrix=null; BT.seenOrder=[]; BT.done={};
   PC.clearMatchupCache(); if(window.VOICE) VOICE.reset();
   fillTeamSelects();
   safe('実戦',()=>{ btCompute(); btRender(); },'#btGrid');
@@ -1079,7 +1079,7 @@ function initBtUI(){
   // やり直しても、相手の技の観測だけは残す（次の試合でも同じ相手に当たるので価値がある）
   $('#btReset').onclick = ()=>{
     const obs = BT.obs;
-    BT={opp:[],picks:[],mega:null,matrix:null,sel:null,me:null,hp:{},obs:obs||{},seenOrder:[],done:{}};
+    BT={opp:[],picks:[],mega:null,matrix:null,sel:null,me:null,meManual:false,hp:{},obs:obs||{},seenOrder:[],done:{}};
     PC.clearMatchupCache(); $('#btVoice').value=''; btRender(); saveBtDraft();
   };
   loadBtDraft();
@@ -1209,7 +1209,25 @@ function btRender(){
   if(endHost) endHost.innerHTML = `
     <button class="btn primary btn-full" id="btDone" style="margin-bottom:8px">試合が終わった</button>
     <div id="btDoneBox" style="margin-bottom:14px"></div>
-    <button class="btn ghost btn-full" id="btToRec" style="margin-bottom:14px">くわしく書く（記録タブへ送る）</button>`;
+    <div class="hpwrap" style="margin-bottom:14px">
+      <button class="btn ghost sm" id="btToRec">くわしく書く（記録タブへ送る）</button>
+      <button class="btn ghost sm" id="btNewGame" style="margin-left:auto">次の試合へ（入力を消す）</button>
+    </div>`;
+
+  /* 保存しないで次の試合に行きたいときのために、いつでも押せるリセットを置く。
+     保存後は自動でリセットされるが、記録しない試合もあるため（社長の要望 2026-08-20）。 */
+  const ng = $('#btNewGame');
+  if(ng) ng.onclick = ()=>{
+    if(BT.opp.length && !confirm('いま入っている相手6体と記録を消して、次の試合の入力に戻ります。よろしいですか？')) return;
+    const obs = BT.obs;
+    BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null, meManual:false,
+           hp:{}, oppHp:{}, obs:obs||{}, guardGone:{}, board:{}, seenOrder:[], done:{} };
+    PC.clearMatchupCache(); if(window.VOICE) VOICE.reset();
+    saveBtDraft(); btCompute(); btRender();
+    const w=$('#btInputWrap'); if(w) w.open=true;
+    window.scrollTo(0,0);
+    toast('次の試合の入力に戻りました（相手の技の記録は残しています）');
+  };
 
   /* ---------- 試合が終わったら、その場で数タップだけ残す ----------
      社長の要望（2026-08-20）：
@@ -1254,11 +1272,12 @@ function btRender(){
       <div class="small muted">${(d.oppPick||[]).length? `相手の選出：${d.oppPick.join(' → ')}${(d.oppPick||[]).length<3?'（見えた分だけでOK）':''}`
         : '試合中にタップしていれば自動で入ります'}</div>
       ${d.result==='lose' ? `
-        <div class="small" style="font-weight:800;margin-top:12px">なぜ負けたか</div>
+        <div class="small" style="font-weight:800;margin-top:12px">なぜ負けたか<span class="muted"> いくつでも選べます</span></div>
         <div class="quick">${CAUSES.map(c=>
-          `<button class="qb mini ${d.cause===c?'on':'off'}" data-dn="cause" data-dv="${esc(c)}">${esc(c)}</button>`).join('')}</div>
-        ${d.cause?`<div class="small muted" style="margin-top:8px">${esc(ASK[d.cause]||'一言メモ')}</div>
-          <textarea id="btDoneMemo" rows="2" placeholder="一言でOK。空でも保存できます">${esc(d.memo||'')}</textarea>`:''}
+          `<button class="qb mini ${(d.causes||[]).includes(c)?'on':'off'}" data-dn="causes" data-dv="${esc(c)}">${esc(c)}</button>`).join('')}</div>
+        ${(d.causes||[]).length?`<div class="small muted" style="margin-top:8px">${
+            (d.causes||[]).map(c=>esc(ASK[c]||c)).join('<br>')}</div>
+          <textarea id="btDoneMemo" rows="${Math.min(4,(d.causes||[]).length+1)}" placeholder="一言でOK。空でも保存できます">${esc(d.memo||'')}</textarea>`:''}
         <div class="small muted" style="margin-top:10px">いちばんきつかった相手</div>
         <div class="quick">${chips(BT.opp,'painMon',false)}</div>
         ${mvs.length?`<div class="small muted" style="margin-top:10px">やられた技</div>
@@ -1284,6 +1303,8 @@ function btRender(){
       const k=b.dataset.dn, v=b.dataset.dv;
       if(k==='oppPick'){ const a=d.oppPick||[]; const i=a.indexOf(v);
         if(i>=0) a.splice(i,1); else if(a.length<3) a.push(v); d.oppPick=a; }
+      else if(k==='causes'){ const a=d.causes||[]; const i=a.indexOf(v);
+        if(i>=0) a.splice(i,1); else a.push(v); d.causes=a; }   // 敗因は複数選べる（原因は1つとは限らない）
       else d[k] = (d[k]===v ? null : v);
       if(k==='painMon') d.painMove=null;              // 相手を変えたら技の選択は捨てる
       btDoneRender();
@@ -1296,9 +1317,9 @@ function btRender(){
         season:$('#fSeason').value||null, rule:$('#fRule').value||'single', rank:$('#fRank').value||null,
         opp_team:BT.opp, my_pick:BT.picks, opp_pick:d.oppPick||[], mega:BT.mega||null,
         turns:[], result:d.result,
-        lose_cause:d.cause||null, pain_mon:d.painMon||null, pain_move:d.painMove||null,
+        lose_cause:(d.causes||[]).join(' / ')||null, pain_mon:d.painMon||null, pain_move:d.painMove||null,
         memo:(d.memo||'').trim()||null, should_pick:d.should||null, want_move:(d.want||'').trim()||null,
-        reason:d.result==='lose' ? [d.cause,d.painMon&&`${d.painMon}がきつい`,d.painMove&&`${d.painMove}でやられた`,
+        reason:d.result==='lose' ? [(d.causes||[]).join('・'),d.painMon&&`${d.painMon}がきつい`,d.painMove&&`${d.painMove}でやられた`,
           d.should&&`${d.should}を出すべきだった`,(d.memo||'').trim()].filter(Boolean).join(' / ') : null };
       $('#btDoneSave').disabled=true;
       const res = await dbWrite('battles','insert',rec);
@@ -1307,7 +1328,7 @@ function btRender(){
       /* ★保存したら次の試合をすぐ始められる状態に戻す（社長の指摘 2026-08-20）。
          相手の技の観測（BT.obs）だけは残す。同じ相手に何度も当たるので次の試合でも効くため。 */
       const obs = BT.obs;
-      BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null,
+      BT = { opp:[], picks:[], mega:null, megaFixed:null, matrix:null, sel:null, me:null, meManual:false,
              hp:{}, oppHp:{}, obs:obs||{}, guardGone:{}, board:{}, seenOrder:[], done:{} };
       PC.clearMatchupCache(); if(window.VOICE) VOICE.reset();
       saveBtDraft();                      // 空になった状態を保存し直す（キーは 'pokechan_bt'）
@@ -1389,10 +1410,16 @@ function btNowRender(){
   const o = effOpp(BT.sel);
   const inPick = r => BT.picks.includes(r.label) || BT.picks.includes(r.name);
   const mine = [...rc].sort((a,b)=> (inPick(b)?1:0)-(inPick(a)?1:0));
-  if(!BT.me || !mine.some(m=>m.label===BT.me)){
+  /* ★自分の既定は必ず「選出した3体」から選ぶ（社長の指摘 2026-08-20）。
+     以前は BT.me が有効でありさえすれば再選択しなかったため、選出が決まる前に入っていた
+     控えの駒がそのまま残り、場にいない駒の判定を見てしまうことがあった。
+     手で選んだとき（BT.meManual）は尊重する。相手を変えても勝手に変えない方針は維持。 */
+  const cur = mine.find(m=>m.label===BT.me);
+  const needDefault = !cur || (!BT.meManual && BT.picks.length && !inPick(cur));
+  if(needDefault){
     const best = mine.filter(inPick).map(m=>({m, c:PC.callIt(m,o,{})})).filter(x=>x.c)
       .sort((a,b)=> b.c.mu.score - a.c.mu.score)[0];
-    BT.me = best ? best.m.label : mine[0].label;
+    BT.me = best ? best.m.label : (mine.filter(inPick)[0]||mine[0]).label;
   }
   const me = mine.find(m=>m.label===BT.me) || mine[0];
   const maxHP = me.stats ? me.stats.h : 0;
@@ -1530,7 +1557,7 @@ function btNowRender(){
     const iw=$('#btInputWrap'); if(iw) iw.open=false;
     btNowRender();
   });
-  $$('#btNow [data-btme]').forEach(b=> b.onclick=()=>{ BT.me=b.dataset.btme; btNowRender(); });
+  $$('#btNow [data-btme]').forEach(b=> b.onclick=()=>{ BT.me=b.dataset.btme; BT.meManual=true; btNowRender(); });
   $$('#btNow [data-btop]').forEach(b=> b.onclick=()=>{ BT.oppHp[BT.sel]=+b.dataset.btop; btNowRender(); saveBtDraft(); });
   $$('#btNow [data-bthp]').forEach(b=> b.onclick=()=>{ BT.hp[BT.me]=maxHP; btNowRender(); saveBtDraft(); });
   $$('#btNow [data-btguard]').forEach(b=> b.onclick=()=>{
@@ -2186,11 +2213,14 @@ function renderStats(){
      社長の方針（2026-08-20）：「相性で勝てる試合は分析いらない。負けた時は必ず原因がある」 */
   const L = B.filter(b=>b.result==='lose');
   const cz = {};
-  L.forEach(b=>{ if(b.lose_cause) cz[b.lose_cause]=(cz[b.lose_cause]||0)+1; });
+  // 敗因は複数選べるので ' / ' で分解して1つずつ数える（原因は1つとは限らない）
+  L.forEach(b=>{ (b.lose_cause||'').split(' / ').map(x=>x.trim()).filter(Boolean)
+    .forEach(c=> cz[c]=(cz[c]||0)+1); });
   const czArr = Object.entries(cz).sort((a,b)=>b[1]-a[1]);
   $('#loseCause').innerHTML = czArr.length
     ? tbl(czArr.map(([c,n])=>`<tr><td>${esc(c)}<div class="bar b"><i style="width:${pct(n,L.length)}%"></i></div></td><td class="num">${n}</td><td class="num">${pct(n,L.length)}%</td></tr>`),
-        [{t:'敗因'},{t:'件数',num:1},{t:'割合',num:1}])
+        [{t:'敗因'},{t:'件数',num:1},{t:'負け試合に占める割合',num:1}])
+      + '<div class="small muted">1試合に複数の原因を選べるので、合計は100%を超えます</div>'
     : `<div class="small muted">まだありません。負けた試合のあと、対戦タブの「試合が終わった」で ${L.length?'敗因を選ぶと':'記録すると'}ここに溜まります</div>`;
 
   /* 出しておけばよかった駒。結果論の積み重ねが、そのまま選出の型になる（社長の要望 2026-08-20） */
