@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '66';
+const APP_VERSION = '67';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -952,6 +952,9 @@ function newBT(keepObs){
            /* ★相手に積まれた回数（v66）。stacks[相手名][技名] = 回数。
               押すたびに盤面のランクへ加算する。 */
            stacks:{},
+           /* ★もう落ちた自分の駒（v67・社長の要望）。
+              「引くならこの駒」と言われても、その駒がもう居ないことが多かった。 */
+           fainted:{},
            _searchTop:null,
            /* 前回の盤面を古いとして捨てたか（開いたときに1度だけ知らせる） */
            _staleDropped:false };
@@ -1563,7 +1566,12 @@ function btNowRender(){
   const gName = PC.myOneHitGuard({item:me.item, ability:me.ability});
   /* 引き先は必ず「選出した3体」の中から出す。
      控えのポケモンを勧めるのは矛盾（社長の指摘 2026-08-19）。 */
-  const pickRoster = rc.filter(inPick);
+  /* ★落ちた駒は引き先の候補から外す（v67）。
+     ここを外していなかったので「引くなら → メガルカリオ」と言われても、
+     そのルカリオはもう落ちている、ということが実戦で起きていた。 */
+  BT.fainted = BT.fainted || {};
+  const alive = r => !BT.fainted[r.label];
+  const pickRoster = rc.filter(r=> inPick(r) && alive(r));
   BT.board = BT.board || {};
   const st = BT.board;
   const c = me.stats ? PC.callIt(me, o, {roster: pickRoster.length?pickRoster:rc,
@@ -1594,7 +1602,18 @@ function btNowRender(){
     const o=ordOf(n);
     return `<button class="qb mini ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}">${o?`<b>${o}</b>`:''}${typeDots(n)}${esc(n)}</button>`;
   }).join('');
-  const myChips  = mine.map(m=>`<button class="qb mini ${m.label===BT.me?'on':'off'}" data-btme="${esc(m.label)}">${typeDots(m.name)}${esc(m.disp||m.label)}${m.demoted?'<span class="muted"> メガ無</span>':''}${inPick(m)?'':'<span class="muted"> 控</span>'}</button>`).join('');
+  /* ★落ちた駒は打ち消し線＋薄字。右の × で切り替える（もう一度押すと戻る）。
+     試合中のタップを増やさないよう、駒を選ぶ操作（本体）とは別の当たり判定にしてある。 */
+  const myChips  = mine.map(m=>{
+    const dead = !!BT.fainted[m.label];
+    return `<span class="pk mini" style="${dead?'opacity:.45':''}">`
+      + `<button class="qb mini ${m.label===BT.me?'on':'off'}" data-btme="${esc(m.label)}"
+           style="${dead?'text-decoration:line-through':''}">${typeDots(m.name)}${esc(m.disp||m.label)}${
+             m.demoted?'<span class="muted"> メガ無</span>':''}${inPick(m)?'':'<span class="muted"> 控</span>'}</button>`
+      + `<button class="qb mini" data-btdead="${esc(m.label)}" title="落ちた／戻す"
+           style="padding:1px 6px;font-size:11px;margin-left:2px;${dead?'color:var(--red);font-weight:700':'color:var(--muted)'}">${dead?'落':'×'}</button>`
+      + `</span>`;
+  }).join('');
 
   // 逆算の結果（自分が食らったダメージ）
   const src = rd ? (rd.candidates.length ? rd.candidates : rd.others) : [];
@@ -1642,7 +1661,23 @@ function btNowRender(){
     ${c?`<div class="note ${c.cls==='ok'?'g':c.cls==='ng'?'r':'w'}" style="margin-top:12px">
       <div class="nowhead">${c.mark} ${esc(c.head)}</div>
       <div class="small" style="margin-top:2px">${esc(c.why)}</div>
-      ${c.to?`<div class="small" style="margin-top:6px">引くなら → <b>${esc((mine.find(x=>x.name===c.to.name)||{}).disp || c.to.name)}</b>（${c.to.c.mark} ${esc(c.to.c.why)}）</div>`:''}
+      ${c.to
+        ? `<div class="small" style="margin-top:6px">引くなら → <b>${esc((mine.find(x=>x.name===c.to.name)||{}).disp || c.to.name)}</b>（${c.to.c.mark} ${esc(c.to.c.why)}）</div>`
+        : (()=>{ /* ★引き先が無いことを黙っていない（v67）。
+             落ちた駒を除外した結果、引く先が消えることがある。
+             「引く」と言われて引けないのがいちばん困る。 */
+            const left = pickRoster.filter(r=> r.label!==me.label);
+            if(!left.length) return `<div class="small" style="margin-top:6px;color:var(--red)">
+              <b>引く先がありません。</b>${esc(me.disp||me.label)}で押し切るしかありません</div>`;
+            return `<div class="small" style="margin-top:6px;color:var(--org)">
+              <b>有利に引ける駒がありません。</b>残っているのは
+              ${left.map(r=>esc(r.disp||r.label)).join('・')}。どれも不利なので、
+              引くなら<b>削られるのを承知</b>で選ぶことになります</div>`;
+          })()}
+      ${Object.keys(BT.fainted||{}).length
+        ? `<div class="small muted" style="margin-top:4px">落ちた駒：${
+            Object.keys(BT.fainted).map(esc).join('・')}<span class="muted">（引き先の候補から外しています）</span></div>`
+        : ''}
       ${swIn?`<div class="small" style="margin-top:6px">${esc(swIn.name)}に交代されたら → <b>${swIn.c.mark} ${esc(swIn.c.head)}</b>${swIn.c.to?`（${esc(swIn.c.to.name)}へ）`:''}</div>`:''}
     </div>
     ${(c.moves&&c.moves.rows&&c.moves.rows.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--fg)">
@@ -1732,6 +1767,22 @@ function btNowRender(){
     const pb=$('.planbox'); if(pb) pb.open=false;          // 試合が始まったら選出カードは畳む
     const iw=$('#btInputWrap'); if(iw) iw.open=false;
     btNowRender();
+  });
+  $$('#btNow [data-btdead]').forEach(b=> b.onclick=()=>{
+    const n = b.dataset.btdead;
+    BT.fainted = BT.fainted || {};
+    if(BT.fainted[n]) delete BT.fainted[n]; else BT.fainted[n] = true;
+    /* 盤面の「自分が落ちた数」と必ず一致させる。別々に持つと必ず食い違う */
+    BT.board = BT.board || {};
+    const n2 = Object.keys(BT.fainted).length;
+    if(n2) BT.board.myFallen = n2; else delete BT.board.myFallen;
+    /* いま選んでいる駒が落ちたなら、生きている駒に移す */
+    if(BT.fainted[BT.me]){
+      const next = (BT.picks||[]).find(x=> !BT.fainted[x]);
+      if(next) BT.me = next;
+    }
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
+    toast(BT.fainted[n] ? `${n} を「落ちた」にしました（引き先から外します）` : `${n} を戻しました`);
   });
   $$('#btNow [data-btme]').forEach(b=> b.onclick=()=>{
     BT.me=b.dataset.btme; BT.meManual=true;
@@ -1978,7 +2029,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks,
+    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
@@ -1989,7 +2040,7 @@ function loadBtDraft(){
     if(d.opp) BT.opp=d.opp;
     if(d.megaFixed) BT.megaFixed=d.megaFixed;
     if(fresh){
-      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks;
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
       // 黙って捨てると「さっき入れた状態が消えた」と見えるので、捨てたことは伝える
