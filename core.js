@@ -312,6 +312,39 @@ function oppOneHitGuard(name){
   if(!cand.length) return null;
   return cand.sort((a,b)=> b.rate-a.rate)[0];
 }
+/* ★相手の「攻撃に効く特性」（2026-08-21 追加・v56）。
+   これまで bestThreat は attacker.ability に空文字を渡していた。つまり
+   **相手の攻撃特性を一度も計算に入れていなかった**。影響が大きいのは次の3つ：
+     ・へんげんじざい … 撃った技がそのままタイプ一致になる（×1.5）。
+       マスカーニャ(80.2%)・ゲッコウガ(88.1%)。社長がいちばん苦しんでいる2体がこれ。
+       マスカーニャの トリプルアクセル は こおり技＝本来は一致しないので、丸ごと1.5倍を落としていた。
+     ・てきおうりょく … タイプ一致が ×1.5 → ×2。イダイトウ♂(96.2%)・ドラミドロ(69.5%)
+     ・テクニシャン … 威力60以下が ×1.5。ハッサム(98.7%)・イッカネズミ(95.1%)。
+       イッカネズミの ネズミざん(威力20・最大10連撃) は、テクニシャンと連続技の両方を落としていた。
+   採用率20%以上のものだけを見る。根拠として名前と採用率を返す。 */
+const OFF_ABILITY = ['へんげんじざい','リベロ','てきおうりょく','テクニシャン','スナイパー','ちからずく'];
+function oppAtkAbility(name){
+  const u = oppUsage(name); if(!u || !u.a) return null;
+  const hit = (u.a||[]).filter(x=> OFF_ABILITY.includes(x[0]) && x[1] >= 20)
+                       .sort((a,b)=> b[1]-a[1])[0];
+  return hit ? {name:hit[0], rate:hit[1]} : null;
+}
+/* ★「見えていない技」を、ツール自身に申告させる（2026-08-21・v56）。
+   社長は試合6で、マスカーニャの **かわらわり** でメガルカリオを失っている。
+   ところが使用率データにあるマスカーニャの技は7つで、かわらわりは入っていない。
+   つまりツールは「負ける型が無い＝◎」と、**見えていない技を無いものとして**言い切っていた。
+
+   採用率の合計は「4スロット×100%＝400%」が上限なので、
+   400% − (載っている技の採用率合計) が「データに載っていない技スロットの個数」になる。
+   マスカーニャは 0.43個、エモンガは 0.81個ぶんが見えていない。
+
+   これを消すことはできない（データの上限）ので、**言い切らないための材料として出す**。
+   とくに へんげんじざい／リベロ の相手は、見えていない技もタイプ一致になるので危険度が上がる。 */
+function unknownMoveSlots(name){
+  const u = oppUsage(name); if(!u || !u.m) return null;
+  const sum = u.m.reduce((a,b)=> a + (b[1]||0), 0);
+  return Math.max(0, 4 - sum/100);
+}
 function oppScarfRate(name){
   if(name.startsWith('メガ')) return 0;
   const u = oppUsage(name); if(!u) return 0;
@@ -871,6 +904,76 @@ function movePriority(name){ return MOVE_PRIORITY[name] || 0; }
  *    こっちを打ったらこのくらい、こっちならこのくらい、が知りたい」
  *  @param others 相手の控え（交代されたときに、その技が通るかを見る）
  */
+/* ★設置技と あくび の「いま押す価値」を実数で出す（2026-08-21・v57）。
+   きっかけは上位プレイヤーの座談会（シーズン3 上位10人の振り返り）。
+   「カバルドンやっぱ一番圧倒的に多い。でもカバルドン使ったら勝てますとは言えない。
+     **技選択がマジでむずい**。一生設置してるわけじゃなくて対面操作もする。
+     じしんを打つタイミングとかステロを打つタイミングとかね」
+   ＝ カバルドン軸の勝敗は「選出」ではなく「毎ターン何を押すか」で決まる、という共通見解。
+   社長の負け方もこれと一致している：
+     試合16「あくびとステロを撒こうとしたらラムのみで回復されアンコール。ステロが撒けず何も出来なかった」
+     試合14「ステロを撒いてふきとばし → ムクホークがステロで落ちた」＝ 効いた側の例
+   これまでツールは変化技を「変化技」としか表示していなかった。押す根拠を出す。 */
+
+/** ステルスロック等が、相手6体にどれだけ効くか。戻り値は表示用の1行 */
+function hazardValue(moveName, oppTeam){
+  const team = (oppTeam||[]).map(toBase).filter(n=> SPECIES[n]);
+  if(!team.length) return null;
+  if(moveName === 'ステルスロック'){
+    const rows = team.map(n=>({n, e: effectiveness('いわ', SPECIES[n].types)}));
+    const pct = r => Math.round(12.5 * r.e * 10) / 10;
+    const big = rows.filter(r=> r.e >= 2).map(r=> `${r.n} ${pct(r)}%`);
+    const total = Math.round(rows.reduce((a,r)=> a + 12.5*r.e, 0));
+    return `交代のたび：${big.length ? big.join('・') : '2倍以上の相手なし'}`
+         + `（6体合計 ${total}%ぶん）`;
+  }
+  if(moveName === 'まきびし' || moveName === 'ねばねばネット'){
+    const ng = team.filter(n=> SPECIES[n].types.includes('ひこう') || worstDefAbility(n)==='ふゆう');
+    return `効かない相手：${ng.length ? ng.join('・') : 'なし'}（${team.length-ng.length}/${team.length}体に効く）`;
+  }
+  if(moveName === 'どくびし'){
+    const ng = team.filter(n=> SPECIES[n].types.includes('ひこう') || SPECIES[n].types.includes('はがね')
+                            || worstDefAbility(n)==='ふゆう');
+    return `効かない相手：${ng.length ? ng.join('・') : 'なし'}（${team.length-ng.length}/${team.length}体に効く）`;
+  }
+  return null;
+}
+
+/** あくび・状態異常が「通らない」条件を、根拠つきで返す */
+const YAWN_ABILITY = ['ふみん','やるき','スイートベール','ぜったいねむり'];
+function statusBlockers(moveName, oppName, st){
+  st = st || {};
+  const out = [];
+  const u = oppUsage(oppName);
+  const mv = (u && u.m) || [];
+  const has = n => mv.find(x=> x[0]===n);
+  const cure = ((u && u.i)||[]).find(x=> x[0]==='ラムのみ' || x[0]==='カゴのみ');
+  const ab = ((u && u.a)||[]).filter(x=> YAWN_ABILITY.includes(x[0]) && x[1] >= 10);
+
+  if(moveName === 'あくび'){
+    if(st.opSleep || st.opParalysis || st.opBurn || st.opPoison || st.opFreeze)
+      out.push('相手はすでに状態異常＝あくびは入らない');
+    ab.forEach(a=> out.push(`${a[0]}（${a[1]}%）で眠らない`));
+    if(cure) out.push(`${cure[0]}（${cure[1]}%）で即回復される`);
+    const t = has('ちょうはつ'); if(t) out.push(`ちょうはつ（${t[1]}%）で止められる`);
+    const s = has('みがわり');   if(s) out.push(`みがわり（${s[1]}%）で無効`);
+  }
+  if(['どくどく','でんじは','おにび','キノコのほうし'].includes(moveName)){
+    if(cure) out.push(`${cure[0]}（${cure[1]}%）で即回復される`);
+    const t = has('ちょうはつ'); if(t) out.push(`ちょうはつ（${t[1]}%）で止められる`);
+    if(moveName==='どくどく' && (SPECIES[oppName]||{types:[]}).types.some(x=> x==='どく'||x==='はがね'))
+      out.push('どく・はがねには効かない');
+    if(moveName==='でんじは' && (SPECIES[oppName]||{types:[]}).types.includes('じめん'))
+      out.push('じめんには効かない');
+    if(moveName==='おにび' && (SPECIES[oppName]||{types:[]}).types.includes('ほのお'))
+      out.push('ほのおには効かない');
+  }
+  if(moveName === 'ふきとばし'){
+    const su = has('みがわり'); if(su) out.push(`みがわり（${su[1]}%）の裏では失敗する`);
+  }
+  return out;
+}
+
 function movePlan(mine, oppName, opts){
   opts = opts || {};
   const st = opts.st || {};
@@ -879,14 +982,23 @@ function movePlan(mine, oppName, opts){
   const oppAb = worstDefAbility(oppName);
   const oppImm = immuneType(oppAb);
   const leftPct = (opts.oppHPPct!=null) ? Math.max(0.01, Math.min(1, opts.oppHPPct)) : 1;
+  /* 設置済みかどうかは rows を作る前に要る（下の PLACED と同じ内容） */
+  const PLACED_NOW = { 'ステルスロック': st.opRocks, 'まきびし': st.opSpikes,
+                       'どくびし': st.opTSpikes, 'ねばねばネット': st.opSticky };
 
   const rows = (mine.moves||[]).map(name=>{
     const mv = MOVES[name];
     if(!mv) return null;
     const pri = movePriority(name);
     if(!mv.power || mv.cat==='変'){
+      /* ★変化技は「変化技」としか出していなかった。押す根拠を出す（v57） */
+      const placedNow = PLACED_NOW[name];
+      const hz = placedNow ? `もう撒いてあります` : hazardValue(name, opts.others);
+      const bl = statusBlockers(name, oppName, st);
+      const note = [hz, bl.length ? '通らない条件：' + bl.join('／') : '', PRIORITY_NOTE[name]||'']
+                     .filter(Boolean).join(' ／ ');
       return { name, type:mv.type, cat:mv.cat, power:0, acc:mv.acc||100, pri,
-               status:true, note:PRIORITY_NOTE[name]||'' };
+               status:true, placed:!!placedNow, blockers:bl, note };
     }
     if(mv.type === oppImm) return { name, type:mv.type, cat:mv.cat, power:mv.power, acc:mv.acc||100,
                                     pri, immune:true, note:`${oppAb}で無効` };
@@ -952,6 +1064,14 @@ function movePlan(mine, oppName, opts){
     best = hazard;
     why = `1発では落とせず、この対面なら相手は<b>交代してくる</b>。中途半端に殴るより${hazard.name}を置く方が得`;
   }
+  /* ★打点が薄い（3発以上かかる）なら、殴るより設置。
+     相手6体に効き続ける設置の方が、1回17%の攻撃より明らかに得になる（v57）。
+     上位勢の座談会「一生設置してるわけじゃなく、じしんとステロの押し所が難しい」への回答。 */
+  else if(hazard && top && top.hi>0 && Math.ceil(leftPct/top.hi) >= 3){
+    best = hazard;
+    why = `いちばん強い技でも${Math.ceil(leftPct/top.hi)}発かかります。`
+        + `殴るより<b>${hazard.name}</b>の方が、相手6体に効き続けるぶん得`;
+  }
   else if(opts.likelySwitch && sleeper){
     best = sleeper;
     why = `1発では落とせず、相手は<b>交代してくる</b>。${sleeper.name}を入れて次につなぐ方が得`;
@@ -963,6 +1083,15 @@ function movePlan(mine, oppName, opts){
     const wide = dmg.filter(r=> r!==top && r.through && r.through.length > (top.through||[]).length)
                     .sort((a,b)=> b.through.length-a.through.length)[0];
     if(wide) why += `。交代を読むなら<b>${wide.name}</b>（控え${wide.through.length}体に通る）`;
+  }
+  /* ★打点が1つも無い対面では best が null になり、「撃つ技」が空欄になっていた。
+     引く判断でも、引く前の1ターンに何を置くかは必ず要る（社長が試合16で詰まった場面）。 */
+  if(!best){
+    const hz = rows.find(r=> r.status && HAZ.includes(r.name) && !PLACED[r.name] && !(r.blockers||[]).length);
+    const sl = rows.find(r=> r.status && !(r.blockers||[]).length);
+    best = hz || sl || rows.find(r=> r.status) || rows[0] || null;
+    if(best) why = hz ? `攻撃が通らない対面。引く前に<b>${best.name}</b>を置いておくと、この1ターンが無駄にならない`
+                      : `攻撃が通りません。<b>${best.name}</b>で次につなぐか、引くこと`;
   }
   return { rows, best, why };
 }
@@ -1045,6 +1174,7 @@ function bestThreat(oppName, mine, opp, known, st){
      不利判定を出していたのは げきりん(採用30.2%)＝7割のガブリアスは持っていない技だった。
      → 「ほぼ確実に食らう技(60%以上)」と「持っていれば痛い技(それ未満)」を分けて返す。 */
   const SURE = 60;                                   // これ以上の採用率＝ほぼ全個体が持っている
+  const atkAb = oppAtkAbility(oppName);   // ★攻撃に効く特性。ここを渡していなかった（v56）
   const rows = [], immune = [];
   cands.forEach(mv=>{
     if(mv.type === imm) return;                       // こちらの特性でタイプごと無効
@@ -1052,7 +1182,7 @@ function bestThreat(oppName, mine, opp, known, st){
     const item = oppOffenseItem(oppName, mv.cat)
               || (oppTypeItem(oppName, mv.type) ? 'タイプ強化アイテム' : '');
     const r = calcDamage({
-      attacker:{name:oppName, atkStat: atkOf(mv.cat), types:os.types, ability:'', item,
+      attacker:{name:oppName, atkStat: atkOf(mv.cat), types:os.types, ability:(atkAb?atkAb.name:''), item,
                 rank: mv.cat==='物'? (st.opAtkRank||0) : (st.opSpaRank||0), hpRatio:1,
                 intimidated: mv.cat==='物' && !!st.opIntimidated},
       defender:{name:mine.name, defStat: mv.cat==='物'?myStats.b:myStats.d, hp:myStats.h,
@@ -1089,7 +1219,7 @@ function bestThreat(oppName, mine, opp, known, st){
     threatRate: Math.max(0, ...rows.filter(r=> r.rate >= 0.3).map(r=> r.rateOf)),
     hitting: rows.filter(r=> r.rate >= 0.25).sort((a,b)=> b.rate-a.rate)
                  .map(r=>({move:r.move, rateOf:r.rateOf, lo:r.rate, hi:r.rateHi})),
-    rows: rows.slice().sort((a,b)=> b.rate-a.rate),
+    rows: rows.slice().sort((a,b)=> b.rate-a.rate), atkAbility: atkAb,
     /* こちらのタイプ／特性で完全に無効化できる相手の技。
        ギャラドスはガブリアスの じしん(採用99.3%) を無効化できる＝この技に交代で合わせられる。
        これは「不利かどうか」とは別の、実戦で最も使える情報なので必ず持ち回る。 */
@@ -1172,7 +1302,7 @@ function matchupVs(mine, oppName, opp, known, st){
            opSureMove: thr.sure?thr.sure.move:null, opSureRate: thr.sure?thr.sure.rateOf:null,
            wallsIt, stallsIt, roles:role,
            sureHits, winsRaceSure, threatRate: thr.threatRate||0, hitting: thr.hitting||[],
-           oppRows: thr.rows||[], immuneMoves: thr.immune||[],
+           oppRows: thr.rows||[], immuneMoves: thr.immune||[], opAtkAbility: thr.atkAbility||null,
            opHits, opHitsHi, guard: guardEff, guardRaw: guard, guardBroken,
            opMultiHit: multiHitOf(thr.move) ? thr.move : null };
 }
@@ -1755,6 +1885,21 @@ function callIt(mine, oppName, opts){
                   || head==='盤面を作る' || head==='受ける' || head==='様子見'
   });
 
+  /* ★見えていない技の申告（v56）。mark が確定してから積む。
+     「負ける型が無い」と言い切る場面ほど危ないので、結論が◎／○のときだけ出す。
+     社長は試合6で、データに載っていないマスカーニャの かわらわり でルカリオを失っている。 */
+  {
+    const uk = unknownMoveSlots(oppName);
+    const pro = (mu.opAtkAbility && /へんげんじざい|リベロ/.test(mu.opAtkAbility.name)) ? mu.opAtkAbility : null;
+    const uu = oppUsage(oppName);
+    if(uk != null && uk >= 0.35 && (mark==='◎' || mark==='○')){
+      detail.push({k:'warn',
+        t:`この判定は<b>データにある${((uu&&uu.m)||[]).length}技</b>だけで出しています。`
+          + `<b>約${uk.toFixed(1)}枠ぶん</b>は載っていない技です`
+          + (pro ? `。しかも<b>${pro.name}</b>（${pro.rate}%）なので、載っていない技もタイプ一致で飛んできます` : '')
+          + `。<b>言い切れる対面ではありません</b>`});
+    }
+  }
   return { head, cls, mark, why, detail, todo, moves, mu, read:rd, myHits, pLose, pOHKO,
            koMoves, badMoves, rows, immune: mu.immuneMoves||[],
            to: bench.length ? {name:bench[0].r.name, c:bench[0].c} : null,
@@ -2232,7 +2377,7 @@ function bestPlan(roster, targets, size, allOpp, fixedMega, effOpp){
 
 global.PC = {
   TYPES, TYPE_COLOR, TYPE_ICON, CHART, NATURES, SPECIES, MOVES,
-  whoElseHas, movePlan, movePriority, oppOneHitGuard, multiHitOf, MULTI_HIT,
+  whoElseHas, movePlan, movePriority, oppOneHitGuard, multiHitOf, MULTI_HIT, oppAtkAbility, unknownMoveSlots, hazardValue, statusBlockers,
   loadData, effectiveness, statHP, statOther, natureMods, realStats, assumedStat,
   assumedSpreads, spreadStats, attackerLikeness, matchupVs, SP_TOTAL, SP_MAX,
   OPP_ABILITY, worstDefAbility, survivesOneHit, OPP_TRICKS, oppTricks,
