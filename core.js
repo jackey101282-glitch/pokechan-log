@@ -375,6 +375,30 @@ function weatherSpeedAbility(name, weather){
   return list.includes(want) ? {name:want, rate:null} : null;
 }
 
+/* ★いかく（2026-08-21・v60）。**自動では効いていなかった。**
+   盤面の「相手の攻撃 −1」を社長が手で押したときしか反映していなかったが、
+   いかくは**場に出た瞬間に必ず発動する**。天候と同じで推測ではない。
+   社長はギャラドス（いかく）を先発に置いて勝ち出しており、ツールの評価だけが低いままだった
+   （実際に出てきた相手に対する「勝てる割合」が6匹中いちばん低い34%）。
+
+   ただし2つの例外を必ず見る：
+     ・無効化 … せいしんりょく（ブラッキー68.5%・ルカリオ87.2%）／どんかん（マンムー44.2%）
+     ・**逆用** … まけんき／かちき は**攻撃が2段階上がる**。
+       タイレーツ89.7%・エンペルト81.3%・ミロカロス70.4%・コノヨザル60.8%・ドドゲザン11.1%。
+       ここにギャラドスを投げると、いかくのつもりが**相手を強化して**しまう。 */
+const INTIMIDATE_BLOCK = ['せいしんりょく','どんかん','マイペース','あくしゅう'];
+const INTIMIDATE_REVERSE = ['まけんき','かちき'];
+/** いかくがこの相手にどう働くか。{kind:'down'|'none'|'up', ability, rate} */
+function intimidateEffect(oppName){
+  const u = oppUsage(oppName);
+  const list = (u && u.a) ? u.a : (OPP_ABILITY[toBase(oppName)]||[]).map(a=>[a,null]);
+  const rev = list.find(x=> INTIMIDATE_REVERSE.includes(x[0]) && (x[1]==null || x[1] >= 10));
+  if(rev) return {kind:'up', ability:rev[0], rate:rev[1]};
+  const blk = list.find(x=> INTIMIDATE_BLOCK.includes(x[0]) && (x[1]==null || x[1] >= 50));
+  if(blk) return {kind:'none', ability:blk[0], rate:blk[1]};
+  return {kind:'down'};
+}
+
 function oppScarfRate(name){
   if(name.startsWith('メガ')) return 0;
   const u = oppUsage(name); if(!u) return 0;
@@ -1321,6 +1345,14 @@ function matchupVs(mine, oppName, opp, known, st){
   myS = Math.floor(myS); opS = Math.floor(opS);
   const faster = myS > opS;
 
+  /* ★いかくは場に出た瞬間に必ず発動する。盤面の手入力を待たずに効かせる（v60）。
+     まけんき／かちき の相手は逆に攻撃が上がるので、その場合は相手の攻撃ランクを+2する。 */
+  let intim = null;
+  if((mine.ability||'') === 'いかく'){
+    intim = intimidateEffect(oppName);
+    if(intim.kind === 'down' && !st.opIntimidated) st = {...st, opIntimidated:true};
+    if(intim.kind === 'up')  st = {...st, opAtkRank:(st.opAtkRank||0)+2, opSpaRank:(st.opSpaRank||0)+2};
+  }
   const off = bestOffense(mine, oppName, opp, st);      // 自分→相手 のダメージ割合
   const thr = bestThreat(oppName, mine, opp, known, st); // 相手→自分 のダメージ割合
 
@@ -1376,7 +1408,7 @@ function matchupVs(mine, oppName, opp, known, st){
            wallsIt, stallsIt, roles:role,
            sureHits, winsRaceSure, threatRate: thr.threatRate||0, hitting: thr.hitting||[],
            oppRows: thr.rows||[], immuneMoves: thr.immune||[], opAtkAbility: thr.atkAbility||null,
-           opHits, opHitsHi, guard: guardEff, guardRaw: guard, guardBroken, opWeatherSpeed: opWS, effWeather,
+           opHits, opHitsHi, guard: guardEff, guardRaw: guard, guardBroken, opWeatherSpeed: opWS, effWeather, intimidate: intim,
            opMultiHit: multiHitOf(thr.move) ? thr.move : null };
 }
 
@@ -1725,6 +1757,19 @@ function callIt(mine, oppName, opts){
     t:`ここで<b>設置技</b>を置くと、相手6体すべてに効き続ける`});
   if(!mu.faster && mu.fasterAny && oppScarfRate(oppName)>=15)
     detail.push({k:'bad', t:`こだわりスカーフ採用${oppScarfRate(oppName)}%。持たれていると抜かれる`});
+  /* ★いかくの結果を必ず言う（v60）。とくに「逆に上がる」は事故に直結する。 */
+  if(mu.intimidate){
+    if(mu.intimidate.kind === 'up') detail.push({k:'bad',
+      t:`<b>${oppName}は${mu.intimidate.ability}</b>`
+        + (mu.intimidate.rate!=null?`（採用${mu.intimidate.rate}%）`:'')
+        + `。<b>いかくで相手の攻撃が2段階上がります</b>。この相手にこの駒を投げないこと`});
+    else if(mu.intimidate.kind === 'none') detail.push({k:'warn',
+      t:`相手は<b>${mu.intimidate.ability}</b>`
+        + (mu.intimidate.rate!=null?`（採用${mu.intimidate.rate}%）`:'')
+        + `。<b>いかくが効きません</b>（この判定は攻撃を下げずに出しています）`});
+    else detail.push({k:'good',
+      t:`<b>いかく</b>で相手の物理攻撃を1段階下げた前提で計算しています`});
+  }
   /* ★天候で相手が2倍速になる（v58）。社長がハカドッグに負けた原因。 */
   if(mu.opWeatherSpeed){
     detail.push({k:'bad',
@@ -2590,6 +2635,6 @@ global.PC = {
   bestOffense, bestThreat, immuneType, myOneHitGuard, myRoles, supportValue, oppUsage, oppTypeItem,
   readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana,
-  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED
+  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect
 };
 })(window);
