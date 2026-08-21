@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '73';
+const APP_VERSION = '74';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -71,6 +71,11 @@ function typeChips(name){
 /** タイプを「色つきアイコンだけ」で示す。
  *  丸だけにしたら分かりづらいと指摘されたので（2026-08-19）、アイコンは必ず出す。
  *  文字を落とすことで、1行に複数のポケモンが並ぶ幅を確保する。 */
+/** タイプ1つを丸バッジで出す。技のタイプなど「種族ではないもの」に使う */
+function typeBadge(t){
+  if(!t || !PC.TYPE_COLOR[t]) return '';
+  return `<span class="dots"><i style="background:${PC.TYPE_COLOR[t]}" title="${esc(t)}">${typeIcon(t)}</i></span>`;
+}
 function typeDots(name){
   const s = PC.SPECIES[name]; if(!s) return '';
   return `<span class="dots">${s.types.map(t=>
@@ -1954,7 +1959,9 @@ function btDangerCard(rc, me, c){
     const dLo = Math.round(r.rate*maxHP), dHi = Math.round(r.rateHi*maxHP);
     const ko = dHi >= hpNow;
     const survive = dHi>0 ? Math.max(0, Math.ceil(hpNow/dHi)) : 99;   // 最悪ケースで何発耐えるか
-    return `<div class="small" style="margin:4px 0">`
+    const mt = (PC.MOVES[r.move]||{}).type || r.type;
+    return `<div class="small" style="margin:4px 0;display:flex;align-items:center;gap:2px;flex-wrap:wrap">`
+      + typeBadge(mt)
       + `<b style="${ko?'color:var(--red)':''}">${esc(r.move)}</b> `
       + `<b style="${ko?'color:var(--red)':''}">${dLo}〜${dHi}</b>`
       + `<span class="muted"> 削られる（残り${hpNow}）</span>`
@@ -1992,8 +1999,9 @@ function btDangerCard(rc, me, c){
 
   return `<div class="card" style="margin-top:12px;border-left:3px solid var(--red)">
     <div class="small" style="font-weight:800">
-      ${esc(me.disp||me.label)} に飛んでくる技<span class="muted"> ・危ない順（ダメージ×採用率）</span></div>
-    <div class="small muted" style="margin:2px 0 5px">いま対面：<b>${esc(cur)}</b></div>
+      <span style="display:inline-flex;align-items:center;gap:2px;vertical-align:middle">${typeDots(me.name)}${esc(me.disp||me.label)}</span>
+      に飛んでくる技<span class="muted"> ・危ない順（ダメージ×採用率）</span></div>
+    <div class="small muted" style="margin:2px 0 5px;display:flex;align-items:center;gap:2px">いま対面：${typeDots(cur)}<b>${esc(cur)}</b></div>
     ${rows.length ? rows.map(line).join('')
                   : '<div class="small muted">通る技がありません</div>'}
     ${all.length>rows.length?`<div class="small muted">他${all.length-rows.length}技は4発以上耐えるので省略</div>`:''}
@@ -2001,9 +2009,10 @@ function btDangerCard(rc, me, c){
     ${benchRisk.length ? `
       <div class="small" style="font-weight:800;margin-top:10px">控えにも同じ弱点を突く駒がいます
         <span class="muted"> ・交代で出てくる想定</span></div>
-      ${benchRisk.slice(0,3).map(b=>`<div class="small" style="margin:3px 0">
-        <span class="muted">${esc(b.opp)}の</span><b>${esc(b.move)}</b>
-        <span class="muted">（${esc(b.type)} ${b.eff>=4?'4倍':'2倍'}・採用${b.rate}%）</span></div>`).join('')}
+      ${benchRisk.slice(0,3).map(b=>`<div class="small" style="margin:3px 0;display:flex;align-items:center;gap:2px;flex-wrap:wrap">
+        ${typeDots(b.opp)}<span class="muted">${esc(b.opp)}の</span>
+        ${typeBadge(b.type)}<b>${esc(b.move)}</b>
+        <span class="muted">（${b.eff>=4?'4倍':'2倍'}・採用${b.rate}%）</span></div>`).join('')}
       ` : `<div class="small muted" style="margin-top:10px">控えに、この駒の弱点を2倍以上で突ける技はありません</div>`}
 
     ${(()=>{ /* ★交代したときに、その駒が食らう最大ダメージ（社長の要望）。
@@ -2019,13 +2028,14 @@ function btDangerCard(rc, me, c){
         const w = (cc.mu.oppRows||[]).slice().sort((a,b)=> b.rateHi-a.rateHi)[0];
         if(!w) return null;
         const d = Math.round(w.rateHi*hp);
-        return {n:r.disp||r.label, move:w.move, d, hp, ko:d>=hp, mark:cc.mark};
+        return {n:r.disp||r.label, name:r.name, move:w.move, d, hp, ko:d>=hp, mark:cc.mark};
       }).filter(Boolean).sort((a,b)=> (a.d/a.hp)-(b.d/b.hp));
       if(!rows2.length) return '';
       return `<div class="small" style="font-weight:800;margin-top:10px">交代したら、その駒が食らう最大
           <span class="muted"> ・${esc(cur)}から</span></div>`
-        + rows2.map(x=>`<div class="small" style="margin:3px 0">
-            <b>${esc(x.n)}</b> ${esc(x.move)}で <b style="${x.ko?'color:var(--red)':''}">${x.d}</b>
+        + rows2.map(x=>`<div class="small" style="margin:3px 0;display:flex;align-items:center;gap:2px;flex-wrap:wrap">
+            ${typeDots(x.name)}<b>${esc(x.n)}</b> ${typeBadge((PC.MOVES[x.move]||{}).type)}${esc(x.move)}で
+            <b style="${x.ko?'color:var(--red)':''}">${x.d}</b>
             <span class="muted">／HP${x.hp}</span>
             ${x.ko?'<b style="color:var(--red)"> 一撃</b>':`<b> ${Math.ceil(x.hp/x.d)}発は耐える</b>`}
             <span class="muted"> ${x.mark}</span></div>`).join('');
@@ -2034,7 +2044,7 @@ function btDangerCard(rc, me, c){
       <div class="small" style="font-weight:800;margin-top:10px">こちらの技が効かない可能性
         <span class="muted"> ・特性</span></div>
       ${blocked.map(b=>`<div class="small" style="margin:3px 0">
-        <b>${esc(b.move)}</b><span class="muted">（${esc(b.type)}）は</span>
+        ${typeBadge(b.type)}<b>${esc(b.move)}</b><span class="muted">は</span>
         ${b.who.map(w=>`${esc(w.opp)}の<b>${esc(w.ability)}</b>${w.rate!=null?`（${w.rate}%）`:''}`).join('・')}
         <span class="muted">に無効。交代されると空振りします</span></div>`).join('')}
       ` : ''}
