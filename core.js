@@ -2631,13 +2631,20 @@ function bestPlan(roster, targets, size, allOpp, fixedMega, effOpp){
       if(ch && !c.members.includes(ch)) return;
       // メガ枠が1枚だけの構築でも、それが選出に入るなら「そこに切る」と明示する
       const mega = ch || (slots.length===1 && c.members.includes(slots[0]) ? slots[0] : null);
-      // 予想が外れた場合の保険：相手6体のうち何体を見れるか
+      /* ★予想が外れた場合の保険：相手6体のうち何体を見られるか。
+         2026-08-21 修正（社長の指摘）：
+         「ギャラドスが6体すべてに有利と出ているのに、選出予想に入っていない」
+         原因は**同じ問いを2つの基準で計算していた**こと（鉄則⑤）。
+           ・選出エンジン … `matchup().winsRace`（先に落とせるか）だけ
+           ・先発候補カード … `callIt()` の ◎○（受け・盤面作りも数える）
+         受けや流しで止めている相手を backup が数えていなかったので、
+         「6体に広く効く駒」が選出に上がってこなかった。→ callIt に揃える。 */
       let backup = 0, blind = [];
       (allOpp||targets).forEach(o=>{
         const ok = c.members.some(n=>{
           const m = rc.find(r=>r.label===n) || {name:n};
-          const mu = matchup(m,{name:effOpp(o)});
-          return mu && mu.winsRace;
+          try{ const cc = callIt(m, effOpp(o), {}); return cc && (cc.mark==='◎' || cc.mark==='○'); }
+          catch(e){ const mu = matchup(m,{name:effOpp(o)}); return mu && mu.winsRace; }
         });
         ok ? backup++ : blind.push(o);
       });
@@ -2654,9 +2661,15 @@ function bestPlan(roster, targets, size, allOpp, fixedMega, effOpp){
      「広く浅く見られるが、実際に出てくる相手には勝てない3体」が常に1位になっていた。
      → cover が同じなら、**いちばん苦しい対面がマシな案**を上に出す（worst）。
        1体でも「手も足も出ない」対面があると、そこで試合が壊れるため。 */
+  /* ★並べ方（2026-08-21 修正）。
+     予想3体への強さ(cover)が並んだら、**次は「相手6体をどれだけ見られるか」(backup)**。
+     以前は worst（いちばん苦しい対面）を先に見ていたが、worst は 0 で並ぶことが多く、
+     実質 total（予想3体への合計点）で決まっていた。
+     **選出予想の的中は 18/36＝50% しかない。** 予想が外れたときに効くのは backup の方なので、
+     こちらを先に見る。cover は変えていない（点数の設計そのものは触らない）。 */
   pool.sort((a,b)=> b.plan.cover-a.plan.cover
-                 || (b.plan.worst||0)-(a.plan.worst||0)
                  || b.backup-a.backup
+                 || (b.plan.worst||0)-(a.plan.worst||0)
                  || b.plan.total-a.plan.total);
   // 同じ並びが重複しないように畳む
   const seen=new Set(), uniq=[];

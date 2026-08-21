@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '67';
+const APP_VERSION = '68';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -151,7 +151,14 @@ function makeSpeciesSource(noMega){
 const speciesSource = makeSpeciesSource(false);
 const oppSpeciesSource = makeSpeciesSource(true);
 /** 相手の名前を、メガが判明していればメガ名に解決する */
-function effOpp(n){ return (S.oppMega && PC.BASE_OF[S.oppMega]===n) ? S.oppMega : n; }
+function effOppOf(n, mega){ return (mega && PC.BASE_OF[mega]===n) ? mega : n; }
+function effOpp(n){ return effOppOf(n, S.oppMega); }
+/** ★対戦タブ用（v68・社長の要望）。
+ *  「相手がメガシンカするとタイプが変わるので相性も変わる。
+ *    メガになった時のタイプで対面を作り直してほしい」
+ *  例：チリーン(エスパー単) → メガチリーン(エスパー/はがね) で、じめんが等倍→**2倍**。
+ *  記録タブは S.oppMega、対戦タブは BT.oppMega を見る。**混ぜないこと。** */
+function effOppBT(n){ return effOppOf(n, BT && BT.oppMega); }
 function moveSource(forMon){
   return q=>{
     const obs = PC.observedMoves(BATTLES)[forMon]||[];
@@ -283,8 +290,8 @@ function currentTeam(){ return TEAMS.find(t=>t.id===$('#fTeam').value); }
 const rosterForCalc = (roster, megaChoice)=> PC.rosterForCalc(roster, megaChoice);
 const megaSlotsOf   = roster=> PC.megaSlotsOf(roster);
 const dispName      = (rc, label)=> PC.dispName(rc, label);
-const bestPlan      = (roster, targets, size, allOpp, fixedMega)=>
-  PC.bestPlan(roster, targets, size, allOpp, fixedMega, effOpp);
+const bestPlan      = (roster, targets, size, allOpp, fixedMega, oppMegaFn)=>
+  PC.bestPlan(roster, targets, size, allOpp, fixedMega, oppMegaFn || effOpp);
 function currentRoster(){
   const t=currentTeam(); if(!t) return [];
   if(t.roster && t.roster.length) return t.roster;
@@ -955,6 +962,8 @@ function newBT(keepObs){
            /* ★もう落ちた自分の駒（v67・社長の要望）。
               「引くならこの駒」と言われても、その駒がもう居ないことが多かった。 */
            fainted:{},
+           /* 相手がメガシンカしたら、その形態名を入れる（v68） */
+           oppMega:null,
            _searchTop:null,
            /* 前回の盤面を古いとして捨てたか（開いたときに1度だけ知らせる） */
            _staleDropped:false };
@@ -1167,7 +1176,7 @@ function btCompute(){
   const pp = PC.predictPicks(BT.opp, BATTLES, neutral, size, META_TOP);
   const targets = (pp && pp.picks && pp.picks.length) ? pp.picks : BT.opp;
   BT.oppPredict = targets;
-  const bp = bestPlan(roster, targets, size, BT.opp, BT.megaFixed);
+  const bp = bestPlan(roster, targets, size, BT.opp, BT.megaFixed, effOppBT);
   BT.picks = bp.plan ? bp.plan.members : roster.slice(0,size).map(m=>m.name);
   BT.mega  = bp.mega;
   // メガ枠が選出に入っていなければ、そのメガは切れない。嘘を出さないよう必ず外す
@@ -1183,7 +1192,7 @@ function btCompute(){
     const scoreOf = n => {
       const me = rcLead.find(r=>r.label===n||r.name===n);
       if(!me) return -1;
-      const c = PC.callIt(me, effOpp(leadGuess.name), {});
+      const c = PC.callIt(me, effOppBT(leadGuess.name), {});
       return c ? c.mu.score : -1;
     };
     BT.picks = [...BT.picks].sort((a,b)=> scoreOf(b)-scoreOf(a));
@@ -1197,8 +1206,8 @@ function btCompute(){
     const knownOf = BT.obs && BT.obs[o] ? BT.obs[o] : null;
     BT.matrix[o] = roster.map(m=>{
       const me = rc.find(r=>r.label===m.name) || {name:m.name};
-      const c = PC.callIt(me, effOpp(o), {known:knownOf, st:BT.board||{}});
-      return { name:m.name, mu: c ? c.mu : PC.matchup(me,{name:effOpp(o), known:knownOf}), call:c };
+      const c = PC.callIt(me, effOppBT(o), {known:knownOf, st:BT.board||{}});
+      return { name:m.name, mu: c ? c.mu : PC.matchup(me,{name:effOppBT(o), known:knownOf}), call:c };
     }).filter(x=>x.mu);
   });
 }
@@ -1535,7 +1544,7 @@ function btNowRender(){
 
   // 相手：既定は先頭。自分：既定は「その相手にいちばん強い選出内の駒」
   if(!BT.sel || !BT.opp.includes(BT.sel)) BT.sel = BT.opp[0];
-  const o = effOpp(BT.sel);
+  const o = effOppBT(BT.sel);
   const inPick = r => BT.picks.includes(r.label) || BT.picks.includes(r.name);
   const mine = [...rc].sort((a,b)=> (inPick(b)?1:0)-(inPick(a)?1:0));
   /* ★自分の既定は必ず「選出した3体」から選ぶ（社長の指摘 2026-08-20）。
@@ -1585,7 +1594,7 @@ function btNowRender(){
   if(c){
     const others = BT.opp.filter(n=> n!==BT.sel);
     const cand = others.map(n=>{
-      const cc = PC.callIt(me, effOpp(n), {roster: pickRoster.length?pickRoster:rc,
+      const cc = PC.callIt(me, effOppBT(n), {roster: pickRoster.length?pickRoster:rc,
                                            myHP:hp, known:(BT.obs&&BT.obs[n])||[], guardGone:gGone, st});
       return cc ? {name:n, c:cc} : null;
     }).filter(Boolean).sort((a,b)=> a.c.mu.score - b.c.mu.score);
@@ -1598,9 +1607,28 @@ function btNowRender(){
      3体そろえば相手の選出が確定し、「試合が終わった」にもそのまま入る。 */
   BT.seenOrder = BT.seenOrder || [];
   const ordOf = n => { const i=BT.seenOrder.indexOf(n); return i<0?'':'①②③'[i]||''; };
+  /* ★相手のメガシンカ（v68・社長の要望）。
+     「相手がメガシンカするとタイプが変わるので相性も変わる。
+       メガになった時のタイプで対面を作り直してほしい」
+     例：チリーン(エスパー単) → メガチリーン(エスパー/はがね) で、じめんが等倍→2倍。
+     メガできる相手にだけ「メガ」ボタンを出す。押すとその形態で全部の判定が組み直る。
+     相手のメガ枠は1体だけなので、別の相手を押したら前のは自動で解除する。 */
   const oppChips = BT.opp.map(n=>{
     const o=ordOf(n);
-    return `<button class="qb mini ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}">${o?`<b>${o}</b>`:''}${typeDots(n)}${esc(n)}</button>`;
+    const base = PC.toBase(n);
+    /* ★MEGA_OF は配列。リザードンのように**メガが2つ**ある相手がいるので、
+       1つ決め打ちにしないこと（X と Y でタイプが違う）。 */
+    const forms = PC.MEGA_OF[base] || [];
+    const on = BT.oppMega && PC.BASE_OF[BT.oppMega]===base;
+    const disp = on ? BT.oppMega : n;
+    const shortName = f => 'メガ' + (f.replace('メガ'+base, '') || '');
+    return `<span class="pk mini">`
+      + `<button class="qb mini ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}">${o?`<b>${o}</b>`:''}${typeDots(disp)}${esc(disp)}</button>`
+      + forms.map(f=>`<button class="qb mini" data-btoppmega="${esc(f)}" title="${esc(f)}にした／戻す"
+               style="padding:1px 6px;font-size:11px;margin-left:2px;${
+                 BT.oppMega===f?'color:var(--red);font-weight:700':'color:var(--muted)'}">${
+                 BT.oppMega===f?esc(shortName(f))+'中':esc(shortName(f))}</button>`).join('')
+      + `</span>`;
   }).join('');
   /* ★落ちた駒は打ち消し線＋薄字。右の × で切り替える（もう一度押すと戻る）。
      試合中のタップを増やさないよう、駒を選ぶ操作（本体）とは別の当たり判定にしてある。 */
@@ -1756,6 +1784,17 @@ function btNowRender(){
   }
   btSpeak();
 
+  $$('#btNow [data-btoppmega]').forEach(b=> b.onclick=()=>{
+    const m = b.dataset.btoppmega;               // ボタンにメガ形態名そのものを持たせてある
+    if(!PC.SPECIES[m]) return;
+    const base = PC.BASE_OF[m] || m;
+    /* 相手のメガ枠は1体だけ。押し直しで解除、別の形態を押したら乗り換える */
+    BT.oppMega = (BT.oppMega === m) ? null : m;
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
+    toast(BT.oppMega
+      ? `${BT.oppMega} として計算し直しました（${PC.SPECIES[m].types.join('/')}）`
+      : `${base} に戻しました`);
+  });
   $$('#btNow [data-btopp]').forEach(b=> b.onclick=()=>{
     /* ★相手を変えても自分の選択は変えない（社長の指摘 2026-08-20）。
        以前は BT.me=null にして「その相手にいちばん強い駒」を勝手に選び直していた。
@@ -1942,7 +1981,7 @@ function btBindBoard(){
    社長の要望：「相手が採用してそうな技を10個くらい出して、打ってきた技を記録していく」
    技は4つまでなので、4つ記録できた時点で「それ以外は飛んでこない」が確定し、判定が一気に正確になる。 */
 function btSeenCard(oppName, seen){
-  const o = effOpp(oppName);
+  const o = effOppBT(oppName);
   const ch = PC.oppMoveChoices(o);
   const extra = seen.filter(m=> !ch.some(c=>c.name===m));
   const n = seen.length, conf = n>=4;
@@ -2029,7 +2068,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted,
+    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppMega:BT.oppMega,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
@@ -2040,7 +2079,7 @@ function loadBtDraft(){
     if(d.opp) BT.opp=d.opp;
     if(d.megaFixed) BT.megaFixed=d.megaFixed;
     if(fresh){
-      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted;
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppMega) BT.oppMega=d.oppMega;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
       // 黙って捨てると「さっき入れた状態が消えた」と見えるので、捨てたことは伝える
