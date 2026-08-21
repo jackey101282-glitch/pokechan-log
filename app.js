@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '68';
+const APP_VERSION = '69';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -964,6 +964,8 @@ function newBT(keepObs){
            fainted:{},
            /* 相手がメガシンカしたら、その形態名を入れる（v68） */
            oppMega:null,
+           /* ★タイプ診断（v69・社長の要望）。tdType=選んだタイプ, tdMode='def'受ける/'atk'殴る */
+           tdType:null, tdMode:'def',
            _searchTop:null,
            /* 前回の盤面を古いとして捨てたか（開いたときに1度だけ知らせる） */
            _staleDropped:false };
@@ -1763,6 +1765,7 @@ function btNowRender(){
     <div class="small" style="margin-top:10px">
       ${c.detail.map(d=>`<div style="margin:3px 0;color:${d.k==='bad'?'var(--red)':d.k==='good'?'var(--grn)':d.k==='warn'?'var(--org)':d.k==='role'?'var(--blue)':'inherit'}">・${d.t}</div>`).join('')}
     </div>`:''}
+    ${safeHtml('タイプ診断', ()=> btTypeCard(rc))}
     ${btBoardCard(st)}
     ${readBlock}
   </div>
@@ -1870,6 +1873,99 @@ function btNowRender(){
    例：相手がつるぎのまいを1回積むだけで被ダメージは 46〜73% → 93〜143% に変わる。
    試合中にタップ数を増やさないよう、既定は閉じておき、使う時だけ開く。 */
 const BOARD_RANKS = [-2,-1,0,1,2,3,4,5,6];
+/* ★タイプ診断（2026-08-21・v69・社長の要望）。
+   「カバルドンだったら電気は食らわないけど、氷とかだとやばい。草でもやばい。水でもやばいのかな？」
+   「キラフロルは岩と毒だと思うけど、**相手が何を撃ってきたらきついのかがまだ理解できてない**」
+   ＝ ポケモン同士の相性ではなく、**タイプ単位で「何を食らうとまずいか」**を知りたい、という要望。
+
+   出し方は2段構え：
+     ①タイプを選ばなくても、**いま場に出している自分の駒の弱点**を最初から出す（タップ0）
+     ②タイプを押すと、自分6匹と相手6体の倍率が一覧で出る（社長が言った「地面を押す」形）
+   「受けたら／殴ったら」の切り替えが、社長の言う「に弱い／に強い」にあたる。 */
+function btTypeCard(rc){
+  const T = PC.TYPES;
+  const mode = BT.tdMode || 'def';
+  const sel  = BT.tdType;
+  const mul  = (t, name)=> PC.effectiveness(t, (PC.SPECIES[PC.toBase(name)]||{types:[]}).types);
+  /* 特性でタイプごと無効になるもの（ふゆう・ちょすい等）も見ないと嘘になる */
+  const immAb = name => PC.immuneType(PC.worstDefAbility(PC.toBase(name)));
+  const label = v => v===0?'無効' : v>=4?'4倍' : v===2?'2倍' : v===1?'等倍' : v===0.5?'半減' : '1/4';
+  const color = v => v===0?'var(--muted)' : v>=4?'var(--red)' : v===2?'var(--red)'
+                   : v===1?'inherit' : 'var(--muted)';
+
+  /* ①いま出している駒の弱点（常時） */
+  const me = rc.find(r=>r.label===BT.me) || rc[0];
+  let now = '';
+  if(me){
+    const ab = me.ability || '';
+    const imm = PC.immuneType(ab);
+    const rows = T.map(t=>({t, v: (t===imm ? 0 : PC.effectiveness(t, PC.SPECIES[me.name].types))}));
+    const bad = rows.filter(r=>r.v>=2).sort((a,b)=>b.v-a.v);
+    const safe = rows.filter(r=>r.v<1);
+    now = `<div class="small" style="margin-bottom:6px">
+      <b>${esc(me.disp||me.label)}</b> が食らうとまずい：
+      ${bad.length ? bad.map(r=>`<span style="color:var(--red);font-weight:700">${esc(r.t)} ${label(r.v)}</span>`).join('・')
+                   : '<span class="muted">2倍以上はありません</span>'}
+      <br><span class="muted">効きにくい：${safe.length?safe.map(r=>`${esc(r.t)} ${label(r.v)}`).join('・'):'なし'}</span>
+    </div>`;
+  }
+
+  /* ②タイプを選んだときの一覧 */
+  let out = '';
+  if(sel){
+    const mineRows = rc.map(m=>{
+      const v = (PC.immuneType(m.ability||'')===sel) ? 0 : mul(sel, m.name);
+      return {n:(m.disp||m.label), v};
+    }).sort((a,b)=> mode==='def' ? b.v-a.v : b.v-a.v);
+    const oppRows = (BT.opp||[]).map(n=>{
+      const e = effOppBT(n);
+      const v = (immAb(e)===sel) ? 0 : mul(sel, e);
+      return {n:e, v};
+    }).sort((a,b)=> b.v-a.v);
+    const list = rows => rows.map(r=>
+      `<span class="pk mini"><b>${esc(r.n)}</b> <span style="color:${color(r.v)};font-weight:700">${label(r.v)}</span></span>`).join('');
+    out = mode==='def'
+      ? `<div class="small" style="margin-top:8px"><b>${esc(sel)}の技を食らったとき</b>
+           <div class="pklist" style="margin-top:4px">${list(mineRows)}</div>
+           <div class="small muted" style="margin-top:6px">相手が${esc(sel)}を食らったとき（こちらが撃つ側）</div>
+           <div class="pklist" style="margin-top:4px">${list(oppRows)}</div></div>`
+      : `<div class="small" style="margin-top:8px"><b>${esc(sel)}の技で殴ったとき（相手6体）</b>
+           <div class="pklist" style="margin-top:4px">${list(oppRows)}</div>
+           <div class="small muted" style="margin-top:6px">こちらが${esc(sel)}を食らったとき</div>
+           <div class="pklist" style="margin-top:4px">${list(mineRows)}</div></div>`;
+  }
+
+  /* ★畳んだままだと意味がないので、いま出している駒の弱点は**タイトルに出す**。
+     社長の要望は「空いているスペースに置いてほしい」＝見えていないと使われない。 */
+  let head = 'タイプ診断';
+  if(me){
+    const imm = PC.immuneType(me.ability||'');
+    const bad = PC.TYPES.map(t=>({t, v:(t===imm?0:PC.effectiveness(t, PC.SPECIES[me.name].types))}))
+      .filter(r=>r.v>=2).sort((a,b)=>b.v-a.v);
+    head = `<b>${esc(me.disp||me.label)}</b> がまずいのは `
+      + (bad.length
+          ? bad.map(r=>`<span style="color:var(--red);font-weight:700">${esc(r.t)}${r.v>=4?' 4倍':''}</span>`).join('・')
+          : '<span class="muted">なし</span>');
+  }
+  return `<details id="btTypeWrap" style="margin-top:10px" open>
+    <summary class="small" style="cursor:pointer">${head}<span class="muted"> ・タイプ診断</span></summary>
+    <div style="margin-top:8px">
+      ${now}
+      <div class="quick">${T.map(t=>
+        `<button class="qb mini ${sel===t?'on':'off'}" data-tdt="${t}"
+          style="${sel===t?`border-color:${PC.TYPE_COLOR[t]};background:${PC.TYPE_COLOR[t]}22`:''}">
+          <i style="background:${PC.TYPE_COLOR[t]};width:13px;height:13px;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;margin-right:3px">${typeIcon(t)}</i>${t}</button>`).join('')}</div>
+      <div class="hpwrap" style="margin-top:6px">
+        <div class="seg">
+          <button class="${mode==='def'?'on':''}" data-tdm="def">食らったら</button>
+          <button class="${mode==='atk'?'on':''}" data-tdm="atk">殴ったら</button>
+        </div>
+        ${sel?`<button class="btn ghost sm" data-tdt="">選択を外す</button>`:''}
+      </div>
+      ${out}
+    </div>
+  </details>`;
+}
 function btBoardCard(st){
   const chip = (label, key, val, on)=>
     `<button class="qb mini ${on?'on':'off'}" data-bb="${key}" data-bv="${val}">${esc(label)}</button>`;
@@ -1954,6 +2050,14 @@ function btBoardCard(st){
     </div></details>`;
 }
 function btBindBoard(){
+  $$('#btNow [data-tdt]').forEach(b=> b.onclick=()=>{
+    const t = b.dataset.tdt;
+    BT.tdType = (t && BT.tdType!==t) ? t : null;
+    btNowRender(); saveBtDraft();
+  });
+  $$('#btNow [data-tdm]').forEach(b=> b.onclick=()=>{
+    BT.tdMode = b.dataset.tdm; btNowRender(); saveBtDraft();
+  });
   $$('#btNow [data-bbstep]').forEach(b=> b.onclick=()=>{
     const k=b.dataset.bbstep, d=+b.dataset.bv;
     const cur = BT.board[k]||0;
@@ -2068,7 +2172,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppMega:BT.oppMega,
+    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppMega:BT.oppMega, tdType:BT.tdType, tdMode:BT.tdMode,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
@@ -2080,6 +2184,7 @@ function loadBtDraft(){
     if(d.megaFixed) BT.megaFixed=d.megaFixed;
     if(fresh){
       if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppMega) BT.oppMega=d.oppMega;
+    if(d.tdType) BT.tdType=d.tdType; if(d.tdMode) BT.tdMode=d.tdMode;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
       // 黙って捨てると「さっき入れた状態が消えた」と見えるので、捨てたことは伝える
