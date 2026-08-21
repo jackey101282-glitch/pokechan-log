@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '74';
+const APP_VERSION = '75';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -967,6 +967,11 @@ function newBT(keepObs){
            /* ★もう落ちた自分の駒（v67・社長の要望）。
               「引くならこの駒」と言われても、その駒がもう居ないことが多かった。 */
            fainted:{},
+           /* ★もう落ちた相手の駒（v75・社長の要望）。
+              「自分の駒に生きてる／落ちたの印があるなら、相手のところにも入れてほしい。
+                相手のポケモンを倒したときも戦い方が変わるので」
+              控えの脅威・交代先の読み・設置技の価値・おはかまいりから外す。 */
+           oppFainted:{},
            /* 相手がメガシンカしたら、その形態名を入れる（v68） */
            oppMega:null,
            /* ★タイプ診断（v69・社長の要望）。tdType=選んだタイプ, tdMode='def'受ける/'atk'殴る */
@@ -1591,20 +1596,24 @@ function btNowRender(){
      ここを外していなかったので「引くなら → メガルカリオ」と言われても、
      そのルカリオはもう落ちている、ということが実戦で起きていた。 */
   BT.fainted = BT.fainted || {};
+  /* ★落ちた相手も同じように外す（v75）。相手を1体倒した時点で
+     「控えから飛んでくる技」も「交代されたらどうする」も変わる。 */
+  BT.oppFainted = BT.oppFainted || {};
   const alive = r => !BT.fainted[r.label];
+  const oppAlive = n => !BT.oppFainted[n];
   const pickRoster = rc.filter(r=> inPick(r) && alive(r));
   BT.board = BT.board || {};
   const st = BT.board;
   const c = me.stats ? PC.callIt(me, o, {roster: pickRoster.length?pickRoster:rc,
                                          myHP:hp, oppHPPct:oppPct/100, known:seen, guardGone:gGone, st,
-                                         oppTeam: BT.opp}) : null;
+                                         oppTeam: BT.opp.filter(oppAlive)}) : null;
   const rd = c && c.read;
 
   /* 相手が交代してきた時の答え。試合中いちばん聞かれる択なので、画面と音声の両方に出す。
      いま出ている相手を除いた残りのうち、こちらがいちばん困る1体を選ぶ。 */
   let swIn = null;
   if(c){
-    const others = BT.opp.filter(n=> n!==BT.sel);
+    const others = BT.opp.filter(n=> n!==BT.sel && oppAlive(n));
     const cand = others.map(n=>{
       const cc = PC.callIt(me, effOppBT(n), {roster: pickRoster.length?pickRoster:rc,
                                            myHP:hp, known:(BT.obs&&BT.obs[n])||[], guardGone:gGone, st});
@@ -1634,12 +1643,18 @@ function btNowRender(){
     const on = BT.oppMega && PC.BASE_OF[BT.oppMega]===base;
     const disp = on ? BT.oppMega : n;
     const shortName = f => 'メガ' + (f.replace('メガ'+base, '') || '');
-    return `<span class="pk mini">`
-      + `<button class="qb mini ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}">${o?`<b>${o}</b>`:''}${typeDots(disp)}${esc(disp)}</button>`
-      + forms.map(f=>`<button class="qb mini" data-btoppmega="${esc(f)}" title="${esc(f)}にした／戻す"
+    /* ★倒した相手は打ち消し線＋薄字。右の × で切り替える（自分側と同じ操作にしてある）。
+       落ちた相手にメガのボタンを出しても押す場面が無いので、そこは隠す。 */
+    const dead = !!BT.oppFainted[n];
+    return `<span class="pk mini" style="${dead?'opacity:.45':''}">`
+      + `<button class="qb mini ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}"
+           style="${dead?'text-decoration:line-through':''}">${o?`<b>${o}</b>`:''}${typeDots(disp)}${esc(disp)}</button>`
+      + (dead ? '' : forms.map(f=>`<button class="qb mini" data-btoppmega="${esc(f)}" title="${esc(f)}にした／戻す"
                style="padding:1px 6px;font-size:11px;margin-left:2px;${
                  BT.oppMega===f?'color:var(--red);font-weight:700':'color:var(--muted)'}">${
-                 BT.oppMega===f?esc(shortName(f))+'中':esc(shortName(f))}</button>`).join('')
+                 BT.oppMega===f?esc(shortName(f))+'中':esc(shortName(f))}</button>`).join(''))
+      + `<button class="qb mini" data-btoppdead="${esc(n)}" title="倒した／戻す"
+           style="padding:1px 6px;font-size:11px;margin-left:2px;${dead?'color:var(--red);font-weight:700':'color:var(--muted)'}">${dead?'倒':'×'}</button>`
       + `</span>`;
   }).join('');
   /* ★落ちた駒は打ち消し線＋薄字。右の × で切り替える（もう一度押すと戻る）。
@@ -1718,6 +1733,15 @@ function btNowRender(){
         ? `<div class="small muted" style="margin-top:4px">落ちた駒：${
             Object.keys(BT.fainted).map(esc).join('・')}<span class="muted">（引き先の候補から外しています）</span></div>`
         : ''}
+      ${(()=>{ /* ★倒した相手（v75）。3体そろって見えているなら「相手の残り何体」まで出す。
+           試合の詰め方が変わるところなので、除外していることを黙っていない。 */
+        const down = Object.keys(BT.oppFainted).filter(n=> BT.opp.includes(n));
+        if(!down.length) return '';
+        const three = BT.seenOrder.length===3 ? BT.seenOrder : null;
+        const rest = three ? `・相手の選出3体のうち<b>残り${three.filter(oppAlive).length}体</b>` : '';
+        return `<div class="small muted" style="margin-top:4px">倒した相手：${
+          down.map(esc).join('・')}<span class="muted">（控えの脅威と交代先の読みから外しています${rest}）</span></div>`;
+      })()}
       ${swIn?`<div class="small" style="margin-top:6px">${esc(swIn.name)}に交代されたら → <b>${swIn.c.mark} ${esc(swIn.c.head)}</b>${swIn.c.to?`（${esc(swIn.c.to.name)}へ）`:''}</div>`:''}
     </div>
     ${(c.moves&&c.moves.rows&&c.moves.rows.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--fg)">
@@ -1845,6 +1869,39 @@ function btNowRender(){
     const iw=$('#btInputWrap'); if(iw) iw.open=false;
     btNowRender();
   });
+  /* ★相手を倒したときの処理（v75・社長の要望）。
+     自分側（data-btdead）と対になる操作。倒した相手は
+     控えの脅威・交代先の読み・設置技の価値・おはかまいりの計算から外す。 */
+  $$('#btNow [data-btoppdead]').forEach(b=> b.onclick=()=>{
+    const n = b.dataset.btoppdead;
+    BT.oppFainted = BT.oppFainted || {};
+    const now = !BT.oppFainted[n];
+    if(now) BT.oppFainted[n] = true; else delete BT.oppFainted[n];
+    /* ★積まれたランクは、その相手が落ちた時点で消える（v66で盤面に足していたぶんを引く）。
+       残したままにすると、次に出てくる相手を積み後の数値で評価してしまう。 */
+    applyOppStacks(n, now ? -1 : +1);
+    BT.board = BT.board || {};
+    if(now){
+      /* 落ちたポケモンの状態異常も一緒に消える。残すと「相手はねむり中」の前提で助言が出る */
+      ['opSleep','opFreeze','opBurn','opParalysis','opToxic'].forEach(k=> delete BT.board[k]);
+      /* メガシンカしていた相手が落ちたら、その形態指定も外す */
+      if(BT.oppMega && PC.BASE_OF[BT.oppMega]===PC.toBase(n)) BT.oppMega = null;
+    }
+    /* 盤面の「相手が落ちた数」と必ず一致させる（自分側と同じ。別々に持つと必ず食い違う） */
+    const n2 = Object.keys(BT.oppFainted).filter(x=> BT.opp.includes(x)).length;
+    if(n2) BT.board.opFallen = Math.min(5, n2); else delete BT.board.opFallen;
+    /* いま対面に選んでいる相手を倒したなら、生きている相手に移す。
+       出てきた順（seenOrder）が分かっていればそちらを優先する */
+    if(BT.oppFainted[BT.sel]){
+      const live = x => BT.opp.includes(x) && !BT.oppFainted[x];
+      const next = (BT.seenOrder||[]).find(live) || BT.opp.find(live);
+      if(next) BT.sel = next;
+    }
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
+    toast(BT.oppFainted[n]
+      ? `${n} を「倒した」にしました（控えの脅威と交代先から外します）`
+      : `${n} を戻しました`);
+  });
   $$('#btNow [data-btdead]').forEach(b=> b.onclick=()=>{
     const n = b.dataset.btdead;
     BT.fainted = BT.fainted || {};
@@ -1933,6 +1990,7 @@ const BOARD_RANKS = [-2,-1,0,1,2,3,4,5,6];
      倍率は同じでも、相手の攻撃実数値・持ち物・タイプ一致で実際の痛さは全く違う。 */
 function btDangerCard(rc, me, c){
   if(!me || !BT.opp.length) return '';
+  BT.oppFainted = BT.oppFainted || {};
   const cur = effOppBT(BT.sel);
   const seen = (BT.obs && BT.obs[BT.sel]) || [];
 
@@ -1974,7 +2032,7 @@ function btDangerCard(rc, me, c){
   };
 
   /* ② 控えの相手が、同じ技を持っていないか（交代で出てくる） */
-  const others = BT.opp.filter(n=> n!==BT.sel && !BT.fainted[n]);
+  const others = BT.opp.filter(n=> n!==BT.sel && !BT.oppFainted[n]);
   const myTypes = (PC.SPECIES[me.name]||{types:[]}).types;
   const immAb = PC.immuneType(me.ability||'');
   const benchRisk = [];
@@ -1993,7 +2051,7 @@ function btDangerCard(rc, me, c){
   const blocked = [];
   (me.moves||[]).forEach(mv=>{
     const M = PC.MOVES[mv]; if(!M || !M.power || M.cat==='変') return;
-    const who = PC.whoBlocks(M.type, BT.opp.filter(n=>!BT.fainted[n]).map(effOppBT));
+    const who = PC.whoBlocks(M.type, BT.opp.filter(n=>!BT.oppFainted[n]).map(effOppBT));
     if(who.length) blocked.push({move:mv, type:M.type, who});
   });
 
@@ -2295,6 +2353,21 @@ function btSeenHistory(o){
   return `<div class="small muted" style="margin-top:10px">
     自分の対戦での実績：${obs.map(x=>`${esc(x.move)}(${x.count}回)`).join('・')}</div>`;
 }
+/* ★積み技ぶんの能力ランクを盤面に足し引きする（v66 の処理を関数にした・v75）。
+   sign=+1 で乗せる、-1 で外す。相手が落ちたら、その相手が積んでいたぶんだけ外す。 */
+const STACK_RANK_MAP = {a:'opAtkRank', b:'opDefRank', c:'opSpaRank', d:'opSpdRank', s:'opSpeRank'};
+function applyOppStacks(name, sign){
+  const st = (BT.stacks||{})[name] || {};
+  BT.board = BT.board || {};
+  Object.entries(st).forEach(([mv, cnt])=>{
+    const up = PC.statUpOf(mv); if(!up) return;
+    Object.entries(up).forEach(([k,v])=>{
+      const bk = STACK_RANK_MAP[k]; if(!bk) return;
+      BT.board[bk] = Math.max(-6, Math.min(6, (BT.board[bk]||0) + sign*v*cnt));
+      if(!BT.board[bk]) delete BT.board[bk];
+    });
+  });
+}
 function btBindSeen(){
   const key = BT.sel; if(!key) return;
   const set = m =>{
@@ -2309,9 +2382,8 @@ function btBindSeen(){
       const st = BT.stacks[key] = BT.stacks[key] || {};
       st[m] = (st[m]||0) + 1;
       BT.board = BT.board || {};
-      const MAP = {a:'opAtkRank', b:'opDefRank', c:'opSpaRank', d:'opSpdRank', s:'opSpeRank'};
       Object.entries(up).forEach(([k,v])=>{
-        const bk = MAP[k]; if(!bk) return;
+        const bk = STACK_RANK_MAP[k]; if(!bk) return;
         BT.board[bk] = Math.max(-6, Math.min(6, (BT.board[bk]||0) + v));
         if(!BT.board[bk]) delete BT.board[bk];
       });
@@ -2342,7 +2414,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppMega:BT.oppMega, tdType:BT.tdType, tdMode:BT.tdMode,
+    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, tdType:BT.tdType, tdMode:BT.tdMode,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
@@ -2353,7 +2425,7 @@ function loadBtDraft(){
     if(d.opp) BT.opp=d.opp;
     if(d.megaFixed) BT.megaFixed=d.megaFixed;
     if(fresh){
-      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppMega) BT.oppMega=d.oppMega;
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega;
     if(d.tdType) BT.tdType=d.tdType; if(d.tdMode) BT.tdMode=d.tdMode;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
