@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '81';
+const APP_VERSION = '82';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -440,8 +440,13 @@ function renderLeadPredict(){
   const rc = PRED.neutral;
 
   // 的中率（先発は保存値と実績を照合、選出は過去ログの時系列で検証）
-  const doneLead = BATTLES.filter(b=> b.pred_lead && (b.turns||[])[0] && b.turns[0].oppMon);
-  const hitLead  = doneLead.filter(b=> PC.toBase(b.turns[0].oppMon)===b.pred_lead).length;
+  /* ★2026-08-21 修正（v82）：先発の的中率が**一度も画面に出ていなかった**。
+     ターン記録（turns[0].oppMon）に依存していたが、v65以降そこは埋めていないので常に0件だった。
+     **相手の選出①＝実際の先発**なので、そちらから数える。
+     ★48戦で数えると **1位の的中は23%**。画面は「予想先発 ◯◯ 54%」と大きく出しているので、
+       的中率を併記しないと、当たらない予想を信じて初手を決めることになる（実際にそれで負けている）。 */
+  const doneLead = BATTLES.filter(b=> b.pred_lead && (b.opp_pick||[])[0]);
+  const hitLead  = doneLead.filter(b=> PC.toBase(b.opp_pick[0])===PC.toBase(b.pred_lead)).length;
   const bt = PC.backtestPicks(BATTLES, rc, size, META_TOP);
   const accParts=[];
   if(bt.total) accParts.push(`選出の的中 ${pct(bt.hit,bt.total)}%（${bt.hit}/${bt.total}体・${bt.games}戦で検証）`);
@@ -469,10 +474,25 @@ function renderLeadPredict(){
 
     <div class="pick-card">
       <div class="hd"><b>② その中の先発</b></div>
-      <div class="pklist">${lead.slice(0,2).map((p,i)=>
+      <!-- ★2体→3体（v82）。48戦で数えると 1位23% / 2位まで35% / 3位まで52%。
+           2体で切ると、実際に来る先発の3分の2を画面から消していることになる。 -->
+      <div class="pklist">${lead.slice(0,3).map((p,i)=>
         `<span class="pk ${i===0?'sel':''}">${typeChips(p.name)}<b>${esc(p.name)}</b>
           <span class="small muted" style="margin-left:4px">${Math.round(p.pct*100)}%</span></span>`).join('')}</div>
       ${lead[0]&&lead[0].why.length?`<div class="small muted" style="margin-top:6px">${esc(lead[0].why.join('・'))}</div>`:''}
+      ${doneLead.length>=10?`<div class="small muted" style="margin-top:4px">
+        この予想の1位が当たったのは <b>${pct(hitLead,doneLead.length)}%</b>（${hitLead}/${doneLead.length}戦）。
+        <b>3体まで見て${(()=>{ /* ★その試合より前の記録だけで予想し直す。
+             全記録を使うと「未来を見て当てた」ことになり、的中率が甘く出る。 */
+          let h=0,n=0;
+          BATTLES.forEach((b,i)=>{
+            if(!b.pred_lead || !(b.opp_pick||[])[0]) return;
+            const six=(b.opp_team||[]).filter(x=>PC.SPECIES[x]); if(six.length<4) return;
+            const pr=(PC.predictLead(six, BATTLES.slice(i+1))||[]).slice(0,3).map(x=>PC.toBase(x.name));
+            n++; if(pr.includes(PC.toBase(b.opp_pick[0]))) h++;
+          });
+          return n? pct(h,n) : '—';
+        })()}%</b>です。1位を決め打ちしないこと</div>`:''}
     </div>
 
     <div class="pick-card">
