@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '78';
+const APP_VERSION = '79';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -994,6 +994,9 @@ function newBT(){
            oppType:{},
            /* ★相手ごとの盤面（積みランク・状態異常）。交代で載せ替える（v77・社長の指摘） */
            oppBoard:{},
+           /* ★試合中に見えた相手の持ち物（v79・社長の要望）。oppItem[相手名]='いのちのたま'。
+              使用率からの推測を上書きして確定にする。'なし' も選べる。 */
+           oppItem:{},
            /* ★タイプ診断（v69・社長の要望）。tdType=選んだタイプ, tdMode='def'受ける/'atk'殴る */
            tdType:null, tdMode:'def',
            _searchTop:null,
@@ -1193,7 +1196,11 @@ function btLeadCandidates(rc){
     </table>
   </div>`;
 }
+/* ★持ち物の確定は状態なので、**計算する画面が毎回宣言する**（鉄則⑤）。
+   宣言し忘れると、実戦タブで入れた確定が対面タブにも効いて数字が食い違う。 */
+function syncOppItems(){ PC.setOppItems((BT && BT.oppItem) || {}); }
 function btCompute(){
+  syncOppItems();
   const roster = currentRoster();
   if(!roster.length || !BT.opp.length){ BT.matrix=null; return; }
   const size = $('#fRule').value==='double' ? 4 : 3;
@@ -1573,6 +1580,7 @@ function btRender(){
    → 結論は core の PC.callIt() 1本に統一。画面ごとに違うことを言わないようにする。 */
 
 function btNowRender(){
+  syncOppItems();
   const host = $('#btNow'); if(!host) return;
   const roster = currentRoster();
   if(!roster.length || !BT.opp.length){ host.innerHTML=''; return; }
@@ -1712,9 +1720,30 @@ function btNowRender(){
     <h2>いまの対面<span class="sub">相手/自分をタップで切替</span></h2>
     <div class="small muted">相手</div>
     <div class="quick" style="margin-top:4px">${oppChips}</div>
-    ${(()=>{ const ti = PC.teamItemsOf(PC.toBase(BT.sel)) || [];
-      return ti.length ? `<details><summary class="small muted" style="cursor:pointer;margin-top:4px">上位構築での持ち物</summary>
-        <div class="small muted">${ti.map(x=>`${esc(x.name)} ${x.rate}%`).join('・')}</div></details>` : ''; })()}
+    ${(()=>{ /* ★相手の持ち物を確定させる（v79・社長の要望）。
+         「いのちのたまとかせんせいのツメを持ってると計算が狂う。毎回じゃないけど登録できたらいい」
+         ふだんは畳んでおく。押した時だけ開く（試合中のタップを増やさないため）。
+         候補は**採用率の高い順**＋「データに載りにくいが実戦で効くもの」を足してある。 */
+      const raw = PC.oppItemsRaw(BT.sel).filter(x=>x.rate>=3).sort((a,b)=>b.rate-a.rate).slice(0,8);
+      const EXTRA = ['いのちのたま','こだわりスカーフ','こだわりハチマキ','こだわりメガネ',
+                     'きあいのタスキ','とつげきチョッキ','たべのこし','ラムのみ','オボンのみ','せんせいのツメ'];
+      const seen = new Set(raw.map(x=>x.name));
+      const extra = EXTRA.filter(n=>!seen.has(n));
+      const now = (BT.oppItem||{})[BT.sel] || null;
+      const ti = PC.teamItemsOf(PC.toBase(BT.sel)) || [];
+      const chip = (n, rate) => `<button class="qb mini ${now===n?'on':'off'}" data-btoppitem="${esc(n)}">${
+        esc(n)}${rate!=null?`<span class="muted"> ${rate}%</span>`:''}</button>`;
+      return `<details ${now?'open':''} style="margin-top:4px"><summary class="small ${now?'':'muted'}" style="cursor:pointer">
+          持ち物${now?`：<b style="color:var(--org)">${esc(now)}</b>（確定として計算中）`
+                    :'<span class="muted">（見えたら押す。推測より優先します）</span>'}</summary>
+        <div class="quick" style="margin-top:5px">
+          ${chip('なし')}${raw.map(x=>chip(x.name, x.rate)).join('')}
+          ${extra.length?`<span class="small muted" style="width:100%;margin-top:3px">データに載っていないもの</span>`:''}
+          ${extra.map(n=>chip(n)).join('')}
+        </div>
+        ${ti.length?`<div class="small muted" style="margin-top:5px">上位構築での持ち物：${
+          ti.map(x=>`${esc(x.name)} ${x.rate}%`).join('・')}</div>`:''}
+      </details>`; })()}
     <div class="hpwrap">
       <span class="small muted">相手の残りHP</span>
       <div class="seg" id="btOppHp">
@@ -1810,6 +1839,7 @@ function btNowRender(){
            : `<br><b style="color:var(--org)">${lose.map(r=>esc(r.label)).join('・')} には抜かれます</b>`
              + (s.scarfRate>=15?`<span class="muted">（こだわりスカーフ採用${s.scarfRate}%）</span>`:'')}
           ${s.weatherBoost?`<br><b style="color:var(--red)">天候で${esc(s.weatherBoost.name)}が発動して2倍速です</b>`:''}
+          ${s.quickClaw?`<br><b style="color:var(--red)">せんせいのツメ。5回に1回は、素早さに関係なく先に動かれます</b>`:''}
         </div>`;
       })()}
       ${c.moves.why?`<div class="small muted" style="margin-bottom:6px">${c.moves.why}</div>`:''}
@@ -1905,6 +1935,17 @@ function btNowRender(){
   /* ★相手を倒したときの処理（v75・社長の要望）。
      自分側（data-btdead）と対になる操作。倒した相手は
      控えの脅威・交代先の読み・設置技の価値・おはかまいりの計算から外す。 */
+  /* ★持ち物を確定させる／解除する（v79）。押し直しで推測に戻る。 */
+  $$('#btNow [data-btoppitem]').forEach(b=> b.onclick=()=>{
+    const it = b.dataset.btoppitem;
+    BT.oppItem = BT.oppItem || {};
+    if(BT.oppItem[BT.sel] === it) delete BT.oppItem[BT.sel]; else BT.oppItem[BT.sel] = it;
+    syncOppItems();
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
+    toast(BT.oppItem[BT.sel]
+      ? `${BT.sel} の持ち物を「${it}」として計算し直しました`
+      : `${BT.sel} の持ち物を推測に戻しました`);
+  });
   $$('#btNow [data-btoppdead]').forEach(b=> b.onclick=()=>{
     const n = b.dataset.btoppdead;
     BT.oppFainted = BT.oppFainted || {};
@@ -2642,7 +2683,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, oppBoard:BT.oppBoard, tdType:BT.tdType, tdMode:BT.tdMode,
+    obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, oppBoard:BT.oppBoard, oppItem:BT.oppItem, tdType:BT.tdType, tdMode:BT.tdMode,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
@@ -2655,7 +2696,7 @@ function loadBtDraft(){
       /* ★観測した技は「その試合のもの」なので、時間が経っていたら捨てる（v76）。
          誤ってリロードした直後（30分以内）は残す。 */
       if(d.obs) BT.obs=d.obs; if(d.obsCount) BT.obsCount=d.obsCount;
-      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType; if(d.oppBoard) BT.oppBoard=d.oppBoard;
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType; if(d.oppBoard) BT.oppBoard=d.oppBoard; if(d.oppItem) BT.oppItem=d.oppItem;
     if(d.tdType) BT.tdType=d.tdType; if(d.tdMode) BT.tdMode=d.tdMode;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
@@ -2784,6 +2825,7 @@ function vsNarrow(){
 }
 
 function renderVs(){
+  PC.setOppItems({});          // 対面タブは「推測のまま」で見る画面なので、確定は持ち込まない
   const out=$('#vsOut');
   const roster=currentRoster();
   if(!VS.mine || !VS.opp || !PC.SPECIES[VS.opp] || !roster.length){

@@ -181,7 +181,39 @@ function predictRest(seen, limit){
    どちらもタイプ一致・威力90ではない。2026-08-19 に3体を一撃で失った直接原因。 */
 const USAGE = {};
 /** 相手の使用率データ。メガは元の姿のデータを引く（メガカイリュー -> カイリュー） */
-function oppUsage(name){ return USAGE[name] || USAGE[BASE_OF[name]] || null; }
+/* ★試合中に見えた相手の持ち物を「確定」として扱う（2026-08-21・v79・社長の要望）。
+   「相手がいのちのたまとかせんせいのツメとか持ってたりして計算が狂う時がある。
+     毎回じゃないけど登録できたらいいな」
+   ＝ 持ち物は使用率からの**推測**でしかなく、外れると打数がまるごとズレる。
+     いのちのたまなら×1.3、こだわりスカーフなら素早さ×1.5、タスキなら1発耐える。
+
+   ★仕掛けは1か所だけ。`oppUsage()` が返す持ち物リスト `i` を差し替える。
+     こうすると oppOffenseItem / oppTypeItem / oppOneHitGuard / oppScarfRate /
+     oppItemCandidates / assumedSpreads(スカーフ型) が**全部まとめて**確定側で動く
+     （同じ判定を何か所にも書かない＝鉄則⑤）。
+   ★状態を持つので、**画面ごとに必ず setOppItems() で宣言し直すこと。**
+     実戦タブは BT.oppItem を、対面タブ・ダメージ計算タブは空を入れる。 */
+let ITEM_FIX = {}, _itemUsageCache = {};
+/** map = {相手名: '持ち物' or 'なし'}。画面ごとに丸ごと入れ替える */
+function setOppItems(map){
+  ITEM_FIX = map || {};
+  _itemUsageCache = {};
+}
+function oppItemFixed(name){ return ITEM_FIX[name] || ITEM_FIX[BASE_OF[name]] || null; }
+/** 確定を無視した、素の持ち物採用率。ボタンの候補を作るのに使う（確定側を見ると1件になってしまう） */
+function oppItemsRaw(name){
+  const u = USAGE[name] || USAGE[BASE_OF[name]] || null;
+  return (u && u.i) ? u.i.map(([n,r])=>({name:n, rate:r})) : [];
+}
+function oppUsage(name){
+  const u = USAGE[name] || USAGE[BASE_OF[name]] || null;
+  if(!u) return null;
+  const fix = oppItemFixed(name);
+  if(!fix) return u;
+  const key = name + '|' + fix;
+  if(_itemUsageCache[key]) return _itemUsageCache[key];       // 同一性を保つ（毎回作り直さない）
+  return _itemUsageCache[key] = {...u, i: (fix==='なし' ? [] : [[fix, 100]])};
+}
 /** 相手が実際に撃ってくる攻撃技（採用率つき）。無ければ null */
 function oppMoves(name, minRate){
   const u = oppUsage(name); if(!u) return null;
@@ -1243,6 +1275,9 @@ function speedCheck(mine, oppName, st){
     allSlower: rows.every(r=> r.faster),      // どの型より速い＝素早さで足りている
     allFaster: rows.every(r=> !r.faster),     // どの型にも抜かれる
     scarfRate: oppScarfRate(oppName),
+    /* ★せんせいのツメ（v79）。20%で先制されるので「先に動ける」を言い切れなくなる。
+       使用率データに載らないことが多いので、**社長が見て確定させたときだけ**出す。 */
+    quickClaw: oppItemFixed(oppName)==='せんせいのツメ',
     weatherBoost: ws || null
   };
 }
@@ -2872,6 +2907,7 @@ global.PC = {
   loadData, effectiveness, statHP, statOther, natureMods, realStats, assumedStat,
   assumedSpreads, spreadStats, attackerLikeness, matchupVs, SP_TOTAL, SP_MAX,
   OPP_ABILITY, worstDefAbility, survivesOneHit, OPP_TRICKS, oppTricks,
+  setOppItems, oppItemFixed, oppItemsRaw,
   MEGA_OF, BASE_OF, isMegaForm, megaFormsOf, canMega, toBase, predictLead,
   predictPicks, backtestPicks, rosterForCalc, megaSlotsOf, dispName, bestPlan,
   rankMul, calcDamage, matchup, buildMatrix, suggestPicks, leadCheck, offenseCat, offenseBias,
