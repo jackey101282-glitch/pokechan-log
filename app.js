@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '80';
+const APP_VERSION = '81';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1162,6 +1162,99 @@ function safeHtml(label, fn){
   catch(e){ console.error('['+label+']', e);
     return `<div class="small muted" style="margin-top:8px">${esc(label)}の表示に失敗しました（${esc(e.name)}）</div>`; }
 }
+/* ★「引く」ことのコストを出す（2026-08-21・v81・社長の指摘）。
+
+   社長：「不利対面で『このポケモンに引いてください』と言われるけど、その時点で一撃もらうのは
+     ほぼ確定している。ミミッキュの強みはばけのかわで、**2回行動できることが確定している**こと。
+     でもすでに対面していてそこから引くと、**ただで相手に攻撃をさせるだけ**になる。
+     つるぎのまいも使えずに、じしんで純粋に負ける。
+     だったら**この駒で戦えるだけ戦って、犠牲にはなるけど次の駒の強みを100%活かす**選択肢もある」
+
+   ★数字で確認した（メガルカリオ vs ガブリアス で「ミミッキュに引く」と言われた場面）：
+     ミミッキュ vs ガブリアス … 対面で出すと **◎殴る・一撃で落とされうる0%**
+                                引いて出すと **✕引く・一撃で落とされうる99%**
+     ＝ ツールは◎の側を根拠に「引くなら→ミミッキュ」と言っていた。**助言そのものが強みを消していた。**
+
+   ★交代には4種類ある。ここを分けずに「引くなら→X」と言うのが間違いだった。
+     ① 無償 … 無効／2割未満。タダで降りられる。相手の技を**誘って**引くのはこれ（釣り）
+     ② 資源を1つ使う … ばけのかわ・タスキ・マルチスケイル が交代の1発で消える。**強みを半分捨てる**
+     ③ 有償 … まともに食らう。削れた状態で戦うことになる
+     ④ 引けない … 8割以上（v80で実装済み）
+   ＋第5の選択肢として「**引かない＝この駒を捨てて、次を万全で出す**」を必ず併記する。
+
+   ★いかく（ギャラドス）だけは逆で、**交代で出すたびに再発動する＝引くほど得**。これも出す。 */
+const SWITCH_RESOURCE = {
+  'ばけのかわ':'ばけのかわが剥がれます', 'マルチスケイル':'マルチスケイルが切れます',
+  'がんじょう':'がんじょうを使ってしまいます'
+};
+function btSwitchCard(pickRoster, me, oppEff, st, c){
+  const cand = pickRoster.filter(r=> r.label!==me.label).map(r=>{
+    let cc=null; try{ cc = PC.callIt(r, oppEff, {roster:null, st}); }catch(e){}
+    if(!cc) return null;
+    const w = (cc.mu.oppRows||[]).slice().sort((a,b)=> b.rateHi-a.rateHi)[0];
+    const d = w ? Math.round(w.rateHi * r.stats.h) : 0;
+    const pct = r.stats.h ? d / r.stats.h : 0;
+    const res = SWITCH_RESOURCE[r.ability||''] || (r.item==='きあいのタスキ' ? 'きあいのタスキが無駄になります' : null);
+    /* ★ばけのかわ・がんじょう・きあいのタスキは、交代の1発を**完全に防ぐ**（マルチスケイルは半減するだけ）。
+       だから「引けない」ではなく「**引けるが、その1発で強みを使い切る**」が正しい分類。
+       ここを分けないと、社長が実戦で言われた「ミミッキュに引く」の何が問題なのかが出せない。 */
+    const fullBlock = (r.ability||'')==='ばけのかわ' || (r.ability||'')==='がんじょう'
+                   || r.item==='きあいのタスキ';
+    /* 交代の1発で資源が消えるなら、降りたあとの実力は「資源が無い状態」で見る */
+    let after = null;
+    if(res && d>0){ try{ after = PC.callIt(r, oppEff, {roster:null, st, guardGone:true}); }catch(e){} }
+    /* ★「釣り」の情報（社長の指摘）。
+       「地面タイプの相手がじしんを打ってくるよね → ギャラドスに変えよう。
+         電気タイプが電気技を打ってくるよね → カバルドンに変えよう。
+         **あえて効果抜群の対面を作って、引くことで無効化する**」
+       最悪ケース（げきりん等）だけ出すと、この読みが画面から消える。
+       **採用率がいちばん高い技を無効化できるなら、それを必ず併記する。** */
+    const t = PC.SPECIES[r.name] ? PC.SPECIES[r.name].types : [];
+    const ab = PC.immuneType(r.ability||'');
+    const bait = (PC.oppMoves(oppEff, 30)||[])
+      .filter(x=> x.type===ab || PC.effectiveness(x.type, t)===0)
+      .sort((a,b)=> b.rate-a.rate)[0] || null;
+    return { r, n:r.disp||r.label, d, pct, move:w?w.move:'', mark:cc.mark, head:cc.head,
+             free: d===0 || pct<0.2, res: (d>0 ? res : null), after, bait, fullBlock,
+             intimidate: (r.ability||'')==='いかく',
+             /* 完全に防ぐ手段を持っているなら、被ダメージが大きくても「引ける」 */
+             ng: !fullBlock && pct>=0.8 };
+  }).filter(Boolean);
+  if(!cand.length) return '';
+  /* 釣れる（主力技を無効化できる）駒は、最悪ケースが重くても選択肢として上に出す */
+  const rank = x => x.free?0 : (x.bait && x.bait.rate>=50)?1 : x.ng?4 : x.res?3 : 2;
+  cand.sort((a,b)=> rank(a)-rank(b) || a.pct-b.pct);
+  const best = cand[0];
+  const line = x =>
+      x.ng   ? `<span style="color:var(--red)"><b>${esc(x.n)}</b> は引けません（${esc(x.move)}で${x.d}/${x.r.stats.h}＝${Math.round(x.pct*100)}%）</span>`
+    : x.free ? `<b>${esc(x.n)}</b> <span style="color:var(--grn)">タダで降りられます</span><span class="muted">（${x.d?`${esc(x.move)}で${x.d}`:esc(x.move)+'は無効'}）</span>${x.intimidate?'<span style="color:var(--grn)"> ・いかくが再発動</span>':''}`
+    : x.res  ? `<b>${esc(x.n)}</b> <span style="color:var(--org)">交代の1発で${esc(x.res)}</span>`
+             + (x.fullBlock?`<span class="muted">（1発は防ぎますが、それに使ってしまいます）</span>`:'')
+             + (x.after?`<br><span class="muted" style="margin-left:12px">└ そのあとは <b>${x.after.mark}${esc(x.after.head)}</b>・一撃で落とされうる <b>${x.after.pOHKO}%</b>${
+                 x.mark!==x.after.mark?`（対面で出していれば ${x.mark}）`:''}</span>`:'')
+             : `<b>${esc(x.n)}</b> <span class="muted">${esc(x.move)}で ${x.d}/${x.r.stats.h}（${Math.round(x.pct*100)}%）食らって降ります</span>`;
+  const baitLine = x => (x.bait && !x.free)
+    ? `<div class="small" style="margin-left:12px;color:var(--grn)">└ <b>${esc(x.bait.name)}(${x.bait.rate}%)</b>を撃たれるなら<b>無効で降りられます</b>${
+        x.move?`<span class="muted">（${esc(x.move)}を撃たれると${Math.round(x.pct*100)}%）</span>`:''}</div>` : '';
+
+  /* 引かずに戦った場合の見通し。捨て駒にする判断の材料 */
+  const stay = (()=>{
+    const hits = c.mu.opHits, my = c.mu.myHits;
+    const best2 = (c.moves && c.moves.best) ? c.moves.best : null;
+    return `<span class="muted">引かずに戦うと：</span>相手に落とされるまで<b>${hits}発</b>`
+      + (best2 ? `／<b>${esc(best2.name)}</b>で相手を落とすのに<b>${my}発</b>` : '');
+  })();
+
+  return `<div class="small" style="margin-top:6px">
+    <div>引くなら → ${line(best)}</div>${baitLine(best)}
+    ${cand.slice(1).filter(x=>!x.ng||cand.length<=2).slice(0,2).map(x=>`<div style="margin-top:2px">${line(x)}${baitLine(x)}</div>`).join('')}
+    <div style="margin-top:4px;padding-top:4px;border-top:1px dashed var(--line)">${stay}</div>
+    ${(!best.free)?`<div class="small muted" style="margin-top:3px">
+      引くと交代の1ターンをタダで殴られます。${best.res?'<b>その駒の強みを先に使い切る</b>ことになるので、':''
+      }<b>ここで削り切る／捨て駒にして次を万全で出す</b>方が良い場面もあります</div>`:''}
+  </div>`;
+}
+
 /* ★「3体をチームとして役割が回るか」を出す（2026-08-21・v80・社長の指摘）。
    社長：「一対一の対面が強いのをただ出せばいいわけじゃない。ちゃんと三体をチームとして
      役割を持たせて戦わなきゃ勝てない。木を見て森を見ずになると負ける」
@@ -1853,7 +1946,7 @@ function btNowRender(){
       <div class="nowhead">${c.mark} ${esc(c.head)}</div>
       <div class="small" style="margin-top:2px">${esc(c.why)}</div>
       ${c.to
-        ? `<div class="small" style="margin-top:6px">引くなら → <b>${esc((mine.find(x=>x.name===c.to.name)||{}).disp || c.to.name)}</b>（${c.to.c.mark} ${esc(c.to.c.why)}）</div>`
+        ? safeHtml('引く判断', ()=> btSwitchCard(pickRoster, me, o, st, c))
         : (()=>{ /* ★引き先が無いことを黙っていない（v67）。
              落ちた駒を除外した結果、引く先が消えることがある。
              「引く」と言われて引けないのがいちばん困る。 */
