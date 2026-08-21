@@ -812,6 +812,78 @@ function canMega(name){ return (MEGA_OF[name]||[]).length > 0; }
 /** 相手側に見せる用：メガ名で来たらベースに戻す */
 function toBase(name){ return BASE_OF[name] || name; }
 
+/* ---------- ★へんげんじざい／リベロで変わったタイプ（2026-08-21・v76） ----------
+   社長の要望：「相手の特性が変幻自在だったりするときに、タイプが変わるから効果が変わる。
+     変幻自在をした後、**このタイプになった**ってなったら、これで変わりよ、というのがある」
+   ＝ マスカーニャが トリプルアクセル を撃った瞬間、**こおり単タイプ**になる。
+     こちらの「どの技が通るか」も「何を食らうと痛いか」も、その瞬間から全部変わる。
+
+   ★やり方はメガシンカと同じにした。**タイプだけ差し替えた別個体を SPECIES に登録して、
+     相手の名前をそれに差し替える。** こうすればダメージ計算・危ないタイプ・引き先の判断まで
+     エンジン全体が自動で新しいタイプで動く（同じ計算を2か所に書かない＝鉄則⑤）。
+     `BASE_OF[新名] = 元の名前` にしてあるので、使用率・持ち物・特性・同居率は
+     **元のポケモンのものをそのまま見る**（そこは変わらないため）。
+
+   ★攻撃側のタイプ一致は calcDamage が「へんげんじざいなら常に×1.5」で見ているので、
+     ここで二重にはならない（if/else で片方しか通らない）。 */
+const PROTEAN_ABILITY = ['へんげんじざい','リベロ'];
+/* ★合成した個体の登録簿。**種族名を並べる場所からは必ず外すこと。**
+   外さないと「相手6体を入れる」の検索やタイプ絞り込みに
+   「マスカーニャ〈こおり〉」が候補として出てきて、そのまま登録できてしまう
+   （誤登録で3敗している。同じ穴を開けない）。 */
+const TYPE_FORMS = new Set();
+function isTypeForm(name){ return TYPE_FORMS.has(name); }
+/** その相手が へんげんじざい／リベロ を持ちうるか */
+function hasProtean(name){
+  const u = oppUsage(name);
+  const list = (u && u.a) ? u.a.map(x=>x[0]) : (OPP_ABILITY[toBase(name)]||[]);
+  return PROTEAN_ABILITY.some(a=> list.includes(a));
+}
+/** 「マスカーニャ」＋「こおり」→「マスカーニャ〈こおり〉」。無ければその場で作る。 */
+function typeFormName(name, type){
+  if(!type || !SPECIES[name] || !CHART[type]) return name;
+  const cur = SPECIES[name].types;
+  if(cur.length===1 && cur[0]===type) return name;      // すでにそのタイプ単体なら作る必要が無い
+  const synth = name + '〈' + type + '〉';
+  if(!SPECIES[synth]){
+    SPECIES[synth] = {...SPECIES[name], types:[type]};
+    TYPE_FORMS.add(synth);
+    /* ★元を「その名前そのもの」にする。toBase(合成名)＝元の名前 になるので、
+       使用率・特性・持ち物・同居率の参照が、変身前とまったく同じ経路で解決する。 */
+    BASE_OF[synth] = name;
+    if(OPP_ABILITY[name]) OPP_ABILITY[synth] = OPP_ABILITY[name];
+  }
+  return synth;
+}
+/** 「マスカーニャ〈こおり〉」→「こおり」。合成でなければ null */
+function typeFormOf(name){ const m = /〈(.+)〉$/.exec(name||''); return m ? m[1] : null; }
+/** 合成名から元の表示名へ戻す（「マスカーニャ〈こおり〉」→「マスカーニャ」） */
+function stripTypeForm(name){ return (name||'').replace(/〈.+〉$/, ''); }
+
+/* ★「このタイプの技が通る」を出すための表（2026-08-21・v76・社長の要望）。
+   「普通に**このタイプの技がいいよ**っていう書き方の方が助かる。それが両立していると
+     ありがたい」＝ 技名だけだと、相手のタイプが変わった瞬間に読み替えられない。
+   タイプで持っておけば、変身しても・知らない相手が出てきても、社長自身が判断できる。 */
+function typeAdvice(oppName, mine){
+  const os = SPECIES[oppName]; if(!os) return null;
+  const ab  = worstDefAbility(oppName);
+  const imm = immuneType(ab);
+  const best = {};                     // タイプ -> こちらが持っている、そのタイプで一番強い攻撃技
+  (((mine||{}).moves)||[]).forEach(n=>{
+    const m = MOVES[n];
+    if(!m || !m.power || m.cat==='変') return;
+    if(!best[m.type] || (MOVES[best[m.type]].power||0) < m.power) best[m.type] = n;
+  });
+  const rows = TYPES.map(t=>{
+    const byAbility = (t===imm) ? ab : null;
+    return { type:t, eff: byAbility ? 0 : effectiveness(t, os.types),
+             byAbility, mine: best[t] || null };
+  });
+  return { types: os.types, ability: ab, rows,
+           /* こちらが持っている技のうち、いちばん相性が良いタイプ */
+           bestMine: rows.filter(r=>r.mine && r.eff>0).sort((a,b)=> b.eff-a.eff)[0] || null };
+}
+
 /* ---------- 先発の読み ----------
    ①自分の記録（同じ相手が実際に何を初手に置いたか）を最優先
    ②記録が足りない分は、上位勢が実際に語っている「初手に置かれやすい枠」で補う */
@@ -2502,6 +2574,7 @@ function searchSpecies(query, opts){
   opts = opts || {};
   const q = String(query||'').trim();
   const all = Object.keys(SPECIES)
+    .filter(n=> !isTypeForm(n))                    // へんげんじざいの合成個体は候補に出さない
     .filter(n=> !(opts.noMega && isMegaForm(n)))
     .filter(n=> !(opts.exclude||[]).includes(n));
   if(!q) return {list: all.slice(0, opts.limit||12), fuzzy:false};
@@ -2544,6 +2617,7 @@ function speciesIndex(){
   if(_normIndex) return _normIndex;
   const out=[];
   Object.keys(SPECIES).forEach(n=>{
+    if(isTypeForm(n)) return;                      // 合成個体は名前検索に出さない
     out.push({name:n, key:normKana(n), alias:false});
     // 「ギルガルド(シールド)」「イダイトウ♂」「ダイケンキ(ヒスイ)」など、
     // 口では言わない添え字を落とした短い呼び方でも当たるようにする
@@ -2781,6 +2855,7 @@ global.PC = {
   bestOffense, bestThreat, immuneType, myOneHitGuard, myRoles, supportValue, oppUsage, oppTypeItem,
   readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana,
-  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect, graveMovePower, GRAVE_MOVES, statUpOf, STAT_UP, moveBlockers, whoBlocks, speedCheck
+  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect, graveMovePower, GRAVE_MOVES, statUpOf, STAT_UP, moveBlockers, whoBlocks, speedCheck,
+  PROTEAN_ABILITY, hasProtean, typeFormName, typeFormOf, stripTypeForm, typeAdvice, isTypeForm
 };
 })(window);

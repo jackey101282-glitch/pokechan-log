@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '75';
+const APP_VERSION = '76';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -163,7 +163,14 @@ function effOpp(n){ return effOppOf(n, S.oppMega); }
  *    メガになった時のタイプで対面を作り直してほしい」
  *  例：チリーン(エスパー単) → メガチリーン(エスパー/はがね) で、じめんが等倍→**2倍**。
  *  記録タブは S.oppMega、対戦タブは BT.oppMega を見る。**混ぜないこと。** */
-function effOppBT(n){ return effOppOf(n, BT && BT.oppMega); }
+/* ★へんげんじざい／リベロで変わったタイプを、相手の「いま」に反映する（v76）。
+   メガシンカと同じ仕組み（タイプだけ差し替えた個体名に置き換える）なので、
+   ここ1か所を通すだけで、判定・ダメージ・危ないタイプ・引き先まで全部が新しいタイプで動く。 */
+function effOppBT(n){
+  const base = effOppOf(n, BT && BT.oppMega);
+  const t = BT && BT.oppType && BT.oppType[n];
+  return t ? PC.typeFormName(base, t) : base;
+}
 function moveSource(forMon){
   return q=>{
     const obs = PC.observedMoves(BATTLES)[forMon]||[];
@@ -946,10 +953,18 @@ $('#btnSave').onclick=async ()=>{
    その結果、リセット後にタイプを押すと例外で落ち、6体目が入力できなくなっていた
    （社長が実戦で選出を組めず、致命的だった）。
    → 新しい状態を足すときは、必ずここに足すこと。個別に {} を書かない。 */
-function newBT(keepObs){
+/* ★観測した技は「その1試合だけ」のもの（2026-08-21・v76・社長の要望）。
+   「同じポケモンでも覚えてる技は全然違う。前回の相手はこれを覚えてたけど、
+     今回の相手はこれを覚えてる、みたいな感じで**毎回リセットしてほしい**」
+   → v64まで（keepObs）は、次の試合に持ち越していた。**持ち越さない**。
+   過去の相手が何を撃ってきたかは「これまでの対戦での実績」として別に出しているので、
+   参考値としてはそちらに残る（今回の相手の確定情報と混ぜないことが大事）。 */
+function newBT(){
   return { opp:[], picks:[], mega:null, megaFixed:null, matrix:null,
            sel:null, me:null, meManual:false,
-           hp:{}, oppHp:{}, obs:keepObs||{}, guardGone:{}, board:{},
+           hp:{}, oppHp:{}, obs:{}, guardGone:{}, board:{},
+           /* ★相手がその技を何回撃ってきたか（v76）。obsCount[相手名][技名] = 回数 */
+           obsCount:{},
            seenOrder:[], done:{}, tsel:[], leadGuess:null, oppPredict:null,
            /* ★名前検索の先頭候補（Enterで足す用）。ここに書かないと
               リセット後に undefined になって Enter が黙って効かなくなる（v48と同じ事故） */
@@ -974,6 +989,9 @@ function newBT(keepObs){
            oppFainted:{},
            /* 相手がメガシンカしたら、その形態名を入れる（v68） */
            oppMega:null,
+           /* ★へんげんじざい／リベロで今なっているタイプ（v76・社長の要望）。
+              oppType[相手名] = 'こおり'。撃ってきた技をタップすると自動で入る。 */
+           oppType:{},
            /* ★タイプ診断（v69・社長の要望）。tdType=選んだタイプ, tdMode='def'受ける/'atk'殴る */
            tdType:null, tdMode:'def',
            _searchTop:null,
@@ -1025,6 +1043,7 @@ function initBtUI(){
        デスバーン（使用率圏外）をタイプで探しても出ず、別のポケモンを登録して試合が壊れた。
        → 全件出す。2タイプ選べば数体まで落ちるので、探す手間はむしろ減る。 */
     const all = Object.keys(PC.SPECIES)
+      .filter(n=> !PC.isTypeForm(n))               // へんげんじざいの合成個体は候補に出さない
       .filter(n=> !BT.opp.includes(n) && BT.tsel.every(t=> PC.SPECIES[n].types.includes(t)))
       .sort((a,b)=> rank(a)-rank(b) || a.length-b.length);
     const hit = all;
@@ -1097,10 +1116,10 @@ function initBtUI(){
     const r = PC.parseBattleText($('#btVoice').value.trim());
     btAddNames([...r.opp_team, ...r.my_pick]);        // 相手/自分の切り分けは不要。全部相手として扱う
   }, '#btGrid');
-  // やり直しても、相手の技の観測だけは残す（次の試合でも同じ相手に当たるので価値がある）
+  /* ★観測した技も一緒に消す（v76）。同じ種族でも相手ごとに技は違うので、
+     前の試合の「確定4技」を持ち越すと、次の試合で嘘の確定になる。 */
   $('#btReset').onclick = ()=>{
-    const obs = BT.obs;
-    BT = newBT(obs);
+    BT = newBT();
     PC.clearMatchupCache(); $('#btVoice').value=''; btRender(); saveBtDraft();
   };
   loadBtDraft();
@@ -1341,13 +1360,12 @@ function btRender(){
   const ng = $('#btNewGame');
   if(ng) ng.onclick = ()=>{
     if(BT.opp.length && !confirm('いま入っている相手6体と記録を消して、次の試合の入力に戻ります。よろしいですか？')) return;
-    const obs = BT.obs;
-    BT = newBT(obs);
+    BT = newBT();
     PC.clearMatchupCache(); if(window.VOICE) VOICE.reset();
     saveBtDraft(); btCompute(); btRender();
     const w=$('#btInputWrap'); if(w) w.open=true;
     window.scrollTo(0,0);
-    toast('次の試合の入力に戻りました（相手の技の記録は残しています）');
+    toast('次の試合の入力に戻りました（相手の技も消しています。相手ごとに技は違うため）');
   };
 
   /* ---------- 試合が終わったら、その場で数タップだけ残す ----------
@@ -1482,8 +1500,7 @@ function btRender(){
       if(!res.ok) return toast('保存に失敗: '+res.error.message, true);
       /* ★保存したら次の試合をすぐ始められる状態に戻す（社長の指摘 2026-08-20）。
          相手の技の観測（BT.obs）だけは残す。同じ相手に何度も当たるので次の試合でも効くため。 */
-      const obs = BT.obs;
-      BT = newBT(obs);
+      BT = newBT();
       PC.clearMatchupCache(); if(window.VOICE) VOICE.reset();
       saveBtDraft();                      // 空になった状態を保存し直す（キーは 'pokechan_bt'）
       await loadBattles(); renderAll();
@@ -1641,6 +1658,10 @@ function btNowRender(){
        1つ決め打ちにしないこと（X と Y でタイプが違う）。 */
     const forms = PC.MEGA_OF[base] || [];
     const on = BT.oppMega && PC.BASE_OF[BT.oppMega]===base;
+    /* ★へんげんじざいで変わったタイプは、アイコンと名前の両方で分かるようにする（v76）。
+       ここが見えていないと、判定だけ変わって理由が分からない画面になる。 */
+    const nowT = (BT.oppType||{})[n] || null;
+    const eff  = effOppBT(n);
     const disp = on ? BT.oppMega : n;
     const shortName = f => 'メガ' + (f.replace('メガ'+base, '') || '');
     /* ★倒した相手は打ち消し線＋薄字。右の × で切り替える（自分側と同じ操作にしてある）。
@@ -1648,7 +1669,8 @@ function btNowRender(){
     const dead = !!BT.oppFainted[n];
     return `<span class="pk mini" style="${dead?'opacity:.45':''}">`
       + `<button class="qb mini ${n===BT.sel?'on':'off'}" data-btopp="${esc(n)}"
-           style="${dead?'text-decoration:line-through':''}">${o?`<b>${o}</b>`:''}${typeDots(disp)}${esc(disp)}</button>`
+           style="${dead?'text-decoration:line-through':''}">${o?`<b>${o}</b>`:''}${typeDots(eff)}${esc(disp)}${
+             nowT?`<b style="color:var(--org)">〈${esc(nowT)}〉</b>`:''}</button>`
       + (dead ? '' : forms.map(f=>`<button class="qb mini" data-btoppmega="${esc(f)}" title="${esc(f)}にした／戻す"
                style="padding:1px 6px;font-size:11px;margin-left:2px;${
                  BT.oppMega===f?'color:var(--red);font-weight:700':'color:var(--muted)'}">${
@@ -1811,6 +1833,7 @@ function btNowRender(){
         return `<div class="small" style="margin:3px 0;${on?'font-weight:700':''}">${on?'▶ ':'・'}${fst}${pri}${esc(r.name)} … ${body}${shot}</div>`;
       }).join('')}
     </div>`:''}
+    ${safeHtml('通るタイプ', ()=> btTypeThroughCard(o, me))}
     ${(c.todo&&c.todo.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--blue)">
       <div class="small" style="font-weight:800;margin-bottom:4px">引く前にやること</div>
       ${c.todo.map(d=>`<div class="small" style="margin:3px 0">・${d.t}</div>`).join('')}
@@ -2309,9 +2332,66 @@ function btBindBoard(){
   if(r) r.onclick=()=>{ BT.board={}; PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft(); };
 }
 
+/* ★「このタイプの技が通る」（2026-08-21・v76・社長の要望）。
+   「普通に**このタイプの技がいいよ**っていう書き方の方が助かる。
+     それが両立しているとありがたい、単純にツールとして」
+   ＝ 技名だけの助言は、相手のタイプが変わった瞬間に読み替えられない。
+     タイプで持っておけば、へんげんじざいでも・初見の相手でも、社長自身が判断できる。
+   ★持っている技には技名を添える（両立させる）。持っていないタイプは薄字で出す
+     （「効くけど手持ちに無い」＝引き先を選ぶ材料になるので、消してはいけない）。 */
+function btTypeThroughCard(oppEff, me){
+  const ta = PC.typeAdvice(oppEff, me);
+  if(!ta) return '';
+  const grp = (lo, hi) => ta.rows.filter(r=> r.eff>=lo && r.eff<hi);
+  const cell = r => `<span style="display:inline-flex;align-items:center;gap:2px;margin-right:8px;${
+      r.mine?'font-weight:700':'opacity:.55'}">${typeBadge(r.type)}${esc(r.type)}${
+      r.mine?`<span style="color:var(--grn)">✓${esc(r.mine)}</span>`:''}</span>`;
+  const line = (label, rows, color) => rows.length
+    ? `<div class="small" style="margin:4px 0;display:flex;flex-wrap:wrap;align-items:center">
+         <b style="min-width:52px;${color?`color:${color}`:''}">${label}</b>${rows.map(cell).join('')}</div>`
+    : '';
+  const dead = ta.rows.filter(r=> r.eff===0);
+  return `<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--blue)">
+    <div class="small" style="font-weight:800">通るタイプ
+      <span class="muted"> ・${esc(PC.stripTypeForm(oppEff))} は ${
+        esc(ta.types.join('/'))}${PC.typeFormOf(oppEff)?'（へんげんじざいで変化中）':''}</span></div>
+    <div class="small muted" style="margin:2px 0 4px">✓ が付いているのは、いま出している駒が持っている技です</div>
+    ${line('4倍', grp(4,99), 'var(--red)')}
+    ${line('2倍', grp(2,4), 'var(--red)')}
+    ${line('等倍', grp(1,2), '')}
+    ${line('半減', grp(0.25,1), 'var(--muted)')}
+    ${line('1/4', grp(0.001,0.25), 'var(--muted)')}
+    ${dead.length?`<div class="small" style="margin:4px 0;display:flex;flex-wrap:wrap;align-items:center">
+      <b style="min-width:52px;color:var(--muted)">無効</b>${dead.map(r=>
+        `<span style="display:inline-flex;align-items:center;gap:2px;margin-right:8px;opacity:.6">${
+          typeBadge(r.type)}${esc(r.type)}${r.byAbility?`<span class="muted">（${esc(r.byAbility)}）</span>`:''}</span>`).join('')}</div>`:''}
+  </div>`;
+}
+
 /* ---------- 相手が使ってきた技をワンタップで記録 ----------
    社長の要望：「相手が採用してそうな技を10個くらい出して、打ってきた技を記録していく」
    技は4つまでなので、4つ記録できた時点で「それ以外は飛んでこない」が確定し、判定が一気に正確になる。 */
+/* ★押した回数を数えるボタン（2026-08-21・v76・社長の要望）。
+   「食らったらこれを食らったっていう感じで入れていくので、
+     じゃあ**何回相手はそれを打った**みたいな感じで計測できるといい」
+   → 押すたびに ×n が増える。積み技（v66）と同じ操作感に揃えた。
+   ★押し間違いを戻せるように、記録済みの技には「−」を出す。
+     v66 の積み技は「盤面のステッパーで直す」しか無く、試合中に探すのが遅かった。 */
+function seenBtn(oppName, move, seen, sub){
+  const up  = PC.statUpOf(move);
+  const tag = up ? `<span style="color:var(--org)"> ${Object.entries(up).map(([k,v])=>
+    ({a:'攻',b:'防',c:'特攻',d:'特防',s:'速'}[k]+(v>0?'+':'')+v)).join(' ')}</span>` : '';
+  /* 積み技は「積まれた回数」、それ以外は「撃たれた回数」。数える先は違うが、見え方は同じにする */
+  const cnt = up ? (((BT.stacks||{})[oppName]||{})[move] || 0)
+                 : (((BT.obsCount||{})[oppName]||{})[move] || 0);
+  const on = seen.includes(move) || cnt>0;
+  return `<span class="pk mini">`
+    + `<button class="qb ${on?'on':'off'}" data-btseen="${esc(move)}">${esc(move)}${sub||''}${tag}${
+        cnt?`<b style="color:var(--org)"> ×${cnt}</b>`:''}</button>`
+    + (on ? `<button class="qb mini" data-btseenminus="${esc(move)}" title="1回減らす／取り消す"
+         style="padding:1px 6px;font-size:11px;margin-left:2px;color:var(--muted)">−</button>` : '')
+    + `</span>`;
+}
 function btSeenCard(oppName, seen){
   const o = effOppBT(oppName);
   const ch = PC.oppMoveChoices(o);
@@ -2319,23 +2399,32 @@ function btSeenCard(oppName, seen){
   const n = seen.length, conf = n>=4;
   if(!ch.length && !extra.length) return '';
   return `<div class="card">
-    <h2>相手が使ってきた技<span class="sub">タップで記録 ${n}/4</span></h2>
+    <h2>相手が使ってきた技<span class="sub">タップで記録・押すたびに回数が増えます ${n}/4</span></h2>
     <div class="small ${conf?'':'muted'}" style="margin-bottom:8px">
       ${conf ? '<b style="color:var(--grn)">4つ確定。これ以外は飛んできません。上の判定はこの4つだけで計算しています。</b>'
              : `記録するほど判定が正確になります。あと${4-n}つで確定。`}
     </div>
+    ${(()=>{ /* ★へんげんじざい／リベロ（v76・社長の要望）。
+         「変幻自在をした後、このタイプになったってなったら、これで変わりよ、というのがある」
+         撃ってきた技をタップすれば自動で入るが、こちらが先に読んで手で置きたい場面もあるので、
+         相手が撃ちそうな技のタイプだけをボタンで出しておく（18個並べると試合中に探せない）。 */
+      if(!PC.hasProtean(oppName)) return '';
+      const now  = (BT.oppType||{})[oppName] || null;
+      const cand = [...new Set(PC.oppMoveChoices(o).filter(c=>c.power).map(c=>c.type))];
+      if(!cand.length) return '';
+      return `<div class="small" style="margin-bottom:8px;padding:7px 9px;border:1px dashed var(--org);border-radius:8px">
+        <b style="color:var(--org)">へんげんじざい</b>
+        <span class="muted">撃った技のタイプに変わります。技をタップすれば自動で入ります</span>
+        <div class="quick" style="margin-top:5px">
+          <button class="qb mini ${now?'off':'on'}" data-btoptype="">素のまま
+            <span class="muted">${esc((PC.SPECIES[PC.stripTypeForm(effOppOf(oppName, BT.oppMega))]||{types:[]}).types.join('/'))}</span></button>
+          ${cand.map(t=>`<button class="qb mini ${now===t?'on':'off'}" data-btoptype="${esc(t)}">${typeBadge(t)}${esc(t)}</button>`).join('')}
+        </div>
+      </div>`;
+    })()}
     <div class="quick">
-      ${ch.map(c=>{
-        /* ★積み技は、押した回数がそのまま盤面のランクになる（v66）。
-           何段上がるかをボタンに書いておかないと、押していいのか分からない。 */
-        const up = PC.statUpOf(c.name);
-        const tag = up ? `<span style="color:var(--org)"> ${Object.entries(up).map(([k,v])=>
-          ({a:'攻',b:'防',c:'特攻',d:'特防',s:'速'}[k]+(v>0?'+':'')+v)).join(' ')}</span>` : '';
-        const cnt = ((BT.stacks||{})[o]||{})[c.name] || 0;
-        return `<button class="qb ${seen.includes(c.name)?'on':'off'}" data-btseen="${esc(c.name)}">${esc(c.name)}<span class="muted"> ${c.rate}%</span>${tag}${
-          cnt?`<b style="color:var(--org)"> ×${cnt}</b>`:''}</button>`;
-      }).join('')}
-      ${extra.map(m=>`<button class="qb on" data-btseen="${esc(m)}">${esc(m)}<span class="muted"> 手入力</span></button>`).join('')}
+      ${ch.map(c=> seenBtn(oppName, c.name, seen, `<span class="muted"> ${c.rate}%</span>`)).join('')}
+      ${extra.map(m=> seenBtn(oppName, m, seen, '<span class="muted"> 手入力</span>')).join('')}
     </div>
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
       <input id="btSeenOther" type="text" placeholder="一覧に無い技（だいもんじ 等）" list="mvlist" style="flex:1;min-width:150px">
@@ -2350,8 +2439,11 @@ function btSeenHistory(o){
   const base = PC.toBase(o);
   const obs = (PC.observedMoves(BATTLES)[o] || PC.observedMoves(BATTLES)[base] || []).slice(0,8);
   if(!obs.length) return '';
+  /* ★「今回の相手」と混ぜないこと（v76・社長の指摘）。
+     同じ種族でも相手ごとに技は違うので、これは**参考値**であって確定ではない。 */
   return `<div class="small muted" style="margin-top:10px">
-    自分の対戦での実績：${obs.map(x=>`${esc(x.move)}(${x.count}回)`).join('・')}</div>`;
+    <b>過去の対戦</b>での実績（今回の相手とは別。参考）：${
+      obs.map(x=>`${esc(x.move)}(${x.count}回)`).join('・')}</div>`;
 }
 /* ★積み技ぶんの能力ランクを盤面に足し引きする（v66 の処理を関数にした・v75）。
    sign=+1 で乗せる、-1 で外す。相手が落ちたら、その相手が積んでいたぶんだけ外す。 */
@@ -2391,18 +2483,81 @@ function btBindSeen(){
       toast(`${m} ${st[m]}回目 → ${Object.entries(up).map(([k,v])=>
         ({a:'攻撃',b:'防御',c:'特攻',d:'特防',s:'素早さ'}[k]+(v>0?'+':'')+v)).join('・')}`);
     }else{
-      const i = cur.indexOf(m);
-      if(i>=0) cur.splice(i,1); else cur.push(m);
+      /* ★通常技も「押した＝1回撃たれた」に変えた（v76・社長の要望）。
+         以前は on/off のトグルだったので、**何回撃たれたかが残らなかった**。
+         取り消しは右の「−」で1回ずつ戻す。 */
+      BT.obsCount = BT.obsCount || {};
+      const oc = BT.obsCount[key] = BT.obsCount[key] || {};
+      oc[m] = (oc[m]||0) + 1;
+      if(!cur.includes(m)) cur.push(m);
+      if(oc[m] > 1) toast(`${m} ${oc[m]}回目`);
+    }
+    /* ★へんげんじざい／リベロ（v76・社長の要望）。
+       撃ってきた技をタップした時点で、相手はその技のタイプになっている。
+       操作を増やさないよう、ここで自動で入れる（手で置き直すこともできる）。 */
+    {
+      const M = PC.MOVES[m];
+      if(M && M.power && M.cat!=='変' && PC.hasProtean(key)){
+        BT.oppType = BT.oppType || {};
+        if(BT.oppType[key] !== M.type){
+          BT.oppType[key] = M.type;
+          toast(`${key} は ${M.type} タイプになりました（へんげんじざい）`);
+        }
+      }
     }
     if(!cur.length) delete BT.obs[key];
     PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   };
+  /* ★1回ぶん戻す（押し間違いの取り消し）。0になったら「使ってきた技」からも外す。 */
+  const dec = m =>{
+    const up = PC.statUpOf(m);
+    if(up){
+      const st = (BT.stacks||{})[key] || {};
+      if(st[m]){
+        st[m]--;
+        BT.board = BT.board || {};
+        Object.entries(up).forEach(([k,v])=>{
+          const bk = STACK_RANK_MAP[k]; if(!bk) return;
+          BT.board[bk] = Math.max(-6, Math.min(6, (BT.board[bk]||0) - v));
+          if(!BT.board[bk]) delete BT.board[bk];
+        });
+        if(!st[m]) delete st[m];
+      }
+    }else{
+      const oc = (BT.obsCount||{})[key] || {};
+      if(oc[m]){ oc[m]--; if(!oc[m]) delete oc[m]; }
+      if(oc[m]) { /* まだ回数が残っているなら観測からは外さない */ }
+    }
+    const remain = up ? (((BT.stacks||{})[key]||{})[m]||0) : (((BT.obsCount||{})[key]||{})[m]||0);
+    if(!remain){
+      const cur = (BT.obs||{})[key] || [];
+      const i = cur.indexOf(m); if(i>=0) cur.splice(i,1);
+      if(!cur.length && BT.obs) delete BT.obs[key];
+    }
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
+  };
   $$('#btNow [data-btseen]').forEach(b=> b.onclick=()=> set(b.dataset.btseen));
+  $$('#btNow [data-btseenminus]').forEach(b=> b.onclick=()=> dec(b.dataset.btseenminus));
+  /* ★へんげんじざいのタイプを手で置く／素に戻す（v76） */
+  $$('#btNow [data-btoptype]').forEach(b=> b.onclick=()=>{
+    const t = b.dataset.btoptype || null;
+    BT.oppType = BT.oppType || {};
+    if(t) BT.oppType[key] = t; else delete BT.oppType[key];
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
+    toast(t ? `${key} を ${t} タイプとして計算し直しました` : `${key} を素のタイプに戻しました`);
+  });
   const add=$('#btSeenAdd'), inp=$('#btSeenOther');
   if(add) add.onclick=()=>{ const v=(inp.value||'').trim(); if(!v) return;
     if(!PC.MOVES[v]) return toast('その技名は見つかりません',true); set(v); };
   const clr=$('#btSeenClear');
-  if(clr) clr.onclick=()=>{ delete BT.obs[key]; PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft(); };
+  if(clr) clr.onclick=()=>{
+    delete BT.obs[key];
+    if(BT.obsCount) delete BT.obsCount[key];          // 回数も一緒に消す（片方だけ残すと食い違う）
+    /* 積まれたぶんは盤面に乗っているので、そこも戻してから消す（v76） */
+    applyOppStacks(key, -1);
+    if(BT.stacks) delete BT.stacks[key];
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
+  };
 }
 /** 実戦モードの観測・HPは、次に開いたときも残す。
  *  ★ただし「その1試合かぎりのもの」は持ち越さない（2026-08-21 修正）。
@@ -2414,18 +2569,20 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, tdType:BT.tdType, tdMode:BT.tdMode,
+    obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, tdType:BT.tdType, tdMode:BT.tdMode,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
 function loadBtDraft(){
   try{ const d=JSON.parse(localStorage.getItem('pokechan_bt')||'{}');
     const fresh = d.t && (Date.now() - d.t) < BT_FRESH_MS;
-    if(d.obs) BT.obs=d.obs;
     if(d.opp) BT.opp=d.opp;
     if(d.megaFixed) BT.megaFixed=d.megaFixed;
     if(fresh){
-      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega;
+      /* ★観測した技は「その試合のもの」なので、時間が経っていたら捨てる（v76）。
+         誤ってリロードした直後（30分以内）は残す。 */
+      if(d.obs) BT.obs=d.obs; if(d.obsCount) BT.obsCount=d.obsCount;
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType;
     if(d.tdType) BT.tdType=d.tdType; if(d.tdMode) BT.tdMode=d.tdMode;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
