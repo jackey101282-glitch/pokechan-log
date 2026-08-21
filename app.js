@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '76';
+const APP_VERSION = '77';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -992,6 +992,8 @@ function newBT(){
            /* ★へんげんじざい／リベロで今なっているタイプ（v76・社長の要望）。
               oppType[相手名] = 'こおり'。撃ってきた技をタップすると自動で入る。 */
            oppType:{},
+           /* ★相手ごとの盤面（積みランク・状態異常）。交代で載せ替える（v77・社長の指摘） */
+           oppBoard:{},
            /* ★タイプ診断（v69・社長の要望）。tdType=選んだタイプ, tdMode='def'受ける/'atk'殴る */
            tdType:null, tdMode:'def',
            _searchTop:null,
@@ -1726,7 +1728,8 @@ function btNowRender(){
     <div class="quick" style="margin-top:4px">${myChips}</div>
     <div class="hpwrap">
       <span class="small muted">自分の残りHP</span>
-      <input id="btHp" type="number" inputmode="numeric" min="0" max="${maxHP}" value="${hp}">
+      <input id="btHp" class="hpnum" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4"
+             autocomplete="off" value="${hp}">
       <span class="muted">/ ${maxHP}</span>
       <button class="btn ghost sm" data-bthp="full">満タン</button>
     </div>
@@ -1885,12 +1888,19 @@ function btNowRender(){
        以前は BT.me=null にして「その相手にいちばん強い駒」を勝手に選び直していた。
        画面には「殴る」と出ているのに、出ているのは場にいない別の駒、という事故が起きて
        実際に負けている。自動選択は最初の1回だけ（BT.me が未設定のとき）に限る。 */
+    /* ★相手をタップする＝その相手が場に出た瞬間。
+       いま出ていた相手の積み・状態異常をしまい、出てきた相手のぶんを載せ替える（社長の指摘）。 */
+    if(BT.sel !== b.dataset.btopp){ stashOppBoard(BT.sel); }
+    const prevSel = BT.sel;
     BT.sel=b.dataset.btopp;
+    if(prevSel !== BT.sel){ loadOppBoard(BT.sel); PC.clearMatchupCache(); }
     // 出てきた順に記録する。3体で打ち切り（相手の選出は3体）
     if(!BT.seenOrder.includes(BT.sel) && BT.seenOrder.length<3) BT.seenOrder.push(BT.sel);
     const pb=$('.planbox'); if(pb) pb.open=false;          // 試合が始まったら選出カードは畳む
     const iw=$('#btInputWrap'); if(iw) iw.open=false;
-    btNowRender();
+    /* 盤面（積み・状態異常）が載せ替わっているので、対面だけでなく計算からやり直す */
+    if(prevSel !== BT.sel){ btCompute(); btRender(); saveBtDraft(); }
+    else btNowRender();
   });
   /* ★相手を倒したときの処理（v75・社長の要望）。
      自分側（data-btdead）と対になる操作。倒した相手は
@@ -1900,15 +1910,20 @@ function btNowRender(){
     BT.oppFainted = BT.oppFainted || {};
     const now = !BT.oppFainted[n];
     if(now) BT.oppFainted[n] = true; else delete BT.oppFainted[n];
-    /* ★積まれたランクは、その相手が落ちた時点で消える（v66で盤面に足していたぶんを引く）。
-       残したままにすると、次に出てくる相手を積み後の数値で評価してしまう。 */
-    applyOppStacks(n, now ? -1 : +1);
-    BT.board = BT.board || {};
+    BT.board = BT.board || {}; BT.oppBoard = BT.oppBoard || {};
     if(now){
-      /* 落ちたポケモンの状態異常も一緒に消える。残すと「相手はねむり中」の前提で助言が出る */
-      ['opSleep','opFreeze','opBurn','opParalysis','opToxic'].forEach(k=> delete BT.board[k]);
+      /* ★積みも状態異常も、そのポケモンが落ちた時点で消える。
+         ★2026-08-21 修正：v75 は applyOppStacks() で引いていたため、
+           **控えの相手を「倒した」にすると、いま出ている相手の盤面からランクが引かれていた。**
+           盤面は相手ごとに分けたので、その相手のぶんを捨てるだけでよくなった。 */
+      delete BT.oppBoard[n];
+      if(n === BT.sel) OPP_BOARD_KEYS.forEach(k=> delete BT.board[k]);
       /* メガシンカしていた相手が落ちたら、その形態指定も外す */
       if(BT.oppMega && PC.BASE_OF[BT.oppMega]===PC.toBase(n)) BT.oppMega = null;
+      /* へんげんじざいで変わっていたタイプも、落ちれば関係なくなる */
+      if(BT.oppType) delete BT.oppType[n];
+    }else if(n === BT.sel){
+      loadOppBoard(n);                    // 戻したら、積みの記録から盤面を作り直す
     }
     /* 盤面の「相手が落ちた数」と必ず一致させる（自分側と同じ。別々に持つと必ず食い違う） */
     const n2 = Object.keys(BT.oppFainted).filter(x=> BT.opp.includes(x)).length;
@@ -1975,10 +1990,37 @@ function btNowRender(){
   $$('#btNow [data-bthp]').forEach(b=> b.onclick=()=>{ BT.hp[BT.me]=maxHP; btNowRender(); saveBtDraft(); });
   $$('#btNow [data-btguard]').forEach(b=> b.onclick=()=>{
     BT.guardGone[BT.me] = b.dataset.btguard==='1'; PC.clearMatchupCache(); btNowRender(); saveBtDraft(); });
+  /* ★2026-08-21 修正（社長の指摘）：「162 と打つと 261 のように**逆から並ぶ**」
+     原因は2つ重なっていた。
+       ① `<input type="number">` は Chrome では **selectionStart が null**、
+          `setSelectionRange()` は例外を投げる（type=number は選択をサポートしない）。
+          → カーソル位置が毎回 null＝**先頭に戻る**ので、打つほど先頭に積まれて逆順になっていた。
+       ② 1文字打つたびに btNowRender() でカード全体を作り直しており、
+          入力欄そのものが別の要素に差し替わっていた。
+     直し方：type="text" + inputmode="numeric" にして選択APIを使えるようにし、
+     再描画のあとに **打った文字列とカーソル位置をそのまま戻す**。
+     打っている途中の値は丸めない（"16" を "16" のまま残す）。欄を離れたときに整える。 */
   const inp=$('#btHp');
-  if(inp) inp.oninput=()=>{ BT.hp[BT.me]=Math.max(0,Math.min(maxHP,+inp.value|0));
-    const pos=inp.selectionStart; btNowRender(); const i2=$('#btHp');
-    if(i2){ i2.focus(); try{i2.setSelectionRange(pos,pos);}catch(e){} } saveBtDraft(); };
+  if(inp){
+    const caret = el =>{ try{ return el.selectionStart; }catch(e){ return null; } };
+    inp.oninput=()=>{
+      const raw = inp.value.replace(/[^0-9]/g,'');     // 全角や記号は無視する
+      const pos = caret(inp);
+      BT.hp[BT.me] = Math.max(0, Math.min(maxHP, parseInt(raw,10) || 0));
+      btNowRender();
+      const i2=$('#btHp');
+      if(i2){
+        i2.value = raw;                                // 途中の入力をそのまま残す
+        i2.focus();
+        if(pos!=null){ try{ i2.setSelectionRange(pos,pos); }catch(e){} }
+      }
+      saveBtDraft();
+    };
+    /* 欄を離れたら、実際に使っている値（0〜最大HP）に揃える。
+       「999」と打ちっぱなしで残すと、画面の数字と計算が食い違って見える。 */
+    inp.onblur=()=>{ const v = BT.hp[BT.me]!=null ? BT.hp[BT.me] : maxHP;
+      if(inp.value !== String(v)) inp.value = v; };
+  }
   btBindSeen(); btBindBoard();
 }
 
@@ -2318,6 +2360,7 @@ function btBindBoard(){
     const lo = isCount ? 0 : -6, hi = isCount ? 5 : 6;
     BT.board[k] = d===0 ? 0 : Math.max(lo, Math.min(hi, cur + d));   // 真ん中を押すと0に戻る
     if(!BT.board[k]) delete BT.board[k];
+    stashOppBoard(BT.sel);
     PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   });
   $$('#btNow [data-bb]').forEach(b=> b.onclick=()=>{
@@ -2326,10 +2369,14 @@ function btBindBoard(){
     if(k==='weather') BT.board[k] = (BT.board[k]===v ? '' : v);
     else if(BOARD_RANKS.includes(v) && /Rank$/.test(k)) BT.board[k] = v;
     else BT.board[k] = BT.board[k] ? 0 : 1;          // トグル
+    stashOppBoard(BT.sel);
     PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   });
   const r=$('#btNow [data-bbreset]');
-  if(r) r.onclick=()=>{ BT.board={}; PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft(); };
+  /* ★「盤面をリセット」は、相手ごとにしまってあるぶんも消す。
+     ここを消し忘れると、交代して戻ってきた瞬間に積みが復活する。 */
+  if(r) r.onclick=()=>{ BT.board={}; BT.oppBoard={};
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft(); };
 }
 
 /* ★「このタイプの技が通る」（2026-08-21・v76・社長の要望）。
@@ -2448,6 +2495,29 @@ function btSeenHistory(o){
 /* ★積み技ぶんの能力ランクを盤面に足し引きする（v66 の処理を関数にした・v75）。
    sign=+1 で乗せる、-1 で外す。相手が落ちたら、その相手が積んでいたぶんだけ外す。 */
 const STACK_RANK_MAP = {a:'opAtkRank', b:'opDefRank', c:'opSpaRank', d:'opSpdRank', s:'opSpeRank'};
+/* ★盤面のうち「相手のポケモン1体にくっついているもの」（2026-08-21・社長の指摘）。
+   社長：「前のポケモンが使った状態で ×3 とかが残っちゃってる。これ計算狂っちゃう」
+   ランク変化も状態異常も、**そのポケモンにくっついていて、交代したら一緒に引っ込む。**
+   これまで盤面は1つしか無かったので、りゅうのまい×3 が次に出てきた相手にも乗っていた。
+   → 相手ごとにしまっておき、出てきた相手のぶんだけ盤面に載せる。
+     「対戦中にポケモンが変わって、また戻ってきたら、いちいち登録し直すのは面倒」という
+     社長の条件も、これで満たせる（戻ってきたら積みも状態異常もそのまま戻る）。 */
+const OPP_BOARD_KEYS = ['opAtkRank','opDefRank','opSpaRank','opSpdRank','opSpeRank',
+                        'opSleep','opFreeze','opBurn','opParalysis','opToxic'];
+/* ★空でもキーを残すこと。「盤面をリセットして空にした」と「まだ一度も出ていない」は違う。
+   区別しないと、リセット直後に交代して戻ってきた瞬間に積みが復活する。 */
+function stashOppBoard(name){
+  if(!name) return;
+  BT.oppBoard = BT.oppBoard || {}; BT.board = BT.board || {};
+  const o={}; OPP_BOARD_KEYS.forEach(k=>{ if(BT.board[k]) o[k]=BT.board[k]; });
+  BT.oppBoard[name]=o;
+}
+function loadOppBoard(name){
+  BT.oppBoard = BT.oppBoard || {}; BT.board = BT.board || {};
+  OPP_BOARD_KEYS.forEach(k=> delete BT.board[k]);
+  if(name in BT.oppBoard) Object.entries(BT.oppBoard[name]).forEach(([k,v])=> BT.board[k]=v);
+  else applyOppStacks(name, +1);       // 初めて出てきた相手は、積みの記録から作る（保険）
+}
 function applyOppStacks(name, sign){
   const st = (BT.stacks||{})[name] || {};
   BT.board = BT.board || {};
@@ -2480,6 +2550,7 @@ function btBindSeen(){
         if(!BT.board[bk]) delete BT.board[bk];
       });
       if(!cur.includes(m)) cur.push(m);
+      stashOppBoard(key);
       toast(`${m} ${st[m]}回目 → ${Object.entries(up).map(([k,v])=>
         ({a:'攻撃',b:'防御',c:'特攻',d:'特防',s:'素早さ'}[k]+(v>0?'+':'')+v)).join('・')}`);
     }else{
@@ -2528,6 +2599,7 @@ function btBindSeen(){
       if(oc[m]){ oc[m]--; if(!oc[m]) delete oc[m]; }
       if(oc[m]) { /* まだ回数が残っているなら観測からは外さない */ }
     }
+    stashOppBoard(key);
     const remain = up ? (((BT.stacks||{})[key]||{})[m]||0) : (((BT.obsCount||{})[key]||{})[m]||0);
     if(!remain){
       const cur = (BT.obs||{})[key] || [];
@@ -2556,6 +2628,7 @@ function btBindSeen(){
     /* 積まれたぶんは盤面に乗っているので、そこも戻してから消す（v76） */
     applyOppStacks(key, -1);
     if(BT.stacks) delete BT.stacks[key];
+    stashOppBoard(key);
     PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   };
 }
@@ -2569,7 +2642,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, tdType:BT.tdType, tdMode:BT.tdMode,
+    obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, oppBoard:BT.oppBoard, tdType:BT.tdType, tdMode:BT.tdMode,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
@@ -2582,7 +2655,7 @@ function loadBtDraft(){
       /* ★観測した技は「その試合のもの」なので、時間が経っていたら捨てる（v76）。
          誤ってリロードした直後（30分以内）は残す。 */
       if(d.obs) BT.obs=d.obs; if(d.obsCount) BT.obsCount=d.obsCount;
-      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType;
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType; if(d.oppBoard) BT.oppBoard=d.oppBoard;
     if(d.tdType) BT.tdType=d.tdType; if(d.tdMode) BT.tdMode=d.tdMode;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
@@ -3066,10 +3139,70 @@ function adviceCard(p, highlight){
 /* =========================================================
    分析
    ========================================================= */
-['#sTeam','#sRule'].forEach(s=>$(s).addEventListener('change',renderStats));
+/* ★期間で絞る（2026-08-21・社長の要望）。
+   「構築のプルダウンの横に日付も指定できたらいい。期間とかで指定できると」
+   ここ（statSet）を1か所直せば、**分析タブの全部の表と Claude 用の書き出しが同じ期間になる**
+   （同じ絞り込みを画面ごとに書かない＝鉄則⑤）。 */
+['#sTeam','#sRule','#sPeriod','#sFrom','#sTo'].forEach(sel=>{
+  const el=$(sel); if(el) el.addEventListener('change', ()=>{ applyPeriodPreset(sel); renderStats(); });
+});
+function dayShift(n){ const d=new Date(); d.setDate(d.getDate()+n);
+  const p=x=>String(x).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`; }
+/** プルダウンを選んだら日付欄を埋める。日付欄を直接いじったら「期間を指定」に切り替える。 */
+function applyPeriodPreset(changed){
+  const sel=$('#sPeriod'), from=$('#sFrom'), to=$('#sTo'), row=$('#sRangeRow');
+  if(!sel||!from||!to) return;
+  if(changed==='#sFrom'||changed==='#sTo'){ sel.value='custom'; }
+  else {
+    const v=sel.value;
+    if(v===''){ from.value=''; to.value=''; }
+    else if(v==='today'){ from.value=to.value=dayShift(0); }
+    else if(v==='yesterday'){ from.value=to.value=dayShift(-1); }
+    else if(v!=='custom'){ from.value=dayShift(-(+v-1)); to.value=dayShift(0); }
+  }
+  if(row) row.style.display = (sel.value==='') ? 'none' : '';
+}
 function statSet(){
-  const t=$('#sTeam').value,r=$('#sRule').value;
-  return BATTLES.filter(b=>(!t||b.team_id===t)&&(!r||b.rule===r));
+  const t=$('#sTeam').value, r=$('#sRule').value;
+  const f=($('#sFrom')||{}).value||'', to=($('#sTo')||{}).value||'';
+  return BATTLES.filter(b=>(!t||b.team_id===t)&&(!r||b.rule===r)
+    /* played_at は 'YYYY-MM-DD'。文字列のまま比べられるので日付に直さない */
+    && (!f  || (b.played_at||'') >= f)
+    && (!to || (b.played_at||'') <= to));
+}
+/** いま何で絞っているか。書き出しの中身も同じ範囲になるので、必ず画面に出す */
+function statScopeLabel(n){
+  const f=($('#sFrom')||{}).value||'', to=($('#sTo')||{}).value||'';
+  const t=$('#sTeam').value ? (TEAMS.find(x=>x.id===$('#sTeam').value)||{}).name : null;
+  const parts=[];
+  if(t) parts.push(esc(t));
+  if(f||to) parts.push(`${esc(f||'最初')} 〜 ${esc(to||'今日')}`);
+  return `いま見ているのは <b>${n}戦</b>${parts.length?`（${parts.join('・')}）`:'（すべて）'}。`
+       + `<b>「ファイルに保存（Claudeに渡す用）」もこの範囲だけ</b>が入ります`;
+}
+
+/* ---------- 統計の正直さ（2026-08-21） ----------
+   前回、p=0.011 と書いた3戦後に p=0.141 まで落ちて結論が崩れた。
+   画面に勝率の増減を出す以上、**必ず p値と「あと何戦で判定できるか」を併記する**。 */
+/** 2つの勝率の差の p値（正規近似の両側）。母数が小さいときは 1 を返して黙らせない */
+function twoPropP(w1,n1,w2,n2){
+  if(!n1||!n2) return 1;
+  const p1=w1/n1, p2=w2/n2, p=(w1+w2)/(n1+n2);
+  const se=Math.sqrt(p*(1-p)*(1/n1+1/n2));
+  if(!se) return 1;
+  const z=Math.abs(p1-p2)/se;
+  // 標準正規の両側p（Abramowitz-Stegun 26.2.17）
+  const t=1/(1+0.2316419*z);
+  const d=0.3989422804014327*Math.exp(-z*z/2);
+  const pr=d*t*(0.319381530+t*(-0.356563782+t*(1.781477937+t*(-1.821255978+t*1.330274429))));
+  return Math.min(1, Math.max(0, 2*pr));
+}
+/** その差を有意と言うのに必要な、1群あたりのおおよその試合数（両側5%・検出力80%） */
+function needN(p1,p2){
+  const d=Math.abs(p1-p2); if(d<0.01) return null;
+  const pb=(p1+p2)/2;
+  return Math.ceil(2*Math.pow(1.96+0.84,2)*pb*(1-pb)/(d*d));
 }
 function tbl(rows,head){
   if(!rows.length) return '<p class="hint">データがまだ足りません。</p>';
@@ -3291,8 +3424,115 @@ function renderUpgrade(B, L){
   host.innerHTML = out.join('');
 }
 
+/* ★成長レポート（2026-08-21・社長の要望）。
+   「期間で、どうやって勝率が上がってるかが見れると、成長したなって感じがして嬉しい」
+   「活躍しているポケモンとか、敗因として一番大きいものとか、苦手なポケモンとか」
+   ★ここは**気持ちよくなるための画面ではない**。母数が少ないうちの上下は運と区別がつかないので、
+     必ず p値と「あと何戦で判定できるか」を添える（2026-08-21 に一度この失敗をしている）。 */
+function renderGrowth(B){
+  const host=$('#growth'); if(!host) return;
+  if(!B.length){ host.innerHTML='<div class="small muted">この期間の記録がありません。期間を広げてください。</div>'; return; }
+  const wins = a => a.filter(b=>b.result==='win').length;
+
+  /* ① 日ごとの勝率（棒グラフ）。古い→新しい の順に並べて、伸びが左から右に見えるようにする */
+  const byDay = {};
+  B.forEach(b=>{ const d=b.played_at||'—'; (byDay[d]=byDay[d]||[]).push(b); });
+  const days = Object.keys(byDay).filter(d=>d!=='—').sort();
+  const bars = days.slice(-21).map(d=>{
+    const a=byDay[d], n=a.length, w=wins(a), p=Math.round(w/n*100);
+    const md = d.slice(5).replace('-','/');
+    /* 3戦未満の日は薄くする。1戦1勝を「勝率100%」として見せない */
+    const thin = n<3;
+    return `<div style="flex:1;min-width:22px;max-width:46px;display:flex;flex-direction:column;align-items:center;gap:2px"
+                 title="${esc(d)} ${n}戦 ${w}勝${n-w}敗 ${p}%">
+      <div class="small" style="font-size:10px;${thin?'opacity:.45':''}">${p}%</div>
+      <div style="width:100%;height:70px;display:flex;align-items:flex-end">
+        <div style="width:100%;height:${p}%;min-height:3px;border-radius:3px 3px 0 0;opacity:${thin?.35:1};
+                    background:${p>=50?'var(--win)':'var(--red)'}"></div>
+      </div>
+      <div class="small muted" style="font-size:10px">${esc(md)}</div>
+      <div class="small muted" style="font-size:10px">${n}戦</div>
+    </div>`;
+  }).join('');
+
+  /* ② 前半と後半で比べる。「成長したか」はこれがいちばん素直な出し方。
+     ★配列の並び順に頼らない。**必ず日付で並べ直してから**半分に割る
+       （BATTLES は新しい順だが、その前提が変わったら黙って逆の結論を出してしまう）。 */
+  const asc = B.slice().sort((a,b)=>
+    String(a.played_at||'').localeCompare(String(b.played_at||''))
+    || String(a.created_at||'').localeCompare(String(b.created_at||'')));
+  const half = Math.floor(asc.length/2);
+  const older = asc.slice(0, half);
+  const newer = asc.slice(asc.length-half);
+  let trend = '';
+  if(half>=3){
+    const ow=wins(older), nw=wins(newer);
+    const op=ow/older.length, np=nw/newer.length;
+    const diff=Math.round((np-op)*100);
+    const pv=twoPropP(nw,newer.length,ow,older.length);
+    const need=needN(op,np);
+    trend = `<div class="small" style="margin-top:10px">
+      <b>前半 ${older.length}戦 ${Math.round(op*100)}% → 後半 ${newer.length}戦 ${Math.round(np*100)}%</b>
+      <b style="color:${diff>0?'var(--grn)':diff<0?'var(--red)':'inherit'}"> ${diff>0?'+':''}${diff}ポイント</b></div>
+      <div class="small muted">p=${pv.toFixed(3)}。${
+        pv<0.05 ? '<b>偶然では説明しにくい差です</b>'
+        : need ? `この差を「本物」と言うには<b>片側あと約${Math.max(0,need-newer.length)}戦</b>必要です（いまは運と区別がつきません）`
+               : 'ほぼ差がありません'}</div>`;
+  }else{
+    trend = `<div class="small muted" style="margin-top:10px">前半・後半で比べるには、この期間にあと${(3-half)*2}戦ほど必要です</div>`;
+  }
+
+  /* ③ 活躍している駒／苦手な相手／いちばん多い敗因 */
+  const agg = (getKeys) =>{
+    const m={};
+    B.forEach(b=> new Set(getKeys(b)).forEach(k=>{ m[k]=m[k]||{n:0,w:0}; m[k].n++; if(b.result==='win') m[k].w++; }));
+    return Object.entries(m).map(([k,v])=>({k,...v}));
+  };
+  const MIN = 3;
+  const mine = agg(b=> b.my_pick||[]).filter(x=>x.n>=MIN).sort((a,b)=> b.w/b.n-a.w/a.n || b.n-a.n);
+  const opp  = agg(b=> b.opp_team||[]).filter(x=>x.n>=MIN).sort((a,b)=> a.w/a.n-b.w/b.n || b.n-a.n);
+  const cz={}; B.filter(b=>b.result==='lose').forEach(b=>
+    (b.lose_cause||'').split(' / ').map(x=>x.trim()).filter(Boolean).forEach(c=> cz[c]=(cz[c]||0)+1));
+  const czTop = Object.entries(cz).sort((a,b)=>b[1]-a[1])[0];
+
+  const listOf = (rows, dir) => rows.length
+    ? rows.slice(0,3).map(x=>`<div class="small" style="margin:2px 0;display:flex;align-items:center;gap:3px">
+        ${typeDots(x.k)}<b>${esc(x.k)}</b>
+        <b style="color:${dir*(x.w/x.n-0.5)>0?'var(--grn)':'var(--red)'}">${pct(x.w,x.n)}%</b>
+        <span class="muted">${x.n}戦${x.w}勝</span></div>`).join('')
+    : `<div class="small muted">${MIN}戦以上の記録がまだありません</div>`;
+
+  const w=wins(B);
+  host.innerHTML = `
+    <div class="small">この期間 <b>${B.length}戦 ${w}勝${B.length-w}敗（${pct(w,B.length)}%）</b>
+      ${B.length<30?'<span class="muted"> ・30戦未満なので参考値です</span>':''}</div>
+    ${trend}
+    ${days.length>1?`<div class="small" style="font-weight:800;margin-top:14px">日ごとの勝率
+        <span class="muted"> ・左が古い${days.length>21?`（直近21日ぶんだけ表示）`:''}・3戦未満の日は薄字</span></div>
+      <div style="display:flex;gap:4px;align-items:flex-end;margin-top:6px;overflow-x:auto">${bars}</div>`
+      :`<div class="small muted" style="margin-top:12px">日ごとの棒グラフは、2日以上の記録が溜まると出ます</div>`}
+    <div class="row" style="margin-top:16px">
+      <div>
+        <div class="small" style="font-weight:800">活躍している駒<span class="muted"> ・${MIN}戦以上</span></div>
+        ${listOf(mine, 1)}
+      </div>
+      <div>
+        <div class="small" style="font-weight:800">苦手な相手<span class="muted"> ・いると勝てない</span></div>
+        ${listOf(opp, -1)}
+      </div>
+    </div>
+    <div class="small" style="margin-top:12px"><b>いちばん多い敗因</b> …
+      ${czTop ? `${esc(czTop[0])} <b>${czTop[1]}件</b><span class="muted">（負け${B.length-w}戦中）</span>`
+              : '<span class="muted">まだありません。「試合が終わった」で敗因を選ぶと溜まります</span>'}</div>
+    <div class="small muted" style="margin-top:8px">
+      ここに出る順位は、<b>${MIN}戦程度では簡単に入れ替わります</b>。
+      「この駒が強い」ではなく「いまのところ上に来ている」として見てください</div>`;
+}
+
 function renderStats(){
   const B=statSet(), w=B.filter(b=>b.result==='win').length;
+  { const el=$('#sScope'); if(el) el.innerHTML = statScopeLabel(B.length); }
+  renderGrowth(B);
   const rec=B.slice(0,20), rw=rec.filter(b=>b.result==='win').length;
   const td=B.filter(b=>b.played_at===todayStr()), tw=td.filter(b=>b.result==='win').length;
   $('#kpis').innerHTML=`
@@ -3740,6 +3980,7 @@ function fillTeamSelects(){
   }
 }
 function renderAll(){
+  applyPeriodPreset();                    // 期間の欄の出し分け（初回は「すべて」なので畳む）
   fillTeamSelects(); bindExport(); renderOpp(); renderTeams(); renderHist(); renderStats();
   safe('対面', ()=>{ renderVsPickers(); renderVs(); }, '#vsOut');
   safe('実戦', ()=>{ btCompute(); btRender(); }, '#btGrid');

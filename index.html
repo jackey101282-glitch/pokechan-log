@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="76">
+<meta name="app-version" content="77">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -129,7 +129,9 @@ details[open] > .cardsum::after{content:'▴'}
 /* 実戦の主役ブロック */
 .nowhead{font-size:30px;font-weight:800;line-height:1.1;letter-spacing:-.02em}
 .hpwrap{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}
-.hpwrap input[type=number]{width:92px;text-align:right;font-size:17px;font-weight:700}
+/* ★HP欄は type=text（inputmode=numeric）にしてある。type=number は Chrome で
+   カーソル位置を取れず、打った数字が逆順に並ぶため（2026-08-21 修正）。 */
+.hpwrap input[type=number],.hpwrap input.hpnum{width:92px;text-align:right;font-size:17px;font-weight:700}
 .seg{display:flex;gap:4px;flex-wrap:wrap}
 .seg button{border:1.5px solid var(--line);background:#fff;border-radius:4px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer}
 .seg button.on{border-color:var(--fg);background:var(--fg);color:#fff}
@@ -564,9 +566,33 @@ tr.bad .bar>i{background:var(--lose)}
     <div class="row">
       <div><label class="f">構築</label><select id="sTeam"><option value="">すべて</option></select></div>
       <div><label class="f">ルール</label><select id="sRule"><option value="">すべて</option><option value="single">シングル</option><option value="double">ダブル</option></select></div>
+      <!-- 2026-08-21 追加（社長の要望）：構築のプルダウンの横で期間も指定する。
+           ここで絞ると、分析タブの全部の表と「ファイルに保存（Claudeに渡す用）」も同じ期間になる。 -->
+      <div><label class="f">期間</label><select id="sPeriod">
+        <option value="">すべて</option>
+        <option value="today">今日</option>
+        <option value="yesterday">昨日</option>
+        <option value="3">直近3日</option>
+        <option value="7">直近7日</option>
+        <option value="14">直近14日</option>
+        <option value="30">直近30日</option>
+        <option value="custom">期間を指定</option>
+      </select></div>
     </div>
+    <div class="row" id="sRangeRow" style="margin-top:8px">
+      <div><label class="f">開始日</label><input type="date" id="sFrom"></div>
+      <div><label class="f">終了日</label><input type="date" id="sTo"></div>
+    </div>
+    <div class="small muted" id="sScope" style="margin-top:6px"></div>
   </div>
   <div class="card"><h2>基本</h2><div class="kpis" id="kpis"></div></div>
+  <!-- 2026-08-21 追加（社長の要望）：
+       「期間で、どうやって勝率が上がってるかが見れると、成長したなって感じがして嬉しい」
+       ★ただし母数が少ないうちの上下は運と区別がつかない。必ず p値と「あと何戦で判定できるか」を添える。 -->
+  <div class="card" style="border-left:3px solid var(--blue)">
+    <h2>成長レポート<span class="sub">この期間のまとめ</span></h2>
+    <div id="growth"></div>
+  </div>
   <div class="card"><h2>今のあなたへのフィードバック</h2><div id="feedback"></div></div>
   <!-- 2026-08-20 追加：記録を「こうすべき」に変換する。
        ★サンプル数が少ないうちに断定すると害になるので、必ず根拠の試合数を添え、
@@ -702,18 +728,18 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=76"></script>
-<script src="./data/species.js?v=76"></script>
-<script src="./data/moves.js?v=76"></script>
-<script src="./data/principles.js?v=76"></script>
-<script src="./data/usage.js?v=76"></script>
-<script src="./data/teams.js?v=76"></script>
-<script src="./core.js?v=76"></script>
+<script src="./supabase-config.js?v=77"></script>
+<script src="./data/species.js?v=77"></script>
+<script src="./data/moves.js?v=77"></script>
+<script src="./data/principles.js?v=77"></script>
+<script src="./data/usage.js?v=77"></script>
+<script src="./data/teams.js?v=77"></script>
+<script src="./core.js?v=77"></script>
 <!-- ★音声（読み上げ）は 2026-08-21 に停止。社長の判定「9種すべて不自然」＋
      スマホで対戦しPCでこのアプリを操作する運用になったため、読み上げの必要が無くなった。
      コードとクリップは残してあるので、この1行を戻せば復活する。
-<script src="./voice.js?v=76"></script> -->
+<script src="./voice.js?v=77"></script> -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=76"></script>
+<script src="./app.js?v=77"></script>
 </body>
 </html>
