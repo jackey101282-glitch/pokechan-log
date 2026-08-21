@@ -318,6 +318,11 @@ const MULTI_HIT = {
   'ボーンラッシュ': {avg:3.1, max:5.0, n:'2〜5', why:'2〜5連撃'},
   'スイープビンタ': {avg:3.1, max:5.0, n:'2〜5', why:'2〜5連撃'},
   'ネズミざん':     {avg:5.9, max:10.0,n:'最大10', why:'最大10連撃'},
+  /* ★2026-08-21 追加。**v55 で連続技を直したときの登録漏れ**。
+     威力50の単発として計算されていたため、カイリュー（マルチスケイル）に対して
+     28〜33% と表示していた。実際は83〜99%＝ほぼ一撃。
+     社長は「◎殴る」と言われて初手カイリューを出し、先制ドラゴンアローで即死している。 */
+  'ドラゴンアロー': {avg:2.0, max:2.0, n:2,  why:'2連撃'},
   'ダブルウイング': {avg:2.0, max:2.0, n:2,  why:'2連撃'},
   'ダブルアタック': {avg:2.0, max:2.0, n:2,  why:'2連撃'}
 };
@@ -732,9 +737,14 @@ function calcDamage(o){
       : (ab==='へんげんじざい' ? 1.5 : 1);
   if(stab>1) notes.push('タイプ一致 ×'+stab);
 
-  let otherMod = 1;
+  let otherMod = 1, msMod = 1;
   if(dab==='マルチスケイル' && (o.defender.hpRatio==null || o.defender.hpRatio>=1)){
-    otherMod*=0.5; notes.push('マルチスケイル ×0.5');
+    /* ★マルチスケイルは「満タンのときの1発」にしか効かない。
+       連続技には1段目で剥がされ、2段目以降はフルで入る（この表の上のコメント参照）。
+       ばけのかわ・がんじょう・タスキは打数側（oppOneHitGuard 等）で
+       `multiHitOf` を見て処理していたのに、**マルチスケイルだけ倍率なので漏れていた**。
+       ここで倍率を分けて持ち、下の連続技の合算で1段ぶんにだけ掛ける。 */
+    msMod = 0.5; otherMod *= msMod; notes.push('マルチスケイル ×0.5');
   }
   if(dab==='ハードロック'||dab==='フィルター'||dab==='プリズムアーマー'){
     if(eff>1){ otherMod*=0.75; notes.push(dab+' ×0.75'); }
@@ -751,28 +761,41 @@ function calcDamage(o){
   if(burnMod<1) notes.push('やけど ×0.5');
 
   const rolls = [];
+  const rollsNoMS = [];                    // マルチスケイルを外したぶん（連続技の2段目以降）
+  const otherNoMS = msMod<1 ? otherMod/msMod : otherMod;
   for(let r=85;r<=100;r++){
     let d = Math.floor(base * r / 100);
     d = Math.floor(d * stab);
     d = Math.floor(d * eff);
     d = Math.floor(d * burnMod);
+    rollsNoMS.push(Math.max(1, Math.floor(d * otherNoMS)));
     d = Math.floor(d * otherMod);
     rolls.push(Math.max(1, d));
   }
   let min = rolls[0], max = rolls[rolls.length-1];
   /* ★連続技はここで合計ぶんに引き伸ばす。
-     min には期待回数、max には全段当たった場合をかける（＝一撃で落ちるかは max で見る）。 */
+     min には期待回数、max には全段当たった場合をかける（＝一撃で落ちるかは max で見る）。
+     ★avg/max は「1段目の威力を1」とした合計倍率なので、**1段ぶんを引いた残り**が
+       マルチスケイルの切れている段になる（トリプルアクセルなら 20 と 40+60）。 */
   const mh = multiHitOf(mv.name);
   if(mh){
-    min = Math.floor(min * mh.avg);
-    max = Math.floor(max * mh.max);
+    if(msMod < 1){
+      min = Math.floor(min + rollsNoMS[0] * (mh.avg - 1));
+      max = Math.floor(max + rollsNoMS[rollsNoMS.length-1] * (mh.max - 1));
+      notes.push('マルチスケイルが効くのは1段目だけ（連続技で剥がれる）');
+    }else{
+      min = Math.floor(min * mh.avg);
+      max = Math.floor(max * mh.max);
+    }
     notes.push(`${mv.name} は${mh.why}（合計で計算）`);
   }
   const hp = o.defender.hp || 1;
   const pctMin = min/hp*100, pctMax = max/hp*100;
 
   // 確定数。連続技は1ターンぶんが min〜max なので、乱数の並びも同じ倍率で見る
-  const rollsEff = mh ? rolls.map(v=> Math.floor(v * mh.avg)) : rolls;
+  const rollsEff = !mh ? rolls
+    : (msMod<1 ? rolls.map((v,i)=> Math.floor(v + rollsNoMS[i] * (mh.avg - 1)))
+               : rolls.map(v=> Math.floor(v * mh.avg)));
   let ko = '';
   for(let n=1;n<=6;n++){
     if(min*n >= hp){ ko = `確定${n}発`; break; }
