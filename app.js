@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '69';
+const APP_VERSION = '70';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1310,6 +1310,11 @@ function btRender(){
       return t.length?`<details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">相手の変化技・妨害技（${t.length}件）</summary>
         <div class="small" style="margin-top:6px">${t.map(x=>'・'+x).join('<br>')}</div></details>`:'';})()}
   </div></details>
+  <!-- ★危ないタイプ（v70）。左カラムに置く。中身は btNowRender が入れる
+       （いま出している駒が確定するのが btNowRender のため）。
+       社長の要望：「対面の中じゃなくて外に出したい。PCの左下の空きスペースに。
+       スクロールしないと見に行けないのを直したい」 -->
+  <div id="btDanger"></div>
 `;
   // 終了まわりは「いまの対面」の下に置く（btNowRender のあとに描く）
   const endHost = $('#btEnd');
@@ -1771,6 +1776,12 @@ function btNowRender(){
   </div>
   ${btSeenCard(BT.sel, seen)}`;
 
+  /* ★左カラム（#btDanger）へ流し込む（v70）。ここで入れる理由は、
+     「いま出している駒(me)」が確定するのが btNowRender だから。
+     btRender 側で同じ判定をもう一度書くと、必ず食い違う（鉄則⑤）。 */
+  { const dh = $('#btDanger');
+    if(dh) dh.innerHTML = safeHtml('危ないタイプ', ()=> btDangerCard(rc, me)); }
+
   /* 音声。★指のタップから始めないと iOS は鳴らさないので、必ずボタン経由にする。 */
   const vb = $('#btSpeakBtn');   // ★#btVoice は既存の音声メモ欄。IDを衝突させないこと
   if(vb) vb.onclick = async ()=>{
@@ -1882,6 +1893,63 @@ const BOARD_RANKS = [-2,-1,0,1,2,3,4,5,6];
      ①タイプを選ばなくても、**いま場に出している自分の駒の弱点**を最初から出す（タップ0）
      ②タイプを押すと、自分6匹と相手6体の倍率が一覧で出る（社長が言った「地面を押す」形）
    「受けたら／殴ったら」の切り替えが、社長の言う「に弱い／に強い」にあたる。 */
+/* ★「この駒が食らうとまずいタイプ」を、危ない順に並べる（2026-08-21・v70）。
+   社長の要望：
+     「タイプを指定して"これを食らったら"じゃなくて、**一番まずいのはこれ、次はこれ**を出したい」
+     「そのタイプの技を**持っていそうな相手**と、**その技の採用率**が見たい。
+       採用率がすごく低かったら『あ、なんとかいけそう』と思える。
+       3つ技が分かっていて、残り1個がそれの可能性はそんなに無いよね、と考えながら戦える」
+   ＝ タイプ相性だけでは足りない。**その技が実際に飛んでくるのか**まで出して初めて判断材料になる。 */
+function btDangerCard(rc, me){
+  if(!me || !BT.opp.length) return '';
+  const myTypes = (PC.SPECIES[me.name]||{types:[]}).types;
+  const imm = PC.immuneType(me.ability||'');
+  const rows = PC.TYPES
+    .map(t=>({t, v: (t===imm ? 0 : PC.effectiveness(t, myTypes))}))
+    .filter(r=> r.v >= 2)
+    .sort((a,b)=> b.v-a.v);
+  if(!rows.length){
+    return `<div class="card" style="margin-top:12px">
+      <div class="small"><b>${esc(me.disp||me.label)}</b> は<b>2倍以上で入るタイプがありません</b></div></div>`;
+  }
+  /* そのタイプの技を、相手6体の誰が実際に持っているか（使用率データの採用率つき） */
+  const holders = t => {
+    const out = [];
+    BT.opp.forEach(n=>{
+      const e = effOppBT(n);
+      const seen = (BT.obs && BT.obs[n]) || [];
+      const mv = (PC.oppMoves(e)||[]).filter(m=> m.type===t && m.power>0);
+      mv.forEach(m=>{
+        out.push({opp:e, move:m.name, rate:m.rate, confirmed: seen.includes(m.name), seenN: seen.length});
+      });
+    });
+    return out.sort((a,b)=> (b.confirmed?1:0)-(a.confirmed?1:0) || b.rate-a.rate);
+  };
+  const body = rows.map((r,i)=>{
+    const hs = holders(r.t);
+    const top = hs.slice(0,4);
+    return `<div style="padding:7px 0;${i?'border-top:1px solid var(--line2)':''}">
+      <div class="small">
+        <b style="color:var(--red)">${esc(r.t)} ${r.v>=4?'4倍':'2倍'}</b>
+        ${hs.length?'' : '<span class="muted"> — この6体に、このタイプの攻撃技を持つ相手はいません</span>'}
+      </div>
+      ${top.length?`<div class="small" style="margin-top:3px">${top.map(h=>
+        `<span class="${h.confirmed?'':'muted'}">${esc(h.opp)}の<b>${esc(h.move)}</b>`
+        + (h.confirmed
+            ? ` <span style="color:var(--red);font-weight:700">確定</span>`
+            : ` ${h.rate}%`
+              + (h.seenN>=3 ? `<span style="color:var(--grn)">（技3つ判明。残り1枠なので、まだなら可能性は低い）</span>` : ''))
+        + `</span>`).join('<br>')}</div>`:''}
+    </div>`;
+  }).join('');
+  return `<div class="card" style="margin-top:12px;border-left:3px solid var(--red)">
+    <div class="small" style="font-weight:800;margin-bottom:2px">
+      ${esc(me.disp||me.label)} が食らうとまずいタイプ<span class="muted"> ・まずい順</span></div>
+    <div class="small muted" style="margin-bottom:4px">
+      その技を<b>実際に持っている相手</b>と採用率を出しています。誰も持っていなければ、そのタイプは怖くありません</div>
+    ${body}
+  </div>`;
+}
 function btTypeCard(rc){
   const T = PC.TYPES;
   const mode = BT.tdMode || 'def';
@@ -1947,8 +2015,10 @@ function btTypeCard(rc){
           ? bad.map(r=>`<span style="color:var(--red);font-weight:700">${esc(r.t)}${r.v>=4?' 4倍':''}</span>`).join('・')
           : '<span class="muted">なし</span>');
   }
-  return `<details id="btTypeWrap" style="margin-top:10px" open>
-    <summary class="small" style="cursor:pointer">${head}<span class="muted"> ・タイプ診断</span></summary>
+  /* ★「まずいタイプ」は左カラム（btDangerCard）に移した（v70）。
+     ここは「任意のタイプを調べる道具」に徹する。同じものを2か所に出すと、どちらを見ればよいか迷う。 */
+  return `<details id="btTypeWrap" style="margin-top:10px" ${sel?'open':''}>
+    <summary class="small muted" style="cursor:pointer">タイプ診断<span class="muted"> ・タイプを選んで倍率を調べる</span></summary>
     <div style="margin-top:8px">
       ${now}
       <div class="quick">${T.map(t=>
