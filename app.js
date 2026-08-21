@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '71';
+const APP_VERSION = '72';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1745,10 +1745,29 @@ function btNowRender(){
           <div class="small">${rows.join('<br>')}</div>${left}</div>`;
       })()}
       <div class="small" style="font-weight:800">撃つ技${c.moves.best?` … <b>${esc(c.moves.best.name)}</b>`:''}</div>
+      ${(()=>{ const s=c.moves.speed; if(!s) return '';
+        /* ★どの型に先を取れるかを必ず数字で出す。
+           「型次第」と書くだけでは、どっちに賭けるか決められない（鉄則⑥）。 */
+        const win=s.rows.filter(r=>r.faster), lose=s.rows.filter(r=>!r.faster);
+        return `<div class="small muted" style="margin-bottom:5px">
+          こちら <b>S${s.myS}</b> ／ 相手 ${s.rows.map(r=>`${esc(r.label)} <b>${r.s}</b>`).join('・')}
+          ${s.allSlower ? '<br><b style="color:var(--grn)">どの型より速い。先制技を使わなくても先に動けます</b>'
+           : s.allFaster ? '<br><b style="color:var(--red)">どの型にも抜かれます。先制技以外は後攻になります</b>'
+           : `<br><b style="color:var(--org)">${lose.map(r=>esc(r.label)).join('・')} には抜かれます</b>`
+             + (s.scarfRate>=15?`<span class="muted">（こだわりスカーフ採用${s.scarfRate}%）</span>`:'')}
+          ${s.weatherBoost?`<br><b style="color:var(--red)">天候で${esc(s.weatherBoost.name)}が発動して2倍速です</b>`:''}
+        </div>`;
+      })()}
       ${c.moves.why?`<div class="small muted" style="margin-bottom:6px">${c.moves.why}</div>`:''}
       ${c.moves.rows.map(r=>{
         const on = c.moves.best && r.name===c.moves.best.name;
         const pri = r.pri>0 ? `<span class="badge g">先制+${r.pri}</span> ` : (r.pri<0? `<span class="badge w">後攻</span> `:'');
+        /* ★この技で先に動けるか（v72・社長の要望）。
+           「先制技を使わなくても、実はこの技で先に通っていた」を潰すための表示。 */
+        const fst = r.status ? '' :
+          r.first==='always' ? `<span class="badge g">先に動ける</span> `
+        : r.first==='never'  ? `<span class="badge ng">後に動く</span> `
+        : `<span class="badge wn">型次第</span> `;
         let body;
         if(r.immune) body = '<span class="muted">無効</span>';
         else if(r.status) body = `<span class="muted">変化技${r.note?' — '+esc(r.note):''}</span>`;
@@ -1760,7 +1779,7 @@ function btNowRender(){
            押しても画面は変わらない。次に相手の残りHPを押した瞬間に、その技のダメージとして記録される。 */
         const shot = (!r.status && !r.immune)
           ? ` <button class="qb mini" data-btshot="${esc(r.name)}" style="padding:1px 7px;font-size:11px">撃った</button>` : '';
-        return `<div class="small" style="margin:3px 0;${on?'font-weight:700':''}">${on?'▶ ':'・'}${pri}${esc(r.name)} … ${body}${shot}</div>`;
+        return `<div class="small" style="margin:3px 0;${on?'font-weight:700':''}">${on?'▶ ':'・'}${fst}${pri}${esc(r.name)} … ${body}${shot}</div>`;
       }).join('')}
     </div>`:''}
     ${(c.todo&&c.todo.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--blue)">
@@ -1913,22 +1932,37 @@ function btDangerCard(rc, me, c){
   const seen = (BT.obs && BT.obs[BT.sel]) || [];
 
   /* ① いま対面している相手の技を「最大ダメージ × 採用率」で並べる */
-  const rows = ((c && c.mu && c.mu.oppRows) || [])
+  /* ★4発以上耐える技は出さない（v72）。「13発は耐える」は読む価値が無く、
+     本当に危ない行を埋もれさせる。社長の指摘「視認性がちょっと難しい」への対応。
+     ただし1件も残らないなら、いちばん痛い技だけは出す（無言で空にしない）。 */
+  const all = ((c && c.mu && c.mu.oppRows) || [])
     .filter(r=> r.rateHi > 0)
     .map(r=>({...r, risk: r.rateHi * ((r.rateOf==null?100:r.rateOf)/100)}))
-    .sort((a,b)=> b.risk-a.risk)
-    .slice(0,6);
+    .sort((a,b)=> b.risk-a.risk);
+  const rows = (all.filter(r=> r.rateHi >= 0.25).slice(0,4).length
+                 ? all.filter(r=> r.rateHi >= 0.25).slice(0,4)
+                 : all.slice(0,1));
 
+  /* ★%だけだと判断できない（社長）。
+     「30%じゃなくて60ぐらい削られる、何回なら耐えられる、が分かると
+       交代しなくていいか／絶対交代しないとまずいかが判断できる」
+     → **実数ダメージ**と**あと何発耐えるか**を主役にして、%は添えるだけにする。 */
+  const maxHP = me.stats ? me.stats.h : 0;
+  const hpNow = (BT.hp && BT.hp[me.label]!=null) ? BT.hp[me.label] : maxHP;
   const line = r => {
     const conf = seen.includes(r.move);
-    const pctHi = Math.round(r.rateHi*100), pctLo = Math.round(r.rate*100);
-    const ko = pctHi >= 100;
-    return `<div class="small" style="margin:3px 0">`
+    const dLo = Math.round(r.rate*maxHP), dHi = Math.round(r.rateHi*maxHP);
+    const ko = dHi >= hpNow;
+    const survive = dHi>0 ? Math.max(0, Math.ceil(hpNow/dHi)) : 99;   // 最悪ケースで何発耐えるか
+    return `<div class="small" style="margin:4px 0">`
       + `<b style="${ko?'color:var(--red)':''}">${esc(r.move)}</b> `
-      + `<b style="${ko?'color:var(--red)':''}">${pctLo}〜${pctHi}%</b>`
-      + (ko?'<span style="color:var(--red);font-weight:700"> 一撃</span>':'')
+      + `<b style="${ko?'color:var(--red)':''}">${dLo}〜${dHi}</b>`
+      + `<span class="muted"> 削られる（残り${hpNow}）</span>`
+      + (ko ? '<b style="color:var(--red)"> → 一撃で落ちる</b>'
+            : `<b> → ${survive}発は耐える</b>`)
       + (conf ? '<span style="color:var(--red);font-weight:700"> 確定</span>'
-              : `<span class="muted"> 採用${r.rateOf==null?'—':Math.round(r.rateOf)}%</span>`)
+              : `<span class="muted"> ・採用${r.rateOf==null?'—':Math.round(r.rateOf)}%</span>`)
+      + `<span class="muted"> ・${Math.round(r.rate*100)}〜${Math.round(r.rateHi*100)}%</span>`
       + `</div>`;
   };
 
@@ -1962,15 +1996,40 @@ function btDangerCard(rc, me, c){
     <div class="small muted" style="margin:2px 0 5px">いま対面：<b>${esc(cur)}</b></div>
     ${rows.length ? rows.map(line).join('')
                   : '<div class="small muted">通る技がありません</div>'}
+    ${all.length>rows.length?`<div class="small muted">他${all.length-rows.length}技は4発以上耐えるので省略</div>`:''}
 
     ${benchRisk.length ? `
       <div class="small" style="font-weight:800;margin-top:10px">控えにも同じ弱点を突く駒がいます
         <span class="muted"> ・交代で出てくる想定</span></div>
-      ${benchRisk.slice(0,4).map(b=>`<div class="small" style="margin:3px 0">
+      ${benchRisk.slice(0,3).map(b=>`<div class="small" style="margin:3px 0">
         <span class="muted">${esc(b.opp)}の</span><b>${esc(b.move)}</b>
         <span class="muted">（${esc(b.type)} ${b.eff>=4?'4倍':'2倍'}・採用${b.rate}%）</span></div>`).join('')}
       ` : `<div class="small muted" style="margin-top:10px">控えに、この駒の弱点を2倍以上で突ける技はありません</div>`}
 
+    ${(()=>{ /* ★交代したときに、その駒が食らう最大ダメージ（社長の要望）。
+         「交代した場合に飛んでくる技がどのぐらいなのかがすぐ分かると、
+           じゃあこうやって交代した方がいいなと分かる」 */
+      const cand = rc.filter(r=> r.label!==me.label && !BT.fainted[r.label]
+                                 && (BT.picks.includes(r.label)||BT.picks.includes(r.name)));
+      if(!cand.length) return '';
+      const rows2 = cand.map(r=>{
+        let cc=null; try{ cc = PC.callIt(r, cur, {roster:null, st:BT.board||{}}); }catch(e){}
+        if(!cc) return null;
+        const hp = r.stats.h;
+        const w = (cc.mu.oppRows||[]).slice().sort((a,b)=> b.rateHi-a.rateHi)[0];
+        if(!w) return null;
+        const d = Math.round(w.rateHi*hp);
+        return {n:r.disp||r.label, move:w.move, d, hp, ko:d>=hp, mark:cc.mark};
+      }).filter(Boolean).sort((a,b)=> (a.d/a.hp)-(b.d/b.hp));
+      if(!rows2.length) return '';
+      return `<div class="small" style="font-weight:800;margin-top:10px">交代したら、その駒が食らう最大
+          <span class="muted"> ・${esc(cur)}から</span></div>`
+        + rows2.map(x=>`<div class="small" style="margin:3px 0">
+            <b>${esc(x.n)}</b> ${esc(x.move)}で <b style="${x.ko?'color:var(--red)':''}">${x.d}</b>
+            <span class="muted">／HP${x.hp}</span>
+            ${x.ko?'<b style="color:var(--red)"> 一撃</b>':`<b> ${Math.ceil(x.hp/x.d)}発は耐える</b>`}
+            <span class="muted"> ${x.mark}</span></div>`).join('');
+    })()}
     ${blocked.length ? `
       <div class="small" style="font-weight:800;margin-top:10px">こちらの技が効かない可能性
         <span class="muted"> ・特性</span></div>

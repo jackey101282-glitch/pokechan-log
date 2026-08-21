@@ -1089,6 +1089,40 @@ function statusBlockers(moveName, oppName, st){
   return out;
 }
 
+/* ★「この技で先に動けるか」を型ごとに出す（2026-08-21・v72・社長の要望）。
+   「相手の素早さを警戒して、こっちが優先できそうだけど威力の弱い技を出したときに、
+     実はこの技でも通った、本当はこの技を出したかったけど出せなかった、ということがある。
+     それを瞬時に計算できない」
+   ＝ 先制技を使うべき場面と、**素早さで足りているので強い技を撃ってよい場面**を分けたい。
+   相手の素早さは型で大きく違う（最速・スカーフ・耐久）ので、**型ごとに**出す。
+   採用率が分かるスカーフは率も添える。 */
+function speedCheck(mine, oppName, st){
+  st = st || {};
+  const ms = mine.stats ? mine.stats.s
+           : spreadStats(mine.name,{h:2,a:0,b:0,c:0,d:0,s:32},{a:1,b:1,c:1,d:1,s:1}).s;
+  let myS = Math.floor(ms * rankMul(st.mySpeRank||0)) * (st.myParalysis?0.5:1) * (st.myTailwind?2:1);
+  const WM = {'すなおこし':'すなあらし','ひでり':'にほんばれ','あめふらし':'あめ','ゆきふらし':'ゆき'};
+  const eff = st.weather || WM[mine.ability||''] || '';
+  if(eff && WEATHER_SPEED[eff] === (mine.ability||'')) myS *= 2;
+  myS = Math.floor(myS);
+
+  const ws = weatherSpeedAbility(oppName, eff);
+  const rows = (assumedSpreads(oppName)||[]).map(sp=>{
+    let s = Math.floor(sp.stats.s * rankMul(st.opSpeRank||0)) * (st.opParalysis?0.5:1) * (st.opTailwind?2:1);
+    if(ws) s *= 2;
+    s = Math.floor(s);
+    return { label: sp.label || sp.kind, s, faster: myS > s,
+             weight: sp.weight!=null ? Math.round(sp.weight*100) : null };
+  }).sort((a,b)=> b.s-a.s);
+  return {
+    myS, rows,
+    allSlower: rows.every(r=> r.faster),      // どの型より速い＝素早さで足りている
+    allFaster: rows.every(r=> !r.faster),     // どの型にも抜かれる
+    scarfRate: oppScarfRate(oppName),
+    weatherBoost: ws || null
+  };
+}
+
 function movePlan(mine, oppName, opts){
   opts = opts || {};
   const st = opts.st || {};
@@ -1101,6 +1135,7 @@ function movePlan(mine, oppName, opts){
   const PLACED_NOW = { 'ステルスロック': st.opRocks, 'まきびし': st.opSpikes,
                        'どくびし': st.opTSpikes, 'ねばねばネット': st.opSticky };
 
+  const spd = speedCheck(mine, oppName, st);      // ★型ごとの先手判定（v72）
   const rows = (mine.moves||[]).map(name=>{
     const mv = MOVES[name];
     if(!mv) return null;
@@ -1140,8 +1175,11 @@ function movePlan(mine, oppName, opts){
     });
     if(lo===1e9) return { name, type:mv.type, cat:mv.cat, power:mv.power, acc:mv.acc||100, pri, immune:true };
     const hits = hi>0 ? Math.ceil(leftPct/hi) : 99;
+    /* 優先度が正なら（相手も同じ優先度の技を撃たない限り）必ず先。
+       優先度0同士は素早さ勝負なので、型ごとの判定をそのまま渡す。 */
+    const first = pri>0 ? 'always' : (spd.allSlower ? 'always' : spd.allFaster ? 'never' : 'depends');
     return { name, type:mv.type, cat:mv.cat, power:mv.power, acc:mv.acc||100, pri, eff:effV,
-             lo, hi, hits, koNow: hi >= leftPct, note:PRIORITY_NOTE[name]||'' };
+             lo, hi, hits, koNow: hi >= leftPct, first, note:PRIORITY_NOTE[name]||'' };
   }).filter(Boolean);
 
   /* 相手が引っ込めることを想定する。控えの誰に通るかを技ごとに見る。 */
@@ -1239,7 +1277,7 @@ function movePlan(mine, oppName, opts){
     if(best) why = hz ? `攻撃が通らない対面。引く前に<b>${best.name}</b>を置いておくと、この1ターンが無駄にならない`
                       : `攻撃が通りません。<b>${best.name}</b>で次につなぐか、引くこと`;
   }
-  return { rows, best, why };
+  return { rows, best, why, speed:spd };
 }
 
 function bestOffense(mine, oppName, opp, st){
@@ -2714,6 +2752,6 @@ global.PC = {
   bestOffense, bestThreat, immuneType, myOneHitGuard, myRoles, supportValue, oppUsage, oppTypeItem,
   readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana,
-  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect, graveMovePower, GRAVE_MOVES, statUpOf, STAT_UP, moveBlockers, whoBlocks
+  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect, graveMovePower, GRAVE_MOVES, statUpOf, STAT_UP, moveBlockers, whoBlocks, speedCheck
 };
 })(window);
