@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="82">
+<meta name="app-version" content="83">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -281,6 +281,7 @@ tr.bad .bar>i{background:var(--lose)}
   </div>
   <div class="tabs">
     <button class="tab on" data-tab="bt">対戦</button>
+    <button class="tab" data-tab="turn">ターン</button>
     <button class="tab" data-tab="rec">記録</button>
     <button class="tab" data-tab="dmg">ダメージ計算</button>
     <button class="tab" data-tab="advice">相談</button>
@@ -392,6 +393,25 @@ tr.bad .bar>i{background:var(--lose)}
 
 <!-- ---------- ダメージ計算 ---------- -->
 <!-- ---------- 実戦（試合中はこの画面だけ見る） ---------- -->
+<!-- ---------- ターン記録（2026-08-21・v83・社長の要望。テスト運用中） ----------
+     「バトルが終わった後に最初の1アクションから思い出して要点をまとめて書いているだけなので、
+       体感はあるものの実際そういうわけでもない、というのがある。
+       ターンごとのアクションをちゃんと入れられるようにしたい」
+     ★既存の記録タブの「ターンごとの行動記録」はプルダウン式で、HPも先制も外れも入らなかった。
+       あれは試合後に埋める形。**これは試合中にタップで入れる形**として別に作る。
+     ★入れた内容は BT（対戦タブの状態）にそのまま反映する。二重入力にしないため。 -->
+<section id="tab-turn" hidden>
+  <div class="card">
+    <h2>ターン記録<span class="sub">試合中にタップで残す</span></h2>
+    <p class="hint">対戦タブで相手6体を入れてから使ってください。
+      ここで入れた内容は<b>そのまま対戦タブの盤面（HP・積み・観測技）に反映されます</b>。
+      「試合が終わった」で保存すると、この記録も一緒に残ります。</p>
+    <div id="turnHead"></div>
+  </div>
+  <div id="turnNow"></div>
+  <div id="turnList"></div>
+</section>
+
 <section id="tab-bt">
   <!-- 試合中はこの1画面で完結させる。上から順に「使う構築 → 相手を入れる → 選出 → いまの対面」
        ★使う構築の切替は「記録」タブの中にしか無く、試合前に見つけられなかった（社長の指摘 2026-08-20）。
@@ -728,18 +748,18 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=82"></script>
-<script src="./data/species.js?v=82"></script>
-<script src="./data/moves.js?v=82"></script>
-<script src="./data/principles.js?v=82"></script>
-<script src="./data/usage.js?v=82"></script>
-<script src="./data/teams.js?v=82"></script>
-<script src="./core.js?v=82"></script>
+<script src="./supabase-config.js?v=83"></script>
+<script src="./data/species.js?v=83"></script>
+<script src="./data/moves.js?v=83"></script>
+<script src="./data/principles.js?v=83"></script>
+<script src="./data/usage.js?v=83"></script>
+<script src="./data/teams.js?v=83"></script>
+<script src="./core.js?v=83"></script>
 <!-- ★音声（読み上げ）は 2026-08-21 に停止。社長の判定「9種すべて不自然」＋
      スマホで対戦しPCでこのアプリを操作する運用になったため、読み上げの必要が無くなった。
      コードとクリップは残してあるので、この1行を戻せば復活する。
-<script src="./voice.js?v=82"></script> -->
+<script src="./voice.js?v=83"></script> -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=82"></script>
+<script src="./app.js?v=83"></script>
 </body>
 </html>

@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '82';
+const APP_VERSION = '83';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -278,6 +278,7 @@ $$('.tab').forEach(b=> b.onclick=()=>{
   $$('.tab').forEach(x=>x.classList.toggle('on',x===b));
   // タブを増やしたときに書き換え漏れが起きないよう、セクションはDOMから拾う
   $$('main section[id^="tab-"]').forEach(sec=> sec.hidden = (sec.id !== 'tab-'+b.dataset.tab));
+  if(b.dataset.tab==='turn') renderTurnTab();
   if(b.dataset.tab==='stat') renderStats();
   if(b.dataset.tab==='hist') renderHist();
   if(b.dataset.tab==='advice') renderAdvice();
@@ -1029,6 +1030,14 @@ function newBT(){
            /* ★みずびたし等で変えられた「自分の駒のいまのタイプ」（v80・社長の指摘）。
               myType[自分のラベル]='みず'。**交代したら自動で消える**（ゲームの挙動どおり）。 */
            myType:{},
+           /* ★ターンごとの記録（v83・社長の要望）。試合中にタップで積んでいく。
+              turns[i] = {n, me, opp, first:'me'|'opp',
+                          my:{act:'move'|'switch'|'protect', move, to, miss},
+                          op:{act, move, to, miss},
+                          myHp, oppHp}      … HPは「そのターン終了時」の値
+              ★あとから思い出して書くのではなく、その場で残すためのもの。
+                「体感はあるものの実際そういうわけでもない」を潰すのが目的。 */
+           turns:[], turnDraft:null,
            /* ★タイプ診断（v69・社長の要望）。tdType=選んだタイプ, tdMode='def'受ける/'atk'殴る */
            tdType:null, tdMode:'def',
            _searchTop:null,
@@ -1686,7 +1695,13 @@ function btRender(){
            駒ごとの勝率も選出別の勝率も、実際の選出ではなく推奨に対する数字になっていた（v65で修正）。 */
         opp_team:BT.opp, my_pick:d.myPick,
         opp_pick:d.oppPick||[], mega:BT.mega||null,
-        turns:[], result:d.result,
+        /* ★ターンタブで残した記録をそのまま保存する（v83）。
+           これまで turns は常に空で保存していた（記録タブのプルダウン式は使われていなかった）。 */
+        turns:(BT.turns||[]).map(t=>({ n:t.n, myMon:t.me, oppMon:t.opp, first:t.first,
+          myAct:{type:t.my.act, move:t.my.move||undefined, to:t.my.to||undefined, miss:t.my.miss||undefined},
+          oppAct:{type:t.op.act, move:t.op.move||undefined, to:t.op.to||undefined, miss:t.op.miss||undefined},
+          myHp:t.myHp, oppHp:t.oppHp })),
+        result:d.result,
         lose_cause:(d.causes||[]).join(' / ')||null, pain_mon:d.painMon||null, pain_move:d.painMove||null,
         memo:(d.memo||'').trim()||null, should_pick:d.should||null, want_move:(d.want||'').trim()||null,
         reason:d.result==='lose' ? [(d.causes||[]).join('・'),d.painMon&&`${d.painMon}がきつい`,d.painMove&&`${d.painMove}でやられた`,
@@ -2646,6 +2661,7 @@ function btBindBoard(){
     stashOppBoard(BT.sel);
     PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   });
+  { const tt=$('#turnNow'); if(tt && !$('#tab-turn').hidden) renderTurnTab(); }
   const r=$('#btNow [data-bbreset]');
   /* ★「盤面をリセット」は、相手ごとにしまってあるぶんも消す。
      ここを消し忘れると、交代して戻ってきた瞬間に積みが復活する。 */
@@ -2687,6 +2703,261 @@ function btTypeThroughCard(oppEff, me){
         `<span style="display:inline-flex;align-items:center;gap:2px;margin-right:8px;opacity:.6">${
           typeBadge(r.type)}${esc(r.type)}${r.byAbility?`<span class="muted">（${esc(r.byAbility)}）</span>`:''}</span>`).join('')}</div>`:''}
   </div>`;
+}
+
+/* =========================================================
+   ターン記録（2026-08-21・v83・社長の要望。テスト運用中）
+   -----------------------------------------------------------------
+   > 「ターンごとで、どっちが先制して何を繰り出してきて、それに対して
+   >   こっちがどんなアクションをしたのかが必要。HPがこのぐらいになった、
+   >   自分はこれを繰り出した、外れてしまった、とか。
+   >   バトルが終わった後に最初の1アクションから思い出して要点をまとめて
+   >   書いているだけなので、**体感はあるものの実際そういうわけでもない**」
+
+   ★既存の記録タブの「ターンごとの行動記録」はプルダウン式で、試合後に埋める形だった。
+     HPも先制も外れも入らない。だから使われていなかった。**別物として作る。**
+   ★設計の柱は3つ：
+     ① **1ターン最短3タップ**（自分の技 → 相手の技 → 確定）。対面は前ターンから引き継ぐ
+     ② **入れた内容をそのまま BT に反映する**（HP・積み・観測技）。二重入力にしない
+     ③ **技はボタン**。自分は4つ固定、相手は採用率順。プルダウンは試合中に開けない
+   ========================================================= */
+function turnDraftInit(){
+  const last = BT.turns.length ? BT.turns[BT.turns.length-1] : null;
+  return {
+    me:  (last && last.my && last.my.act==='switch' && last.my.to) ? last.my.to : (last ? last.me : BT.me),
+    opp: (last && last.op && last.op.act==='switch' && last.op.to) ? last.op.to : (last ? last.opp : BT.sel),
+    first:null,
+    my:{act:'move', move:'', to:'', miss:false},
+    op:{act:'move', move:'', to:'', miss:false},
+    myHp:null, oppHp:null
+  };
+}
+function renderTurnTab(){
+  const host=$('#turnNow'), head=$('#turnHead'), list=$('#turnList');
+  if(!host) return;
+  if(!BT.opp.length){
+    head.innerHTML = '<div class="small muted">先に「対戦」タブで相手6体を入れてください。</div>';
+    host.innerHTML=''; list.innerHTML=''; return;
+  }
+  syncOppItems();
+  const roster = currentRoster();
+  const rc = rosterForCalc(roster, BT.mega);
+  const mine = rc.filter(r=> BT.picks.includes(r.label) || BT.picks.includes(r.name));
+  const pool = mine.length ? mine : rc;
+  BT.turnDraft = BT.turnDraft || turnDraftInit();
+  const d = BT.turnDraft;
+  if(!d.me  && pool[0]) d.me  = pool[0].label;
+  if(!d.opp && BT.opp[0]) d.opp = BT.opp[0];
+
+  const meObj = pool.find(r=>r.label===d.me) || pool[0] || {};
+  const maxHP = meObj.stats ? meObj.stats.h : 0;
+  const oppEff = effOppBT(d.opp);
+
+  head.innerHTML = `<div class="small muted">${BT.turns.length}ターンぶん記録済み
+    ${BT.turns.length?`・<button class="btn ghost sm" id="turnUndo">直前を取り消す</button>
+      <button class="btn ghost sm" id="turnClear">全部消す</button>`:''}</div>`;
+
+  /* 相手の技は採用率順。観測済みは色を変えて上に出す */
+  const oppMoves = (PC.oppMoveChoices(oppEff)||[]).slice(0,10);
+  const seen = (BT.obs && BT.obs[d.opp]) || [];
+  const myMoves = (meObj.moves||[]).filter(Boolean);
+  const chip = (on, attr, val, label, extra) =>
+    `<button class="qb ${on?'on':'off'}" data-${attr}="${esc(val)}"${extra||''}>${label}</button>`;
+
+  host.innerHTML = `
+  <div class="card" style="border-left:4px solid var(--blue)">
+    <h2>ターン ${BT.turns.length+1}<span class="sub">対面が変わったときだけ押す</span></h2>
+    <div class="small muted">相手</div>
+    <div class="quick" style="margin-top:4px">${BT.opp.map(n=>
+      chip(n===d.opp,'tdopp',n, `${typeDots(effOppBT(n))}${esc(n)}`)).join('')}</div>
+    <div class="small muted" style="margin-top:8px">自分</div>
+    <div class="quick" style="margin-top:4px">${pool.map(m=>
+      chip(m.label===d.me,'tdme',m.label, `${typeDots(effMeBT(m).name)}${esc(m.disp||m.label)}`)).join('')}</div>
+
+    <div class="hpwrap" style="margin-top:12px">
+      <span class="small muted" style="min-width:74px">先に動いた</span>
+      <div class="seg">
+        <button class="${d.first==='me'?'on':''}" data-tdfirst="me">自分</button>
+        <button class="${d.first==='opp'?'on':''}" data-tdfirst="opp">相手</button>
+      </div>
+      ${(BT.oppItem||{})[d.opp]==='せんせいのツメ'
+        ? '<span class="small" style="color:var(--red)">せんせいのツメ持ち</span>' : ''}
+    </div>
+
+    <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
+      <div class="small" style="font-weight:800">自分の行動 <span class="muted">${esc(meObj.disp||meObj.label||'')}</span></div>
+      <div class="quick" style="margin-top:4px">
+        ${myMoves.map(m=>{
+          const up = PC.statUpOf(m);
+          return chip(d.my.act==='move'&&d.my.move===m,'tdmymove',m,
+            `${typeBadge((PC.MOVES[m]||{}).type)}${esc(m)}${up?'<span style="color:var(--org)"> 積</span>':''}`);
+        }).join('')}
+        ${chip(d.my.act==='protect','tdmyact','protect','まもる')}
+        ${chip(d.my.act==='switch','tdmyact','switch','交代')}
+      </div>
+      ${d.my.act==='switch'?`<div class="quick" style="margin-top:4px">${pool.filter(r=>r.label!==d.me).map(r=>
+        chip(d.my.to===r.label,'tdmyto',r.label, esc(r.disp||r.label))).join('')}</div>`:''}
+      ${d.my.act==='move'?`<div class="hpwrap">
+        <span class="small muted" style="min-width:74px">相手の残りHP</span>
+        <div class="seg">${[100,90,75,60,50,40,25,10,0].map(v=>
+          `<button class="${d.oppHp===v?'on':''}" data-tdophp="${v}">${v}</button>`).join('')}</div>
+        ${chip(d.my.miss,'tdmymiss','1','外した')}
+      </div>`:''}
+    </div>
+
+    <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
+      <div class="small" style="font-weight:800">相手の行動 <span class="muted">${esc(d.opp)}</span></div>
+      <div class="quick" style="margin-top:4px">
+        ${oppMoves.map(c=>{
+          const up = PC.statUpOf(c.name);
+          return chip(d.op.act==='move'&&d.op.move===c.name,'tdopmove',c.name,
+            `${typeBadge(c.type)}${esc(c.name)}<span class="muted"> ${c.rate}%</span>${
+              up?'<span style="color:var(--org)"> 積</span>':''}${seen.includes(c.name)?'<b style="color:var(--red)"> 既</b>':''}`);
+        }).join('')}
+        ${chip(d.op.act==='protect','tdopact','protect','まもる')}
+        ${chip(d.op.act==='switch','tdopact','switch','交代')}
+      </div>
+      ${d.op.act==='switch'?`<div class="quick" style="margin-top:4px">${BT.opp.filter(n=>n!==d.opp).map(n=>
+        chip(d.op.to===n,'tdopto',n, esc(n))).join('')}</div>`:''}
+      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;align-items:center">
+        <input id="tdMyHp" class="hpnum" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4"
+               autocomplete="off" value="${d.myHp!=null?d.myHp:''}" placeholder="${maxHP}">
+        <span class="small muted">← 自分の残りHP（/ ${maxHP}）</span>
+        ${chip(d.op.miss,'tdopmiss','1','外した')}
+        <input id="tdOther" type="text" placeholder="一覧に無い技" list="mvlist" style="flex:1;min-width:120px">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">
+      <button class="btn primary" id="turnCommit">このターンを記録</button>
+      <span class="small muted">記録すると、対戦タブのHP・積み・観測技に反映されます</span>
+    </div>
+  </div>`;
+
+  list.innerHTML = BT.turns.length ? `<div class="card">
+    <h2>これまでのターン<span class="sub">${BT.turns.length}手</span></h2>
+    <table style="width:100%;font-size:13px">
+      <tr><th>手</th><th>対面</th><th>先</th><th>自分</th><th>相手</th><th class="num">HP</th></tr>
+      ${BT.turns.map((t,i)=>{
+        const act = a => a.act==='switch' ? `交代→${esc(a.to||'?')}`
+                       : a.act==='protect' ? 'まもる'
+                       : `${esc(a.move||'—')}${a.miss?'<span style="color:var(--red)">（外れ）</span>':''}`;
+        return `<tr style="border-top:1px solid var(--line2)">
+          <td>${t.n}</td>
+          <td class="small">${esc(t.me)} vs ${esc(t.opp)}</td>
+          <td class="small">${t.first==='me'?'自':t.first==='opp'?'相':'—'}</td>
+          <td class="small">${act(t.my)}</td>
+          <td class="small">${act(t.op)}</td>
+          <td class="num small">${t.myHp!=null?t.myHp:'—'} / ${t.oppHp!=null?t.oppHp+'%':'—'}</td>
+        </tr>`;
+      }).join('')}
+    </table></div>` : '';
+
+  bindTurnTab(pool, maxHP);
+}
+function bindTurnTab(pool, maxHP){
+  const d = BT.turnDraft;
+  const re = ()=>{ saveBtDraft(); renderTurnTab(); };
+  $$('#turnNow [data-tdopp]').forEach(b=> b.onclick=()=>{ d.opp=b.dataset.tdopp; d.op.move=''; re(); });
+  $$('#turnNow [data-tdme]').forEach(b=> b.onclick=()=>{ d.me=b.dataset.tdme; d.my.move=''; re(); });
+  $$('#turnNow [data-tdfirst]').forEach(b=> b.onclick=()=>{ d.first = d.first===b.dataset.tdfirst?null:b.dataset.tdfirst; re(); });
+  $$('#turnNow [data-tdmymove]').forEach(b=> b.onclick=()=>{ d.my.act='move'; d.my.move=b.dataset.tdmymove; re(); });
+  $$('#turnNow [data-tdopmove]').forEach(b=> b.onclick=()=>{ d.op.act='move'; d.op.move=b.dataset.tdopmove; re(); });
+  $$('#turnNow [data-tdmyact]').forEach(b=> b.onclick=()=>{ const v=b.dataset.tdmyact;
+    d.my.act = d.my.act===v ? 'move' : v; d.my.move=''; re(); });
+  $$('#turnNow [data-tdopact]').forEach(b=> b.onclick=()=>{ const v=b.dataset.tdopact;
+    d.op.act = d.op.act===v ? 'move' : v; d.op.move=''; re(); });
+  $$('#turnNow [data-tdmyto]').forEach(b=> b.onclick=()=>{ d.my.to=b.dataset.tdmyto; re(); });
+  $$('#turnNow [data-tdopto]').forEach(b=> b.onclick=()=>{ d.op.to=b.dataset.tdopto; re(); });
+  $$('#turnNow [data-tdophp]').forEach(b=> b.onclick=()=>{ d.oppHp=+b.dataset.tdophp; re(); });
+  $$('#turnNow [data-tdmymiss]').forEach(b=> b.onclick=()=>{ d.my.miss=!d.my.miss; re(); });
+  $$('#turnNow [data-tdopmiss]').forEach(b=> b.onclick=()=>{ d.op.miss=!d.op.miss; re(); });
+  const hp=$('#tdMyHp'); if(hp) hp.oninput=()=>{ const v=hp.value.replace(/[^0-9]/g,'');
+    d.myHp = v===''?null:Math.max(0,Math.min(maxHP, parseInt(v,10)||0)); saveBtDraft(); };
+  const oth=$('#tdOther'); if(oth) oth.onchange=()=>{ const v=(oth.value||'').trim();
+    if(v){ d.op.act='move'; d.op.move=v; re(); } };
+  const u=$('#turnUndo'); if(u) u.onclick=()=>{ BT.turns.pop(); BT.turnDraft=turnDraftInit(); re(); };
+  const cl=$('#turnClear'); if(cl) cl.onclick=()=>{ if(!confirm('このターン記録を全部消しますか？')) return;
+    BT.turns=[]; BT.turnDraft=turnDraftInit(); re(); };
+  const c=$('#turnCommit'); if(c) c.onclick=()=> commitTurn();
+}
+/* ★記録したら、そのまま対戦タブの状態に反映する（二重入力をなくすのが目的） */
+function commitTurn(){
+  const d = BT.turnDraft;
+  if(!d || !d.me || !d.opp) return toast('対面を選んでください', true);
+  if(d.my.act==='move' && !d.my.move && d.op.act==='move' && !d.op.move)
+    return toast('どちらかの行動を入れてください', true);
+
+  /* ★HPを更新する前に「更新前の値」を取っておく。
+     先に BT.oppHp を書き換えてから差分を取ると、必ず0になる（最初の実装で踏んだ）。 */
+  const oppHpBefore = (BT.oppHp||{})[d.opp]!=null ? BT.oppHp[d.opp] : 100;
+  const myHpBefore  = (BT.hp||{})[d.me];
+  BT.turns.push({ n:BT.turns.length+1, me:d.me, opp:d.opp, first:d.first,
+                  my:{...d.my}, op:{...d.op}, myHp:d.myHp, oppHp:d.oppHp,
+                  /* あとで逆算に使えるよう、そのターンで動いた実数も残す */
+                  oppHpFrom:oppHpBefore, myHpFrom:(myHpBefore!=null?myHpBefore:null) });
+
+  /* --- 反映① 場に出ている駒 --- */
+  BT.me  = (d.my.act==='switch' && d.my.to) ? d.my.to  : d.me;
+  BT.sel = (d.op.act==='switch' && d.op.to) ? d.op.to  : d.opp;
+  /* ★これが無いと btCompute() が「先発予想に強い駒」で BT.me を上書きしてしまい、
+     ターンタブで交代を記録しても対戦タブが前の駒のままになる（実装時に踏んだ）。 */
+  BT.meManual = true;
+  BT.usedMine = BT.usedMine || [];
+  if(!BT.usedMine.includes(BT.me)) BT.usedMine.push(BT.me);
+  BT.seenOrder = BT.seenOrder || [];
+  if(!BT.seenOrder.includes(BT.sel) && BT.seenOrder.length<3) BT.seenOrder.push(BT.sel);
+  /* 交代したら、みずびたし等のタイプ変更は元に戻る（v80と同じ扱い） */
+  if(d.my.act==='switch' && BT.myType) delete BT.myType[d.me];
+  /* 相手が交代したら、積み・状態異常は載せ替える（v77と同じ扱い） */
+  if(d.op.act==='switch' && d.op.to){ stashOppBoard(d.opp); loadOppBoard(d.op.to); }
+
+  /* --- 反映② HP --- */
+  if(d.myHp!=null)  BT.hp[d.me] = d.myHp;
+  if(d.oppHp!=null) BT.oppHp[d.opp] = d.oppHp;
+
+  /* --- 反映③ 相手の技を観測に足す（外れても「持っている」ことは分かる） --- */
+  if(d.op.act==='move' && d.op.move){
+    BT.obs = BT.obs || {}; BT.obsCount = BT.obsCount || {};
+    const cur = BT.obs[d.opp] = BT.obs[d.opp] || [];
+    if(!cur.includes(d.op.move)) cur.push(d.op.move);
+    const oc = BT.obsCount[d.opp] = BT.obsCount[d.opp] || {};
+    oc[d.op.move] = (oc[d.op.move]||0) + 1;
+    /* 積み技なら盤面のランクに乗せる（v66と同じ） */
+    const up = PC.statUpOf(d.op.move);
+    if(up){
+      BT.stacks = BT.stacks || {};
+      const st = BT.stacks[d.opp] = BT.stacks[d.opp] || {};
+      st[d.op.move] = (st[d.op.move]||0) + 1;
+      BT.board = BT.board || {};
+      Object.entries(up).forEach(([k,v])=>{ const bk=STACK_RANK_MAP[k]; if(!bk) return;
+        BT.board[bk] = Math.max(-6, Math.min(6, (BT.board[bk]||0) + v));
+        if(!BT.board[bk]) delete BT.board[bk]; });
+      stashOppBoard(d.opp);
+    }
+    /* みずびたし等でこちらのタイプが変わる（v80と同じ） */
+    const ct = PC.typeChangeOf(d.op.move);
+    if(ct && d.my.act!=='switch'){ BT.myType = BT.myType || {}; BT.myType[d.me] = ct; }
+  }
+  /* --- 反映④ 自分が積んだぶん --- */
+  if(d.my.act==='move' && d.my.move && !d.my.miss){
+    const up = PC.statUpOf(d.my.move);
+    if(up){
+      BT.board = BT.board || {};
+      const MY = {a:'myAtkRank', b:'myDefRank', c:'mySpaRank', d:'mySpdRank', s:'mySpeRank'};
+      Object.entries(up).forEach(([k,v])=>{ const bk=MY[k]; if(!bk) return;
+        BT.board[bk] = Math.max(-6, Math.min(6, (BT.board[bk]||0) + v));
+        if(!BT.board[bk]) delete BT.board[bk]; });
+    }
+    /* 与えた実測ダメージ（v62の dealt と同じ形で残す）。★更新前の値と比べること */
+    if(d.oppHp!=null && d.oppHp < oppHpBefore){
+      BT.dealt[d.opp] = BT.dealt[d.opp] || [];
+      BT.dealt[d.opp].push({move:d.my.move, pct: oppHpBefore - d.oppHp});
+    }
+  }
+  BT.turnDraft = turnDraftInit();
+  PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft(); renderTurnTab();
+  toast(`ターン${BT.turns.length}を記録しました`);
 }
 
 /* ---------- 相手が使ってきた技をワンタップで記録 ----------
@@ -2930,7 +3201,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, oppBoard:BT.oppBoard, oppItem:BT.oppItem, myType:BT.myType, tdType:BT.tdType, tdMode:BT.tdMode,
+    obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, oppBoard:BT.oppBoard, oppItem:BT.oppItem, myType:BT.myType, turns:BT.turns, turnDraft:BT.turnDraft, tdType:BT.tdType, tdMode:BT.tdMode,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
@@ -2943,7 +3214,7 @@ function loadBtDraft(){
       /* ★観測した技は「その試合のもの」なので、時間が経っていたら捨てる（v76）。
          誤ってリロードした直後（30分以内）は残す。 */
       if(d.obs) BT.obs=d.obs; if(d.obsCount) BT.obsCount=d.obsCount;
-      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType; if(d.oppBoard) BT.oppBoard=d.oppBoard; if(d.oppItem) BT.oppItem=d.oppItem; if(d.myType) BT.myType=d.myType;
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType; if(d.oppBoard) BT.oppBoard=d.oppBoard; if(d.oppItem) BT.oppItem=d.oppItem; if(d.myType) BT.myType=d.myType; if(d.turns) BT.turns=d.turns; if(d.turnDraft) BT.turnDraft=d.turnDraft;
     if(d.tdType) BT.tdType=d.tdType; if(d.tdMode) BT.tdMode=d.tdMode;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
