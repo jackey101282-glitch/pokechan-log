@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '70';
+const APP_VERSION = '71';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1780,7 +1780,7 @@ function btNowRender(){
      「いま出している駒(me)」が確定するのが btNowRender だから。
      btRender 側で同じ判定をもう一度書くと、必ず食い違う（鉄則⑤）。 */
   { const dh = $('#btDanger');
-    if(dh) dh.innerHTML = safeHtml('危ないタイプ', ()=> btDangerCard(rc, me)); }
+    if(dh) dh.innerHTML = safeHtml('危ないタイプ', ()=> btDangerCard(rc, me, c)); }
 
   /* 音声。★指のタップから始めないと iOS は鳴らさないので、必ずボタン経由にする。 */
   const vb = $('#btSpeakBtn');   // ★#btVoice は既存の音声メモ欄。IDを衝突させないこと
@@ -1893,61 +1893,92 @@ const BOARD_RANKS = [-2,-1,0,1,2,3,4,5,6];
      ①タイプを選ばなくても、**いま場に出している自分の駒の弱点**を最初から出す（タップ0）
      ②タイプを押すと、自分6匹と相手6体の倍率が一覧で出る（社長が言った「地面を押す」形）
    「受けたら／殴ったら」の切り替えが、社長の言う「に弱い／に強い」にあたる。 */
-/* ★「この駒が食らうとまずいタイプ」を、危ない順に並べる（2026-08-21・v70）。
-   社長の要望：
-     「タイプを指定して"これを食らったら"じゃなくて、**一番まずいのはこれ、次はこれ**を出したい」
-     「そのタイプの技を**持っていそうな相手**と、**その技の採用率**が見たい。
-       採用率がすごく低かったら『あ、なんとかいけそう』と思える。
-       3つ技が分かっていて、残り1個がそれの可能性はそんなに無いよね、と考えながら戦える」
-   ＝ タイプ相性だけでは足りない。**その技が実際に飛んでくるのか**まで出して初めて判断材料になる。 */
-function btDangerCard(rc, me){
+/* ★「この駒に何が飛んでくるか」を、**危ない順**に出す（2026-08-21・v71）。
+   社長の指摘（v70を見て）：
+     「メガルカリオ vs ガブリアスで、**ほのお2倍（ほのおのキバ11%）が上**に出て、
+       **じめん2倍（じしん99.3%）が下**に出る。これだと『炎は11%だから大丈夫』と思ってしまう。
+       **普通にじしんを覚えているでしょう。** 倍率だけでなく**採用率をかけて**並べてほしい」
+   ＝ タイプの倍率で並べるのが間違いだった。**実際に食らうダメージ × その技を持っている確率**で並べる。
+
+   さらに2つ：
+     ・「対面している相手単体」と「**相手のパーティの中に持っているやつがいるか**」を分けて見たい
+       （交代で出てくる可能性があるので、交代されてもいいように技を選べる）
+     ・「**こちらの技が相手の特性で効かない可能性**」も採用率つきで見たい（ふゆう・もらいび・ちょすい等）
+
+   ★倍率ではなく `callIt()` が返す**実ダメージ%**を使う。
+     倍率は同じでも、相手の攻撃実数値・持ち物・タイプ一致で実際の痛さは全く違う。 */
+function btDangerCard(rc, me, c){
   if(!me || !BT.opp.length) return '';
-  const myTypes = (PC.SPECIES[me.name]||{types:[]}).types;
-  const imm = PC.immuneType(me.ability||'');
-  const rows = PC.TYPES
-    .map(t=>({t, v: (t===imm ? 0 : PC.effectiveness(t, myTypes))}))
-    .filter(r=> r.v >= 2)
-    .sort((a,b)=> b.v-a.v);
-  if(!rows.length){
-    return `<div class="card" style="margin-top:12px">
-      <div class="small"><b>${esc(me.disp||me.label)}</b> は<b>2倍以上で入るタイプがありません</b></div></div>`;
-  }
-  /* そのタイプの技を、相手6体の誰が実際に持っているか（使用率データの採用率つき） */
-  const holders = t => {
-    const out = [];
-    BT.opp.forEach(n=>{
-      const e = effOppBT(n);
-      const seen = (BT.obs && BT.obs[n]) || [];
-      const mv = (PC.oppMoves(e)||[]).filter(m=> m.type===t && m.power>0);
-      mv.forEach(m=>{
-        out.push({opp:e, move:m.name, rate:m.rate, confirmed: seen.includes(m.name), seenN: seen.length});
-      });
-    });
-    return out.sort((a,b)=> (b.confirmed?1:0)-(a.confirmed?1:0) || b.rate-a.rate);
+  const cur = effOppBT(BT.sel);
+  const seen = (BT.obs && BT.obs[BT.sel]) || [];
+
+  /* ① いま対面している相手の技を「最大ダメージ × 採用率」で並べる */
+  const rows = ((c && c.mu && c.mu.oppRows) || [])
+    .filter(r=> r.rateHi > 0)
+    .map(r=>({...r, risk: r.rateHi * ((r.rateOf==null?100:r.rateOf)/100)}))
+    .sort((a,b)=> b.risk-a.risk)
+    .slice(0,6);
+
+  const line = r => {
+    const conf = seen.includes(r.move);
+    const pctHi = Math.round(r.rateHi*100), pctLo = Math.round(r.rate*100);
+    const ko = pctHi >= 100;
+    return `<div class="small" style="margin:3px 0">`
+      + `<b style="${ko?'color:var(--red)':''}">${esc(r.move)}</b> `
+      + `<b style="${ko?'color:var(--red)':''}">${pctLo}〜${pctHi}%</b>`
+      + (ko?'<span style="color:var(--red);font-weight:700"> 一撃</span>':'')
+      + (conf ? '<span style="color:var(--red);font-weight:700"> 確定</span>'
+              : `<span class="muted"> 採用${r.rateOf==null?'—':Math.round(r.rateOf)}%</span>`)
+      + `</div>`;
   };
-  const body = rows.map((r,i)=>{
-    const hs = holders(r.t);
-    const top = hs.slice(0,4);
-    return `<div style="padding:7px 0;${i?'border-top:1px solid var(--line2)':''}">
-      <div class="small">
-        <b style="color:var(--red)">${esc(r.t)} ${r.v>=4?'4倍':'2倍'}</b>
-        ${hs.length?'' : '<span class="muted"> — この6体に、このタイプの攻撃技を持つ相手はいません</span>'}
-      </div>
-      ${top.length?`<div class="small" style="margin-top:3px">${top.map(h=>
-        `<span class="${h.confirmed?'':'muted'}">${esc(h.opp)}の<b>${esc(h.move)}</b>`
-        + (h.confirmed
-            ? ` <span style="color:var(--red);font-weight:700">確定</span>`
-            : ` ${h.rate}%`
-              + (h.seenN>=3 ? `<span style="color:var(--grn)">（技3つ判明。残り1枠なので、まだなら可能性は低い）</span>` : ''))
-        + `</span>`).join('<br>')}</div>`:''}
-    </div>`;
-  }).join('');
+
+  /* ② 控えの相手が、同じ技を持っていないか（交代で出てくる） */
+  const others = BT.opp.filter(n=> n!==BT.sel && !BT.fainted[n]);
+  const myTypes = (PC.SPECIES[me.name]||{types:[]}).types;
+  const immAb = PC.immuneType(me.ability||'');
+  const benchRisk = [];
+  others.forEach(n=>{
+    const e = effOppBT(n);
+    (PC.oppMoves(e)||[]).forEach(m=>{
+      if(!m.power) return;
+      const eff = (m.type===immAb) ? 0 : PC.effectiveness(m.type, myTypes);
+      if(eff < 2) return;                       // 2倍以上だけ。等倍まで出すと読めない
+      benchRisk.push({opp:e, move:m.name, rate:m.rate, eff, type:m.type});
+    });
+  });
+  benchRisk.sort((a,b)=> (b.eff*b.rate)-(a.eff*a.rate));
+
+  /* ③ こちらの技が、相手の特性で無効化される可能性 */
+  const blocked = [];
+  (me.moves||[]).forEach(mv=>{
+    const M = PC.MOVES[mv]; if(!M || !M.power || M.cat==='変') return;
+    const who = PC.whoBlocks(M.type, BT.opp.filter(n=>!BT.fainted[n]).map(effOppBT));
+    if(who.length) blocked.push({move:mv, type:M.type, who});
+  });
+
   return `<div class="card" style="margin-top:12px;border-left:3px solid var(--red)">
-    <div class="small" style="font-weight:800;margin-bottom:2px">
-      ${esc(me.disp||me.label)} が食らうとまずいタイプ<span class="muted"> ・まずい順</span></div>
-    <div class="small muted" style="margin-bottom:4px">
-      その技を<b>実際に持っている相手</b>と採用率を出しています。誰も持っていなければ、そのタイプは怖くありません</div>
-    ${body}
+    <div class="small" style="font-weight:800">
+      ${esc(me.disp||me.label)} に飛んでくる技<span class="muted"> ・危ない順（ダメージ×採用率）</span></div>
+    <div class="small muted" style="margin:2px 0 5px">いま対面：<b>${esc(cur)}</b></div>
+    ${rows.length ? rows.map(line).join('')
+                  : '<div class="small muted">通る技がありません</div>'}
+
+    ${benchRisk.length ? `
+      <div class="small" style="font-weight:800;margin-top:10px">控えにも同じ弱点を突く駒がいます
+        <span class="muted"> ・交代で出てくる想定</span></div>
+      ${benchRisk.slice(0,4).map(b=>`<div class="small" style="margin:3px 0">
+        <span class="muted">${esc(b.opp)}の</span><b>${esc(b.move)}</b>
+        <span class="muted">（${esc(b.type)} ${b.eff>=4?'4倍':'2倍'}・採用${b.rate}%）</span></div>`).join('')}
+      ` : `<div class="small muted" style="margin-top:10px">控えに、この駒の弱点を2倍以上で突ける技はありません</div>`}
+
+    ${blocked.length ? `
+      <div class="small" style="font-weight:800;margin-top:10px">こちらの技が効かない可能性
+        <span class="muted"> ・特性</span></div>
+      ${blocked.map(b=>`<div class="small" style="margin:3px 0">
+        <b>${esc(b.move)}</b><span class="muted">（${esc(b.type)}）は</span>
+        ${b.who.map(w=>`${esc(w.opp)}の<b>${esc(w.ability)}</b>${w.rate!=null?`（${w.rate}%）`:''}`).join('・')}
+        <span class="muted">に無効。交代されると空振りします</span></div>`).join('')}
+      ` : ''}
   </div>`;
 }
 function btTypeCard(rc){

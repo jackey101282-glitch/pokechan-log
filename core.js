@@ -392,6 +392,31 @@ const STAT_UP = {
 /** 積み技なら、盤面のランク（相手側）に足す差分を返す */
 function statUpOf(move){ const u = STAT_UP[move]; return (u && Object.keys(u).length) ? u : null; }
 
+/* ★こちらの技が「相手の特性で無効になる」可能性を、採用率つきで出す（2026-08-21・v71）。
+   社長の要望：
+   「自分がカバルドンのじしんを撃つとき、相手にふゆうを持たれてたら効かないよねとか、
+     もらいび・ちょすいを持たれてたらこの技効かないよねとか。**可能性の話でいいので**
+     それがあるかもって思うだけで戦い方を変えられる」
+   これまでは `worstDefAbility()` で**最悪の1つ**を決め打ちして「無効」と出すだけで、
+   **どのくらいの確率でそうなのか**を出していなかった。採用率つきで返す。 */
+function moveBlockers(moveType, oppName){
+  if(!moveType) return [];
+  const u = oppUsage(toBase(oppName));
+  const list = (u && u.a) ? u.a : (OPP_ABILITY[toBase(oppName)]||[]).map(a=>[a,null]);
+  return list
+    .filter(x=> IMMUNE_BY_ABILITY[x[0]] === moveType)
+    .map(x=>({ability:x[0], rate:x[1]}))
+    .sort((a,b)=> (b.rate||0)-(a.rate||0));
+}
+/** 相手6体のうち、このタイプの技を無効化する特性を持つ相手を集める */
+function whoBlocks(moveType, oppNames){
+  const out = [];
+  (oppNames||[]).forEach(n=>{
+    moveBlockers(moveType, n).forEach(b=> out.push({opp:n, ...b}));
+  });
+  return out.sort((a,b)=> (b.rate||0)-(a.rate||0));
+}
+
 const WEATHER_SPEED = {
   'すなあらし':'すなかき', 'にほんばれ':'ようりょくそ', 'あめ':'すいすい', 'ゆき':'ゆきかき'
 };
@@ -2689,6 +2714,6 @@ global.PC = {
   bestOffense, bestThreat, immuneType, myOneHitGuard, myRoles, supportValue, oppUsage, oppTypeItem,
   readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana,
-  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect, graveMovePower, GRAVE_MOVES, statUpOf, STAT_UP
+  searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect, graveMovePower, GRAVE_MOVES, statUpOf, STAT_UP, moveBlockers, whoBlocks
 };
 })(window);
