@@ -910,6 +910,20 @@ function typeFormName(name, type){
   }
   return synth;
 }
+/* ★相手の技で「こちらのタイプを変えられる」技（2026-08-21・v80）。
+   社長の実戦（ハラバリー戦）：
+     「あくびうち、みずびたし打たれる。じしんで全然削れない（なぜ）」
+   ＝ みずびたし で カバルドンが みず になり、**じしんのタイプ一致(×1.5)が消えていた**。
+     そこにやけど(×0.5)が重なって、素の 1/3 まで落ちていた。ツールは 50〜59% と表示したまま。
+   ★ハラバリーの みずびたし 採用率は **93.8%**。事故ではなく、必ず来る型。
+
+   ★そして社長の指摘の本体：**このタイプ変更は交代すると元に戻る。**
+     「引き先が残っているかどうか」で価値がまるごと変わる＝チーム戦。
+     だからツールは「いま何タイプか」だけでなく「引けば戻る」ことも出さないといけない。 */
+const TYPE_CHANGE_MOVES = { 'みずびたし':'みず', 'マジックパウダー':'エスパー' };
+/* ハロウィン（ゴースト）・もりののろい（くさ）は**追加**なので置換とは別物。ここには入れない。 */
+function typeChangeOf(move){ return TYPE_CHANGE_MOVES[move] || null; }
+
 /** 「マスカーニャ〈こおり〉」→「こおり」。合成でなければ null */
 function typeFormOf(name){ const m = /〈(.+)〉$/.exec(name||''); return m ? m[1] : null; }
 /** 合成名から元の表示名へ戻す（「マスカーニャ〈こおり〉」→「マスカーニャ」） */
@@ -2915,6 +2929,7 @@ global.PC = {
   readDamage, actionNow, callIt, keyPieces, solveSpread, SURE_RATE, rolesOf, partnersOf, teamItemsOf, predictRest, teamData, oppItemCandidates, confirmedMoves, oppMoveChoices, clearMatchupCache, oppMoves, oppOffenseItem, oppScarfRate, usagePhysical,
   similarBattles, observedMoves, parseBattleText, findSpeciesIn, normKana,
   searchSpecies, toRomaji, romajiKey, nameKey, weatherSpeedAbility, WEATHER_SPEED, intimidateEffect, graveMovePower, GRAVE_MOVES, statUpOf, STAT_UP, moveBlockers, whoBlocks, speedCheck,
-  PROTEAN_ABILITY, hasProtean, typeFormName, typeFormOf, stripTypeForm, typeAdvice, isTypeForm
+  PROTEAN_ABILITY, hasProtean, typeFormName, typeFormOf, stripTypeForm, typeAdvice, isTypeForm,
+  TYPE_CHANGE_MOVES, typeChangeOf
 };
 })(window);

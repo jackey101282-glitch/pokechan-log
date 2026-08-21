@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '79';
+const APP_VERSION = '80';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -166,6 +166,15 @@ function effOpp(n){ return effOppOf(n, S.oppMega); }
 /* ★へんげんじざい／リベロで変わったタイプを、相手の「いま」に反映する（v76）。
    メガシンカと同じ仕組み（タイプだけ差し替えた個体名に置き換える）なので、
    ここ1か所を通すだけで、判定・ダメージ・危ないタイプ・引き先まで全部が新しいタイプで動く。 */
+/* ★自分の駒のタイプが変えられている場合、その形で計算する（v80）。
+   相手側（へんげんじざい）とまったく同じ仕組み＝タイプだけ差し替えた個体名にする。
+   実数値は m.stats に計算済みなので、名前を差し替えても数字はそのまま使える。 */
+function effMeBT(m){
+  if(!m || !m.name) return m;
+  const t = BT && BT.myType && BT.myType[m.label];
+  if(!t) return m;
+  return {...m, name: PC.typeFormName(m.name, t), _typedFrom: m.name};
+}
 function effOppBT(n){
   const base = effOppOf(n, BT && BT.oppMega);
   const t = BT && BT.oppType && BT.oppType[n];
@@ -997,6 +1006,9 @@ function newBT(){
            /* ★試合中に見えた相手の持ち物（v79・社長の要望）。oppItem[相手名]='いのちのたま'。
               使用率からの推測を上書きして確定にする。'なし' も選べる。 */
            oppItem:{},
+           /* ★みずびたし等で変えられた「自分の駒のいまのタイプ」（v80・社長の指摘）。
+              myType[自分のラベル]='みず'。**交代したら自動で消える**（ゲームの挙動どおり）。 */
+           myType:{},
            /* ★タイプ診断（v69・社長の要望）。tdType=選んだタイプ, tdMode='def'受ける/'atk'殴る */
            tdType:null, tdMode:'def',
            _searchTop:null,
@@ -1149,6 +1161,68 @@ function safeHtml(label, fn){
   try{ return fn() || ''; }
   catch(e){ console.error('['+label+']', e);
     return `<div class="small muted" style="margin-top:8px">${esc(label)}の表示に失敗しました（${esc(e.name)}）</div>`; }
+}
+/* ★「3体をチームとして役割が回るか」を出す（2026-08-21・v80・社長の指摘）。
+   社長：「一対一の対面が強いのをただ出せばいいわけじゃない。ちゃんと三体をチームとして
+     役割を持たせて戦わなきゃ勝てない。木を見て森を見ずになると負ける」
+
+   ★これまでの選出スコアは **◎○の数の足し算** しか見ていなかった。
+     そのせいで、実戦（ハラバリー戦）で起きたことが表現できていなかった：
+       ・ガブリアスの じしん(99.3%) を無効化できるのは カイリューとギャラドスだけ。
+         選出（カバルドン/メガルカリオ/ミミッキュ）には**1枚も無かった**ので開幕で2体落ちた
+       ・ハラバリーの でんき を無効化できるのは カバルドンだけ。
+         みずびたし(93.8%)でその無効が消える。**引き先が残っていれば引いて戻すだけで復活する**
+     ＝「1v1で勝てるか」ではなく「**無償で降りられる駒があるか／引き先が残っているか**」。
+
+   ここは点数を書き換えず、**事実だけを並べる**（並べ替えは38戦で回して悪化させた実績があるため）。 */
+function btRoleCard(rc){
+  if(!BT.opp.length || !rc.length) return '';
+  const inPickL = m => BT.picks.includes(m.label) || BT.picks.includes(m.name);
+  const rows = BT.opp.map(n=>{
+    const o = effOppBT(n);
+    const mv = (PC.oppMoves(o, 30) || []).sort((a,b)=> b.rate-a.rate);
+    if(!mv.length) return null;
+    /* その相手の攻撃技を、採用率の合計で何%ぶん無効にできるか */
+    const canFree = rc.map(m=>{
+      const t = PC.SPECIES[m.name] ? PC.SPECIES[m.name].types : [];
+      const ab = PC.immuneType(m.ability||'');
+      const zero = mv.filter(x=> x.type===ab || PC.effectiveness(x.type, t)===0);
+      /* ★合計ではなく「いちばん採用率の高い技」で見る。足すと121%のような数字になって意味が壊れる */
+      const rate = zero.length ? Math.max(...zero.map(x=>x.rate)) : 0;
+      return {m, rate, moves:[...new Set(zero.map(x=>x.name))],
+              /* ★その相手の**主力技そのもの**を止められるか。ここが本体。
+                 ミミッキュはガブリアスのドラゴン技(77%)を無効にできるが、
+                 実際に落とされたのは じしん(99.3%)。「何かを無効にできる」では足りない。 */
+              stopsTop: zero.some(x=> x.name===mv[0].name)};
+    }).filter(x=> x.rate>=30).sort((a,b)=> b.rate-a.rate);
+    const top = canFree.filter(x=>x.stopsTop);
+    return {n, top:mv[0], canFree,
+            inPick: top.filter(x=> inPickL(x.m)), bench: top.filter(x=> !inPickL(x.m))};
+  }).filter(Boolean);
+  if(!rows.length) return '';
+  const holes = rows.filter(r=> !r.inPick.length && r.bench.length);
+  return `<div style="margin-top:10px">
+    <div class="small" style="font-weight:700">無償で降りられる相手
+      <span class="muted"> ・相手の主力技を0にできる駒。1v1の有利不利とは別の軸です</span></div>
+    <table style="width:100%;margin-top:5px;font-size:13px">
+      ${rows.map(r=>`<tr style="border-top:1px solid var(--line2)">
+        <td style="padding:5px 6px 5px 0;white-space:nowrap;vertical-align:top">
+          <span style="display:inline-flex;align-items:center;gap:2px">${typeDots(effOppBT(r.n))}<b>${esc(r.n)}</b></span></td>
+        <td style="padding:5px 0;vertical-align:top">
+          ${r.canFree.length
+            ? r.canFree.map(x=>`<span style="display:inline-flex;align-items:center;gap:2px;margin-right:8px;${
+                inPickL(x.m)?'font-weight:700':'opacity:.5'}">${typeDots(x.m.name)}${esc(x.m.disp||x.m.label)}
+                <span class="muted">${esc(x.moves.slice(0,2).join('・'))}${x.moves.length>2?'他':''} ${Math.round(x.rate)}% を無効${
+                  x.stopsTop?'':'（主力は止まらない）'}${inPickL(x.m)?'':'・控え'}</span></span>`).join('')
+            : `<span class="muted">無効にできる駒はいません（主力 ${esc(r.top.name)} ${r.top.rate}%）</span>`}
+        </td></tr>`).join('')}
+    </table>
+    ${holes.length?`<div class="small" style="margin-top:6px;color:var(--org)">
+      <b>いまの選出では、この主力技を止められる駒が入っていません：</b>
+      ${holes.map(h=>`<b>${esc(h.n)}の${esc(h.top.name)}(${h.top.rate}%)</b> → 控えの ${
+        h.bench.map(x=>esc(x.m.disp||x.m.label)).join('・')} なら無効`).join(' ／ ')}
+      <br><span class="muted">入れておくと、その技が飛んでくるたびに無償で降りられます</span></div>`:''}
+  </div>`;
 }
 function btLeadCandidates(rc){
   if(!BT.opp.length || !rc.length) return '';
@@ -1320,6 +1394,7 @@ function btRender(){
           `<button class="qb ${BT.mega===sl?'on':'off'}" data-btmega="${esc(sl)}">${esc(sl)}</button>`).join('')}</div>`;
     })()}
     ${safeHtml('先発候補', ()=> btLeadCandidates(rc))}
+    ${safeHtml('役割', ()=> btRoleCard(rc))}
     ${(()=>{ /* ★落とされると一気に苦しくなる駒。毎回は出さず、
                 「その駒だけが答えになっている相手が2体以上」のときだけ出す。 */
       const picks = rc.filter(r=> BT.picks.includes(r.label) || BT.picks.includes(r.name));
@@ -1631,7 +1706,10 @@ function btNowRender(){
   const pickRoster = rc.filter(r=> inPick(r) && alive(r));
   BT.board = BT.board || {};
   const st = BT.board;
-  const c = me.stats ? PC.callIt(me, o, {roster: pickRoster.length?pickRoster:rc,
+  /* ★みずびたし等でタイプが変えられていたら、その形で計算する（v80）。
+     引き先の候補（pickRoster）は素のままでよい＝**交代すれば元のタイプに戻る**ため。 */
+  const meNow = effMeBT(me);
+  const c = me.stats ? PC.callIt(meNow, o, {roster: pickRoster.length?pickRoster:rc,
                                          myHP:hp, oppHPPct:oppPct/100, known:seen, guardGone:gGone, st,
                                          oppTeam: BT.opp.filter(oppAlive)}) : null;
   const rd = c && c.read;
@@ -1642,7 +1720,7 @@ function btNowRender(){
   if(c){
     const others = BT.opp.filter(n=> n!==BT.sel && oppAlive(n));
     const cand = others.map(n=>{
-      const cc = PC.callIt(me, effOppBT(n), {roster: pickRoster.length?pickRoster:rc,
+      const cc = PC.callIt(meNow, effOppBT(n), {roster: pickRoster.length?pickRoster:rc,
                                            myHP:hp, known:(BT.obs&&BT.obs[n])||[], guardGone:gGone, st});
       return cc ? {name:n, c:cc} : null;
     }).filter(Boolean).sort((a,b)=> a.c.mu.score - b.c.mu.score);
@@ -1693,9 +1771,13 @@ function btNowRender(){
      試合中のタップを増やさないよう、駒を選ぶ操作（本体）とは別の当たり判定にしてある。 */
   const myChips  = mine.map(m=>{
     const dead = !!BT.fainted[m.label];
+    /* ★タイプを変えられている駒は、変えられた側のアイコンと〈みず〉を出す（v80）。
+       ここが見えていないと「なぜ削れないのか」が画面から分からない。 */
+    const tNow = (BT.myType||{})[m.label] || null;
     return `<span class="pk mini" style="${dead?'opacity:.45':''}">`
       + `<button class="qb mini ${m.label===BT.me?'on':'off'}" data-btme="${esc(m.label)}"
-           style="${dead?'text-decoration:line-through':''}">${typeDots(m.name)}${esc(m.disp||m.label)}${
+           style="${dead?'text-decoration:line-through':''}">${typeDots(effMeBT(m).name)}${esc(m.disp||m.label)}${
+             tNow?`<b style="color:var(--org)">〈${esc(tNow)}〉</b>`:''}${
              m.demoted?'<span class="muted"> メガ無</span>':''}${inPick(m)?'':'<span class="muted"> 控</span>'}</button>`
       + `<button class="qb mini" data-btdead="${esc(m.label)}" title="落ちた／戻す"
            style="padding:1px 6px;font-size:11px;margin-left:2px;${dead?'color:var(--red);font-weight:700':'color:var(--muted)'}">${dead?'落':'×'}</button>`
@@ -1783,6 +1865,34 @@ function btNowRender(){
               ${left.map(r=>esc(r.disp||r.label)).join('・')}。どれも不利なので、
               引くなら<b>削られるのを承知</b>で選ぶことになります</div>`;
           })()}
+      ${(()=>{ /* ★タイプを変えられているときは、「引いて出し直す」が最善手になることが多い（v80）。
+           社長の指摘そのもの：「カバルドンから引いて、またカバルドンを出すことで電気技が無効に戻る」。
+           ★ただし**引き先が本当に受けられるか**まで出す。ハラバリー相手にギャラドスへ引くと
+             パラボラチャージ125%で引いた瞬間に落ちる＝「引き先にならない引き先」を潰す。 */
+        const tNow = (BT.myType||{})[me.label]; if(!tNow) return '';
+        const cand = pickRoster.filter(r=> r.label!==me.label).map(r=>{
+          let cc=null; try{ cc = PC.callIt(r, o, {roster:null, st}); }catch(e){}
+          if(!cc) return null;
+          const w = (cc.mu.oppRows||[]).slice().sort((a,b)=> b.rateHi-a.rateHi)[0];
+          const d = w ? Math.round(w.rateHi*r.stats.h) : 0;
+          /* ★8割食らう引き先は「引き先ではない」。ステロや削れを考えると確実に落ちる。
+             ギャラドスがハラバリーのでんき技で196/202＝97%、といった形をここで弾く。 */
+          return {n:r.disp||r.label, d, hp:r.stats.h, ko: d >= r.stats.h*0.8, move:w?w.move:''};
+        }).filter(Boolean).sort((a,b)=> (a.d/a.hp)-(b.d/b.hp));
+        const safe = cand.filter(x=>!x.ko);
+        return `<div class="small" style="margin-top:6px;padding:7px 9px;border:1px dashed var(--org);border-radius:8px">
+          <b style="color:var(--org)">${esc(me.disp||me.label)}は ${esc(tNow)} タイプにされています。</b>
+          <b>一度引いて出し直せば元に戻ります</b>
+          <span class="muted">（タイプ一致や無効が復活します）</span>
+          <div style="margin-top:4px">${
+            safe.length
+              ? `引き先：${safe.map(x=>`<b>${esc(x.n)}</b> <span class="muted">${esc(x.move)}で${x.d}/${x.hp}</span>`).join('　')}`
+              : '<b style="color:var(--red)">引き先がありません。</b>この形のまま押し切るしかありません'}
+            ${cand.filter(x=>x.ko).length?`<br><span style="color:var(--red)">引いてはいけない：${
+              cand.filter(x=>x.ko).map(x=>`<b>${esc(x.n)}</b>（${esc(x.move)}で${x.d}/${x.hp}＝${
+                Math.round(x.d/x.hp*100)}%）`).join('・')}</span>`:''}
+          </div></div>`;
+      })()}
       ${Object.keys(BT.fainted||{}).length
         ? `<div class="small muted" style="margin-top:4px">落ちた駒：${
             Object.keys(BT.fainted).map(esc).join('・')}<span class="muted">（引き先の候補から外しています）</span></div>`
@@ -1998,6 +2108,16 @@ function btNowRender(){
     toast(BT.fainted[n] ? `${n} を「落ちた」にしました（引き先から外します）` : `${n} を戻しました`);
   });
   $$('#btNow [data-btme]').forEach(b=> b.onclick=()=>{
+    /* ★交代したら、みずびたし等で変えられたタイプは元に戻る（v80・社長の指摘）。
+       「引き先が残っているかどうかで価値が変わる」＝ここがチーム戦の本体なので、
+       画面でもちゃんと戻して、戻ったことを伝える。 */
+    const prev = BT.me;
+    if(prev && prev!==b.dataset.btme && BT.myType && BT.myType[prev]){
+      const was = BT.myType[prev];
+      delete BT.myType[prev];
+      PC.clearMatchupCache();
+      toast(`${prev} を引いたので、${was}タイプが元に戻りました`);
+    }
     BT.me=b.dataset.btme; BT.meManual=true;
     /* ★出した順に記録する。試合終了時の「実際に出した3体」の初期値になる（v65）。
        追加のタップは要らない。社長はどのみちこのチップを押している。 */
@@ -2604,6 +2724,20 @@ function btBindSeen(){
       if(!cur.includes(m)) cur.push(m);
       if(oc[m] > 1) toast(`${m} ${oc[m]}回目`);
     }
+    /* ★みずびたし等（v80・社長の指摘）。
+       撃たれた時点で、**いま場に出しているこちらの駒**のタイプが変わる。
+       ハラバリーの みずびたし は採用率93.8%＝ほぼ必ず来る。
+       これを入れていなかったので「じしんで全然削れない（なぜ）」が起きた。 */
+    {
+      const ct = PC.typeChangeOf(m);
+      if(ct && BT.me){
+        BT.myType = BT.myType || {};
+        if(BT.myType[BT.me] !== ct){
+          BT.myType[BT.me] = ct;
+          toast(`${BT.me} が ${ct} タイプにされました（交代すれば元に戻ります）`);
+        }
+      }
+    }
     /* ★へんげんじざい／リベロ（v76・社長の要望）。
        撃ってきた技をタップした時点で、相手はその技のタイプになっている。
        操作を増やさないよう、ここで自動で入れる（手で置き直すこともできる）。 */
@@ -2683,7 +2817,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, oppBoard:BT.oppBoard, oppItem:BT.oppItem, tdType:BT.tdType, tdMode:BT.tdMode,
+    obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, oppBoard:BT.oppBoard, oppItem:BT.oppItem, myType:BT.myType, tdType:BT.tdType, tdMode:BT.tdMode,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
 }
@@ -2696,7 +2830,7 @@ function loadBtDraft(){
       /* ★観測した技は「その試合のもの」なので、時間が経っていたら捨てる（v76）。
          誤ってリロードした直後（30分以内）は残す。 */
       if(d.obs) BT.obs=d.obs; if(d.obsCount) BT.obsCount=d.obsCount;
-      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType; if(d.oppBoard) BT.oppBoard=d.oppBoard; if(d.oppItem) BT.oppItem=d.oppItem;
+      if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType; if(d.oppBoard) BT.oppBoard=d.oppBoard; if(d.oppItem) BT.oppItem=d.oppItem; if(d.myType) BT.myType=d.myType;
     if(d.tdType) BT.tdType=d.tdType; if(d.tdMode) BT.tdMode=d.tdMode;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
     }else if(d.board && Object.keys(d.board).length){
