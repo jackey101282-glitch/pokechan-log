@@ -1448,8 +1448,11 @@ function movePlan(mine, oppName, opts){
      引く判断でも、引く前の1ターンに何を置くかは必ず要る（社長が試合16で詰まった場面）。 */
   if(!best){
     const hz = rows.find(r=> r.status && HAZ.includes(r.name) && !PLACED[r.name] && !(r.blockers||[]).length);
-    const sl = rows.find(r=> r.status && !(r.blockers||[]).length);
-    best = hz || sl || rows.find(r=> r.status) || rows[0] || null;
+    /* ★2026-08-22 修正：ここで**もう撒いてある設置技**を拾っていた。
+       同じ行に「もう撒いてあります」と書きながら、見出しでは「撃つ技…ステルスロック」と
+       推し続けていた（疑似対戦で実際に踏んだ）。placed は blockers とは別物なので明示的に外す。 */
+    const sl = rows.find(r=> r.status && !r.placed && !(r.blockers||[]).length);
+    best = hz || sl || rows.find(r=> r.status && !r.placed) || rows.find(r=> r.status) || rows[0] || null;
     if(best) why = hz ? `攻撃が通らない対面。引く前に<b>${best.name}</b>を置いておくと、この1ターンが無駄にならない`
                       : `攻撃が通りません。<b>${best.name}</b>で次につなぐか、引くこと`;
   }
@@ -1959,6 +1962,16 @@ function callIt(mine, oppName, opts){
   /* ★相手のきあいのタスキ／がんじょうは、HP満タンからの1発を必ず耐える。
      満タン(oppLeft>=1)のときだけ効くので、削れている相手には適用しない。 */
   let opGuard = (oppLeft >= 1) ? oppOneHitGuard(oppName) : null;
+  /* ★先制技で「低乱数でも」落とせるか。結論より先に要る（下の priKO の枝で使う）。
+     movePlan をここで一度回す。likelySwitch は結論が決まってからでないと渡せないので、
+     ここでは渡さない（この呼び出しは koNow の判定だけに使い、best は下の本番の呼び出しで決める）。 */
+  let priKO = null;
+  try{
+    const pre = movePlan(mine, oppName, {st, oppHPPct:opts.oppHPPct, others:opts.oppTeam||[]});
+    priKO = (pre && pre.rows ? pre.rows : [])
+      .filter(r=> !r.status && !r.immune && r.pri>0 && r.lo >= oppLeft && (r.acc||100) >= 100)
+      .sort((a,b)=> b.pri-a.pri || b.lo-a.lo)[0] || null;
+  }catch(e){ priKO = null; }
   /* ★こちらの打点が連続技なら、相手のタスキ／がんじょうは1段目で剥がれる。
      v54で相手の「1発耐える」を入れた裏返しで、ここを見ないと逆に過大に警戒することになる。 */
   if(opGuard && multiHitOf(mu.myMove)) opGuard = null;
@@ -2157,6 +2170,15 @@ function callIt(mine, oppName, opts){
       head='様子見'; cls='wn'; mark='△';
       why=`${myStuckName}で動けないが、相手は落とすのに${mu.opHits}発かかる。交代で1体削られるより、起きるまで粘る方が得`;
     }
+  }else if(priKO){
+    /* ★先制技で確実に落とせるなら、素早さ負けも「一撃されうる」も関係ない（2026-08-22・疑似対戦で発見）。
+       実戦41戦目：相手ガブリアス残り1%、こちらメガルカリオ（遅い・じしんで一撃される）。
+       「撃つ技」は しんそく に切り替わっていたのに、**結論だけ「✕引く」のまま**だった。
+       社長はしんそくで倒して正解＝ツールに従っていたら1体損していた。
+       ★低乱数でも落とせる（lo >= 残りHP）ときだけ言い切る。最大乱数で足りるだけなら言わない（鉄則⑥）。 */
+    head='殴る'; cls='ok'; mark='◎';
+    why=`<b>${priKO.name}</b>（優先度+${priKO.pri}）で先に落とせる。相手は残り${Math.round(oppLeft*100)}%なので、`
+      + `素早さ負けも一撃されることも関係ない`;
   }else if(opStuck){
     // 相手が動けない＝無償のターン。積めるなら積む、落とせるなら落とす
     const upNow = ['つるぎのまい','りゅうのまい','めいそう','わるだくみ','てっぺき','ビルドアップ','からをやぶる','ちょうのまい']
@@ -2164,8 +2186,14 @@ function callIt(mine, oppName, opts){
     if(myHits<=1){ head='殴る'; cls='ok'; mark='◎'; why=`相手は${opStuckName}で動けない。${mu.myMove}で落とす`; }
     else if(upNow){ head='積む'; cls='ok'; mark='◎'; why=`相手は${opStuckName}で動けない。${upNow}を積む絶好の機会`; }
     else { head='殴る'; cls='ok'; mark='◎'; why=`相手は${opStuckName}で動けない。無償で${mu.myMove}を入れられる`; }
-  }else if(mu.noOffense && !mu.wallsAll){
-    // 打点が無く、しかも受けられもしない＝いる意味がない
+  }else if(mu.noOffense && !mu.wallsAll && myHits > 1){
+    /* 打点が無く、しかも受けられもしない＝いる意味がない
+       ★2026-08-22 修正（疑似対戦で発見）：`noOffense` は **相手が満タんの前提**で出しているので、
+         削れている相手に対しても「打点が無い＝引く」と言い続けていた。
+         実戦41戦目：相手ガブリアスが残り1%、こちらメガルカリオ。
+         「撃つ技」は しんそく に切り替わっていたのに、結論だけ「✕引く」のまま。
+         社長はしんそくで倒して正解だった＝**ツールに従っていたら負けていた場面**。
+       → いま出しているHPで1発で落とせるなら、この枝には入らない（下の myHits<=1 の枝で判定する）。 */
     head='引く'; cls='ng'; mark='✕';
     why = mu.myDmg>0 ? `打点が無い（型の平均で${mu.myHits}発かかる）`
                      : `技がまったく通らない（無効・または効果が薄い）`;

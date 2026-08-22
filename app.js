@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '88';
+const APP_VERSION = '89';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1054,6 +1054,8 @@ function newBT(){
               畳まれないので対戦タブが3000px近くのまま残り、
               社長がターン記録カードを見つけられなかった（v85の指摘）。 */
            planOpen:true,
+           /* ★「詳しく見る」を開いているか（2026-08-22）。毎ターン見ないものはここに畳む */
+           moreOpen:false,
            /* 前回の盤面を古いとして捨てたか（開いたときに1度だけ知らせる） */
            _staleDropped:false };
 }
@@ -1955,6 +1957,18 @@ function btNowRender(){
     </div>`;
 
   host.innerHTML = `
+  <!-- ★いつでも見える1行（2026-08-22・社長の指摘
+       「この画面を見れば、もう今どういう状況なのかっていうのがすぐ分かる」）。
+       スクロールしても結論とHPが視界から消えないようにする。
+       これが無いと、記録するために下へ行くたびに結論を読み直しに戻る往復が毎ターン発生していた。 -->
+  <div class="nowbar${c?' '+(c.cls==='ok'?'ok':c.cls==='ng'?'ng':'wn'):''}">
+    <b class="nowbar-mark">${c?esc(c.mark+' '+c.head):'—'}</b>
+    <span class="nowbar-vs"><span class="muted">自</span>${esc(me.disp||me.label)} <b>${hp}</b><span class="muted">/${maxHP}</span>
+      <span class="muted"> ｜ 相</span>${esc(BT.sel)} <b>${oppPct}%</b></span>
+    ${(c&&c.moves&&c.moves.best)?`<span class="nowbar-mv">撃つ：<b>${esc(c.moves.best.name)}</b></span>`:''}
+    ${gName&&gGone?`<span class="nowbar-mv" style="color:var(--red)">${esc(gName)}なし</span>`:''}
+    ${BT.turns.length?`<span class="nowbar-mv muted">${BT.turns.length}ターン記録済</span>`:''}
+  </div>
   <div class="card" style="${c?`border-left:4px solid var(--${c.cls==='ok'?'win':c.cls==='ng'?'red':'warn'})`:''}">
     <h2>いまの対面<span class="sub">相手/自分をタップで切替</span></h2>
     <div class="small muted">相手</div>
@@ -1983,28 +1997,18 @@ function btNowRender(){
         ${ti.length?`<div class="small muted" style="margin-top:5px">上位構築での持ち物：${
           ti.map(x=>`${esc(x.name)} ${x.rate}%`).join('・')}</div>`:''}
       </details>`; })()}
-    <div class="hpwrap">
-      <span class="small muted">相手の残りHP</span>
-      <div class="seg" id="btOppHp">
-        ${[100,90,75,60,50,40,25,10].map(v=>`<button class="${oppPct===v?'on':''}" data-btop="${v}">${v}</button>`).join('')}
-      </div>
-      <button class="btn ghost sm" data-btopd="-5">−5</button>
-      <button class="btn ghost sm" data-btopd="5">＋5</button>
-    </div>
 
     <div class="small muted" style="margin-top:12px">自分</div>
     <div class="quick" style="margin-top:4px">${myChips}</div>
+    <!-- ★HPの入力は下の「ターン」カードに1本化した（2026-08-22・社長の指摘）。
+         ここは見るだけ。入力口を2つ持つと必ず食い違う（今日それで5件バグが出た＝鉄則13）。 -->
     <div class="hpwrap">
-      <span class="small muted">自分の残りHP</span>
-      <input id="btHp" class="hpnum" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4"
-             autocomplete="off" value="${hp}">
-      <span class="muted">/ ${maxHP}</span>
-      <button class="btn ghost sm" data-bthp="full">満タン</button>
+      <span class="small">残りHP <b>${esc(me.disp||me.label)} ${hp}</b><span class="muted">/${maxHP}</span>
+        <span class="muted"> ／ </span><b>${esc(BT.sel)} ${oppPct}%</b>
+        ${gName?`<span class="muted"> ／ ${esc(gName)} ${gGone?'<b style="color:var(--red)">もう無い</b>':'<b>残っている</b>'}</span>`:''}
+      </span>
+      <span class="small muted">← 入れるのは下の「ターン」カードで</span>
     </div>
-    ${gName?`<div class="hpwrap">
-      <span class="small muted">${esc(gName)}</span>
-      <div class="seg"><button class="${gGone?'':'on'}" data-btguard="0">まだ残っている</button><button class="${gGone?'on':''}" data-btguard="1">もう無い</button></div>
-    </div>`:''}
 
     ${c?`<div class="note ${c.cls==='ok'?'g':c.cls==='ng'?'r':'w'}" style="margin-top:12px">
       <div class="nowhead">${c.mark} ${esc(c.head)}</div>
@@ -2128,31 +2132,41 @@ function btNowRender(){
           + (r.through&&r.through.length?`<span class="muted"> ／交代先 ${r.through.length}体に通る</span>`
                                         :`<span class="muted" style="color:var(--org)"> ／交代先に通らない</span>`);
         /* ★「撃った」を1タップで残せるようにする（v62・社長の要望）。
-           押しても画面は変わらない。次に相手の残りHPを押した瞬間に、その技のダメージとして記録される。 */
+           ★2026-08-22：これを**このターンの自分の技**そのものにした（社長の指摘）。
+             それまでは「撃つ技リスト」と「ターン記録の自分の技」に同じ技が2列あり、
+             読む場所と押す場所が違っていた。**読んだ行をそのまま押せば記録になる**形にする。
+             押すと ①このターンの技として選ぶ ②与えたダメージの記録待ちにする を同時にやる。 */
+        const picked = (BT.turnDraft||{}).myMove === r.name;
         const shot = (!r.status && !r.immune)
-          ? ` <button class="qb mini" data-btshot="${esc(r.name)}" style="padding:1px 7px;font-size:11px">撃った</button>` : '';
-        return `<div class="small" style="margin:3px 0;${on?'font-weight:700':''}">${on?'▶ ':'・'}${fst}${pri}${esc(r.name)} … ${body}${shot}</div>`;
+          ? ` <button class="qb mini ${picked?'on':'off'}" data-btshot="${esc(r.name)}" style="padding:1px 7px;font-size:11px">${picked?'✓ これを撃った':'これを撃った'}</button>` : '';
+        return `<div class="small" style="margin:3px 0;${on?'font-weight:700':''}${picked?';background:var(--bg2);border-radius:6px;padding:2px 4px':''}">${on?'▶ ':'・'}${fst}${pri}${esc(r.name)} … ${body}${shot}</div>`;
       }).join('')}
     </div>`:''}
-    ${safeHtml('ターン記録', ()=> btTurnCard(pickRoster.length?pickRoster:rc, me, o))}
-
-    ${safeHtml('通るタイプ', ()=> btTypeThroughCard(o, me))}
     ${(c.todo&&c.todo.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--blue)">
       <div class="small" style="font-weight:800;margin-bottom:4px">引く前にやること</div>
       ${c.todo.map(d=>`<div class="small" style="margin:3px 0">・${d.t}</div>`).join('')}
     </div>`:''}
-    <div class="small" style="margin-top:10px">
-      ${c.detail.map(d=>`<div style="margin:3px 0;color:${d.k==='bad'?'var(--red)':d.k==='good'?'var(--grn)':d.k==='warn'?'var(--org)':d.k==='role'?'var(--blue)':'inherit'}">・${d.t}</div>`).join('')}
-    </div>`:''}
-    ${safeHtml('タイプ診断', ()=> btTypeCard(rc))}
-    ${btBoardCard(st)}
-    ${readBlock}
-  </div>
-  ${btSeenCard(BT.sel, seen)}`;
+    ${safeHtml('ターン記録', ()=> btTurnCard(pickRoster.length?pickRoster:rc, me, o))}
+    <!-- ★ここから下は「毎ターンは見ない」もの（2026-08-22・社長の指摘
+         「要らないところは一旦は非表示にして、必要そうだったらクリックすれば出てくる」）。
+         毎ターン見るのは 結論 → 撃つ技 → ターンカード の3つだけにする。 -->
+    <details id="btMoreWrap"${BT.moreOpen?' open':''} style="margin-top:10px">
+      <summary class="small muted" style="cursor:pointer">詳しく見る（根拠・タイプ・盤面・相手の技）</summary>
+      <div class="small" style="margin-top:8px">
+        ${c.detail.map(d=>`<div style="margin:3px 0;color:${d.k==='bad'?'var(--red)':d.k==='good'?'var(--grn)':d.k==='warn'?'var(--org)':d.k==='role'?'var(--blue)':'inherit'}">・${d.t}</div>`).join('')}
+      </div>
+      ${safeHtml('通るタイプ', ()=> btTypeThroughCard(o, me))}
+      ${safeHtml('タイプ診断', ()=> btTypeCard(rc))}
+      ${btBoardCard(st)}
+      ${readBlock}
+      ${btSeenCard(BT.sel, seen)}
+    </details>`:''}
+  </div>`;
 
   /* ★左カラム（#btDanger）へ流し込む（v70）。ここで入れる理由は、
      「いま出している駒(me)」が確定するのが btNowRender だから。
      btRender 側で同じ判定をもう一度書くと、必ず食い違う（鉄則⑤）。 */
+  { const mw = $('#btMoreWrap'); if(mw) mw.ontoggle = ()=>{ BT.moreOpen = mw.open; saveBtDraft(); }; }
   { const dh = $('#btDanger');
     if(dh) dh.innerHTML = safeHtml('危ないタイプ', ()=> btDangerCard(rc, me, c)); }
 
@@ -2302,6 +2316,21 @@ function btNowRender(){
   /* ★相手の残りHPを更新したら、その差分を「直前に撃った技」に紐づけて残す（v62）。
      社長の要望「何を撃ったことでどのくらい減ったかを残したい」。
      技を指定していなければ、割合の変化だけ記録する（技名なし）。 */
+  /* ★数値入力の共通処理（2026-08-22）。
+     v77 で直したのと同じ問題（再描画で入力欄が差し替わり、カーソルが先頭に戻って逆順になる）が
+     新しい欄でも起きるので、1か所にまとめて使い回す。 */
+  const bindHpInput = (sel, apply)=>{
+    const inp = $(sel); if(!inp) return;
+    const caret = el =>{ try{ return el.selectionStart; }catch(e){ return null; } };
+    inp.oninput = ()=>{
+      const raw = inp.value.replace(/[^0-9]/g,'');
+      const pos = caret(inp);
+      apply(parseInt(raw,10) || 0);
+      const i2 = $(sel);
+      if(i2){ i2.value = raw; i2.focus(); if(pos!=null){ try{ i2.setSelectionRange(pos,pos); }catch(e){} } }
+      saveBtDraft();
+    };
+  };
   const setOppHp = v=>{
     const before = BT.oppHp[BT.sel]!=null ? BT.oppHp[BT.sel] : 100;
     const after  = Math.max(0, Math.min(100, v));
@@ -2313,18 +2342,35 @@ function btNowRender(){
     BT.oppHp[BT.sel] = after;
     btNowRender(); saveBtDraft();
   };
+  /* ターンカードの中のHP欄。上の欄と同じ BT.hp / BT.oppHp を書く（置き場所を増やさない＝鉄則13） */
+  { const d2 = BT.turnDraft || {};
+    const meKey = d2.me || BT.me;
+    const cap = (rosterForCalc(currentRoster(), BT.mega).find(r=>r.label===meKey)||{}).stats;
+    const myMax = (cap && cap.h) || maxHP || 999;
+    bindHpInput('#tdMyHp', v=>{ BT.hp[meKey] = Math.max(0, Math.min(myMax, v)); btNowRender(); });
+    bindHpInput('#tdOpHp', v=>{ setOppHp(v); });
+    const mf = $('#btNow [data-tdmyhpfull]');
+    if(mf) mf.onclick = ()=>{ BT.hp[meKey] = myMax; btNowRender(); saveBtDraft(); };
+  }
   $$('#btNow [data-btop]').forEach(b=> b.onclick=()=> setOppHp(+b.dataset.btop));
   $$('#btNow [data-btopd]').forEach(b=> b.onclick=()=>
     setOppHp((BT.oppHp[BT.sel]!=null?BT.oppHp[BT.sel]:100) + (+b.dataset.btopd)));
   /* 「この技を撃った」。押しても画面は変えない（試合中の視線を動かさない）。
      次にHPを更新した瞬間に、その技のダメージとして残る。 */
   $$('#btNow [data-btshot]').forEach(b=> b.onclick=()=>{
-    BT.pending = b.dataset.btshot;
-    toast(`${BT.pending} を撃った → 相手の残りHPを押してください`);
+    const mv = b.dataset.btshot;
+    BT.turnDraft = BT.turnDraft || turnDraftInit();
+    const d2 = BT.turnDraft;
+    /* もう一度押したら取り消し（選び直せないと押し間違いが直せない） */
+    if(d2.myMove === mv){ d2.myMove=''; BT.pending=null; }
+    else { d2.myMove = mv; d2.myProtect=false; BT.pending = mv; }
+    btNowRender(); saveBtDraft();
   });
-  $$('#btNow [data-bthp]').forEach(b=> b.onclick=()=>{ BT.hp[BT.me]=maxHP; btNowRender(); saveBtDraft(); });
   $$('#btNow [data-btguard]').forEach(b=> b.onclick=()=>{
-    BT.guardGone[BT.me] = b.dataset.btguard==='1'; PC.clearMatchupCache(); btNowRender(); saveBtDraft(); });
+    /* ★どの駒のぶんかを明示する。ターンカードの中では「そのターンに出ていた駒」なので、
+       交代を入れたあとの BT.me とは別物になりうる（暗黙に BT.me を使うと取り違える）。 */
+    const who = b.dataset.btguardwho || BT.me;
+    BT.guardGone[who] = b.dataset.btguard==='1'; PC.clearMatchupCache(); btNowRender(); saveBtDraft(); });
   /* ★2026-08-21 修正（社長の指摘）：「162 と打つと 261 のように**逆から並ぶ**」
      原因は2つ重なっていた。
        ① `<input type="number">` は Chrome では **selectionStart が null**、
@@ -2335,27 +2381,8 @@ function btNowRender(){
      直し方：type="text" + inputmode="numeric" にして選択APIを使えるようにし、
      再描画のあとに **打った文字列とカーソル位置をそのまま戻す**。
      打っている途中の値は丸めない（"16" を "16" のまま残す）。欄を離れたときに整える。 */
-  const inp=$('#btHp');
-  if(inp){
-    const caret = el =>{ try{ return el.selectionStart; }catch(e){ return null; } };
-    inp.oninput=()=>{
-      const raw = inp.value.replace(/[^0-9]/g,'');     // 全角や記号は無視する
-      const pos = caret(inp);
-      BT.hp[BT.me] = Math.max(0, Math.min(maxHP, parseInt(raw,10) || 0));
-      btNowRender();
-      const i2=$('#btHp');
-      if(i2){
-        i2.value = raw;                                // 途中の入力をそのまま残す
-        i2.focus();
-        if(pos!=null){ try{ i2.setSelectionRange(pos,pos); }catch(e){} }
-      }
-      saveBtDraft();
-    };
-    /* 欄を離れたら、実際に使っている値（0〜最大HP）に揃える。
-       「999」と打ちっぱなしで残すと、画面の数字と計算が食い違って見える。 */
-    inp.onblur=()=>{ const v = BT.hp[BT.me]!=null ? BT.hp[BT.me] : maxHP;
-      if(inp.value !== String(v)) inp.value = v; };
-  }
+  /* ★#btHp（ヘッダの自分HP欄）は 2026-08-22 にターンカードへ移した。
+     入力口を2つ持たないため、ここには残していない（bindHpInput('#tdMyHp') が後継）。 */
   btBindSeen(); btBindBoard(); bindTurnCard();
 }
 
@@ -2785,6 +2812,8 @@ function turnDraftInit(){
   return { me:BT.me, opp:BT.sel, first:null,
            myMove:'', myMiss:false, myProtect:false,
            opMove:'', opMiss:false, opProtect:false,
+           /* 「交代する ▸」を開いているか（'me' / 'opp' / null）。記録すると閉じる */
+           _openSw:null,
            heal:{me:'', opp:''} };
 }
 const HEAL_ITEMS = ['たべのこし','オボンのみ','ラムのみ','くろいヘドロ'];
@@ -2808,18 +2837,33 @@ function btTurnCard(pool, me, oppEff){
   const chip = (on, attr, val, label) =>
     `<button class="qb mini ${on?'on':'off'}" data-${attr}="${esc(val)}">${label}</button>`;
 
+  /* ★2026-08-22：入力をこのカード1枚に集約する（社長の指摘）。
+     それまでは「読む・決める」が上、「記録する」が下に分かれていて、
+     実測で **1ターンあたり画面4.4枚ぶんスクロールし、上下の折返しが毎ターン1〜2回** あった
+     （試合48の実手順5ターンで合計22画面・折返し9回）。
+     交代ボタンが無く、交代のたびに画面いちばん上のチップまで戻る必要があったのが最大の原因。
+     → 技・交代・HP・ばけのかわ・落ちたときの次の駒 を全部このカードに入れる。
+       上のチップは「いま誰が生きているか」を見るためと、倒した印を付けるために残す。 */
+  const myMaxHP = startMe.stats ? startMe.stats.h : 0;
+  const myHpNow = (BT.hp||{})[d.me]!=null ? BT.hp[d.me] : myMaxHP;
+  const opHpNow = (BT.oppHp||{})[d.opp]!=null ? BT.oppHp[d.opp] : 100;
+  const gName2 = PC.myOneHitGuard({item:startMe.item, ability:startMe.ability});
+  const gGone2 = !!(BT.guardGone||{})[d.me];
+  /* 交代先の候補。自分は「選出した3体で落ちていないもの」、相手は「まだ倒していないもの」 */
+  const myBench = pool.filter(r=> r.label!==d.me && !(BT.fainted||{})[r.label]);
+  const opBench = BT.opp.filter(n=> n!==d.opp && !(BT.oppFainted||{})[n]);
+  const dead = { me: myHpNow<=0, opp: opHpNow<=0 };
+
   return `<div class="card" style="margin-top:8px;border-left:3px solid var(--blue)">
-    <div class="small" style="font-weight:800">ターン ${BT.turns.length+1} を記録
-      <span class="muted"> ・${esc(startMe.disp||startMe.label)} vs ${esc(d.opp)}</span></div>
-    <div class="small muted" style="margin:2px 0 6px">
-      HPは上の欄の値をそのまま使います（自分 ${(BT.hp||{})[d.me]!=null?BT.hp[d.me]:'—'} ／ 相手 ${
-        (BT.oppHp||{})[d.opp]!=null?BT.oppHp[d.opp]+'%':'—'}）。
-      ${switchedMe||switchedOpp?`<b style="color:var(--org)">交代を検出：${
+    <div class="small" style="font-weight:800">ターン ${BT.turns.length+1}
+      <span class="muted"> ・${esc(startMe.disp||startMe.label)} vs ${esc(d.opp)}</span>
+      <span class="muted" style="font-weight:400">・このターンの入力はここだけで終わります</span></div>
+    ${(switchedMe||switchedOpp)?`<div class="small" style="margin:2px 0 6px">
+      <b style="color:var(--org)">交代を検出：${
         switchedMe?`自分→${esc(BT.me)}`:''}${switchedMe&&switchedOpp?'・':''}${
         switchedOpp?`相手→${esc(BT.sel)}`:''}</b>
-        <button class="qb mini" data-tdnoswitch="1" style="margin-left:6px">交代ではない（対面を直す）</button>`
-        :'チップを押して交代すると、このターンの交代として記録します'}
-    </div>
+      <button class="qb mini" data-tdnoswitch="1" style="margin-left:6px">交代ではない（対面を直す）</button>
+    </div>`:''}
 
     <div class="hpwrap">
       <span class="small muted" style="min-width:66px">先に動いた</span>
@@ -2830,31 +2874,86 @@ function btTurnCard(pool, me, oppEff){
       ${(BT.oppItem||{})[d.opp]==='せんせいのツメ'?'<span class="small" style="color:var(--red)">ツメ持ち</span>':''}
     </div>
 
-    <div class="small muted" style="margin-top:8px">自分の技${switchedMe?'（交代したので不要）':''}</div>
+    <div class="small" style="margin-top:8px;font-weight:700">自分 <span class="muted">${esc(startMe.disp||startMe.label)}</span>${
+      switchedMe?'<span class="muted"> ・交代したので技は不要</span>'
+      :(d.myMove?`<span class="muted"> ・</span><b style="color:var(--blue)">${esc(d.myMove)}</b>${d.myMiss?'<b style="color:var(--red)">（外した）</b>':''}`
+                :'<span class="muted" style="font-weight:400"> ・上の「これを撃った」を押すか、下から選ぶ</span>')}</div>
     <div class="quick" style="margin-top:3px">
-      ${switchedMe ? '<span class="small muted">交代として記録します</span>' : myMoves.map(m=>{
-        const up = PC.statUpOf(m);
-        return chip(d.myMove===m,'tdmymove',m,
-          `${typeBadge((PC.MOVES[m]||{}).type)}${esc(m)}${up?'<span style="color:var(--org)"> 積</span>':''}`);
-      }).join('') + chip(d.myProtect,'tdmyprot','1','まもる') + chip(d.myMiss,'tdmymiss','1','外した')}
+      ${switchedMe ? `<span class="small" style="color:var(--org)">交代 → <b>${esc(BT.me)}</b> として記録します</span>`
+        : chip(d.myProtect,'tdmyprot','1','まもる') + chip(d.myMiss,'tdmymiss','1','外した')
+        /* ★交代ボタン（社長の指摘 2026-08-22）。
+           それまで交代は画面いちばん上のチップにしか無く、
+           「交代した瞬間に一撃もらう」場面のたびに画面を往復していた。 */
+        + (myBench.length
+           ? `<button class="qb mini ${d._openSw==='me'?'on':'off'}" data-tdswopen="me">交代する ▸</button>`
+           : '<span class="small muted">引き先がありません</span>')
+        /* 変化技など、撃つ技リストに「これを撃った」が出ない技はここから選ぶ */
+        + (()=>{ const rest = myMoves.filter(m=>{ const mv=PC.MOVES[m]; return !mv || !mv.power || mv.cat==='変'; });
+            return rest.map(m=>{ const up=PC.statUpOf(m);
+              return chip(d.myMove===m,'tdmymove',m,
+                `${typeBadge((PC.MOVES[m]||{}).type)}${esc(m)}${up?'<span style="color:var(--org)"> 積</span>':''}`); }).join(''); })()}
     </div>
+    ${(d._openSw==='me' && myBench.length && !switchedMe)?`<div class="quick" style="margin-top:4px;padding:6px;background:var(--bg2);border-radius:8px">
+      <span class="small muted" style="width:100%">誰に交代する？</span>
+      ${myBench.map(r=>`<button class="qb mini" data-tdswme="${esc(r.label)}">${typeDots(r.name)} ${esc(r.disp||r.label)}</button>`).join('')}
+    </div>`:''}
 
-    <div class="small muted" style="margin-top:8px">相手の技${switchedOpp?'（交代したので不要）':''}</div>
+    <div class="small" style="margin-top:10px;font-weight:700">相手 <span class="muted">${esc(d.opp)}</span>${switchedOpp?'<span class="muted"> ・交代したので技は不要</span>':''}</div>
     <div class="quick" style="margin-top:3px">
-      ${switchedOpp ? '<span class="small muted">交代として記録します</span>' : oppMoves.map(c=>{
+      ${switchedOpp ? `<span class="small" style="color:var(--org)">交代 → <b>${esc(BT.sel)}</b> として記録します</span>` : oppMoves.map(c=>{
         const up = PC.statUpOf(c.name);
         return chip(d.opMove===c.name,'tdopmove',c.name,
           `${typeBadge(c.type)}${esc(c.name)}<span class="muted"> ${c.rate}%</span>${
             up?'<span style="color:var(--org)"> 積</span>':''}${seen.includes(c.name)?'<b style="color:var(--red)"> 既</b>':''}`);
-      }).join('') + chip(d.opProtect,'tdopprot','1','まもる') + chip(d.opMiss,'tdopmiss','1','外した')}
+      }).join('') + chip(d.opProtect,'tdopprot','1','まもる') + chip(d.opMiss,'tdopmiss','1','外した')
+        + (opBench.length
+           ? `<button class="qb mini ${d._openSw==='opp'?'on':'off'}" data-tdswopen="opp">交代された ▸</button>`
+           : '')}
     </div>
+    ${(d._openSw==='opp' && opBench.length && !switchedOpp)?`<div class="quick" style="margin-top:4px;padding:6px;background:var(--bg2);border-radius:8px">
+      <span class="small muted" style="width:100%">何が出てきた？</span>
+      ${opBench.map(n=>`<button class="qb mini" data-tdswopp="${esc(n)}">${typeDots(n)} ${esc(n)}</button>`).join('')}
+    </div>`:''}
 
-    <div class="small muted" style="margin-top:8px">持ち物で回復した
-      <span class="muted">・押すと相手の持ち物も確定します</span></div>
-    <div class="quick" style="margin-top:3px">
-      ${HEAL_ITEMS.map(it=>chip(d.heal.me===it,'tdhealme',it,`自分 ${esc(it)}`)).join('')}
-      ${HEAL_ITEMS.map(it=>chip(d.heal.opp===it,'tdhealop',it,`相手 ${esc(it)}`)).join('')}
+    <!-- ★HPをこのカードの中で入れる（社長の指摘）。
+         それまで自分HPは上のチップ欄、相手HPは％ボタンだけで、
+         「83%のとき90と75のどっちを押すのか」が決められなかった。→ 直接入力を主にして段ボタンは補助に回す。 -->
+    <div class="small" style="margin-top:10px;font-weight:700">このターン終了時の残りHP
+      <span class="muted" style="font-weight:400">・分かる範囲でよい。空でも記録できます</span></div>
+    <div class="hpwrap" style="margin-top:3px">
+      <span class="small muted" style="min-width:34px">自分</span>
+      <input id="tdMyHp" class="hpnum" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4"
+             autocomplete="off" value="${myHpNow}">
+      <span class="muted">/ ${myMaxHP}</span>
+      <button class="btn ghost sm" data-tdmyhpfull="1">満タン</button>
+      ${gName2?`<span class="small muted" style="margin-left:6px">${esc(gName2)}</span>
+        <div class="seg"><button class="${gGone2?'':'on'}" data-btguard="0" data-btguardwho="${esc(d.me)}">残</button><button class="${gGone2?'on':''}" data-btguard="1" data-btguardwho="${esc(d.me)}">無</button></div>`:''}
     </div>
+    <div class="hpwrap" style="margin-top:3px">
+      <span class="small muted" style="min-width:34px">相手</span>
+      <input id="tdOpHp" class="hpnum" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="3"
+             autocomplete="off" value="${opHpNow}">
+      <span class="muted">%</span>
+      <button class="btn ghost sm" data-btopd="-5">−5</button>
+      <button class="btn ghost sm" data-btopd="5">＋5</button>
+      <div class="seg">${[100,75,50,25].map(v=>`<button class="${opHpNow===v?'on':''}" data-btop="${v}">${v}</button>`).join('')}</div>
+    </div>
+    ${(dead.me||dead.opp)?`<div class="note r" style="margin-top:8px">
+      <div class="small" style="font-weight:800">${dead.me?`${esc(startMe.disp||startMe.label)} が落ちました`:''}${dead.me&&dead.opp?' ／ ':''}${dead.opp?`${esc(d.opp)} を倒しました`:''}</div>
+      ${dead.me?(myBench.length?`<div class="small" style="margin-top:4px">次に出す駒
+        ${myBench.map(r=>`<button class="qb mini" data-tddeadme="${esc(r.label)}">${typeDots(r.name)} ${esc(r.disp||r.label)}</button>`).join('')}</div>`
+        :'<div class="small">出せる駒がもうありません</div>'):''}
+      ${dead.opp?(opBench.length?`<div class="small" style="margin-top:4px">何が出てきた？
+        ${opBench.map(n=>`<button class="qb mini" data-tddeadopp="${esc(n)}">${typeDots(n)} ${esc(n)}</button>`).join('')}</div>`
+        :'<div class="small">相手の残りはもういません</div>'):''}
+    </div>`:''}
+
+    <details style="margin-top:8px"${(d.heal.me||d.heal.opp)?' open':''}><summary class="small muted" style="cursor:pointer">持ち物で回復した${
+      (d.heal.me||d.heal.opp)?`：<b style="color:var(--org)">${esc(d.heal.me||d.heal.opp)}</b>`:''}</summary>
+      <div class="quick" style="margin-top:3px">
+        ${HEAL_ITEMS.map(it=>chip(d.heal.me===it,'tdhealme',it,`自分 ${esc(it)}`)).join('')}
+        ${HEAL_ITEMS.map(it=>chip(d.heal.opp===it,'tdhealop',it,`相手 ${esc(it)}`)).join('')}
+      </div></details>
 
     <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
       <button class="btn primary sm" id="turnCommit">ターンを記録</button>
@@ -2881,6 +2980,46 @@ function bindTurnCard(){
   const d = BT.turnDraft; if(!d) return;
   const re = ()=>{ saveBtDraft(); btNowRender(); };
   $$('#btNow [data-tdnoswitch]').forEach(b=> b.onclick=()=>{ d.me=BT.me; d.opp=BT.sel; d.myMove=''; d.opMove=''; re(); });
+  /* ★交代（2026-08-22）。チップと同じ処理を通す＝入力口が2つでも結果が食い違わない。
+     自分＝BT.me を変える／相手＝setSel() を通す（積み・状態異常の載せ替えが必要なため）。 */
+  $$('#btNow [data-tdswopen]').forEach(b=> b.onclick=()=>{
+    const v=b.dataset.tdswopen; d._openSw = d._openSw===v ? null : v; re(); });
+  $$('#btNow [data-tdswme]').forEach(b=> b.onclick=()=>{
+    BT.me = b.dataset.tdswme; BT.meManual = true; d._openSw=null; d.myMove=''; d.myProtect=false; d.myMiss=false;
+    PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft(); });
+  $$('#btNow [data-tdswopp]').forEach(b=> b.onclick=()=>{
+    const n=b.dataset.tdswopp;
+    setSel(n);
+    if(!BT.seenOrder.includes(n) && BT.seenOrder.length<3) BT.seenOrder.push(n);
+    d._openSw=null; d.opMove=''; d.opProtect=false; d.opMiss=false;
+    btCompute(); btRender(); saveBtDraft(); });
+  /* ★落ちた → 次に出す駒（社長の指摘「倒れたら次に2体目を出すのか3体目を出すのか」）。
+     「倒した／落ちた」の印を付けてから、続けて次の駒を場に出す。ここまでを1タップで。 */
+  $$('#btNow [data-tddeadme]').forEach(b=> b.onclick=()=>{
+    const gone = d.me;
+    BT.fainted = BT.fainted || {}; BT.fainted[gone] = true;
+    const n2 = Object.keys(BT.fainted).length; if(n2) BT.board.myFallen = Math.min(5, n2);
+    BT.me = b.dataset.tddeadme; BT.meManual = true;
+    /* 落ちた駒でこのターンを記録し終えてから次の駒に替わる、が正しい順序。
+       まだ記録していないので、いま記録して次のターンを新しい対面で始める。 */
+    commitTurn();
+    toast(`${gone} が落ちました → ${BT.me} を出しました`); });
+  $$('#btNow [data-tddeadopp]').forEach(b=> b.onclick=()=>{
+    const gone = d.opp;
+    BT.oppFainted = BT.oppFainted || {}; BT.oppFainted[gone] = true;
+    delete BT.oppBoard[gone];
+    if(BT.oppMega && PC.BASE_OF[BT.oppMega]===PC.toBase(gone)) BT.oppMega = null;
+    if(BT.oppType) delete BT.oppType[gone];
+    const n2 = Object.keys(BT.oppFainted).filter(x=> BT.opp.includes(x)).length;
+    if(n2) BT.board.opFallen = Math.min(5, n2);
+    const nx = b.dataset.tddeadopp;
+    commitTurn();
+    setSel(nx);
+    if(!BT.seenOrder.includes(nx) && BT.seenOrder.length<3) BT.seenOrder.push(nx);
+    BT.turnDraft = turnDraftInit();
+    btCompute(); btRender(); saveBtDraft();
+    toast(`${gone} を倒しました → ${nx} が出てきました`); });
+
   $$('#btNow [data-tdfirst]').forEach(b=> b.onclick=()=>{ d.first = d.first===b.dataset.tdfirst?null:b.dataset.tdfirst; re(); });
   $$('#btNow [data-tdmymove]').forEach(b=> b.onclick=()=>{ d.myMove = d.myMove===b.dataset.tdmymove?'':b.dataset.tdmymove; d.myProtect=false; re(); });
   $$('#btNow [data-tdopmove]').forEach(b=> b.onclick=()=>{ d.opMove = d.opMove===b.dataset.tdopmove?'':b.dataset.tdopmove; d.opProtect=false; re(); });
@@ -3311,7 +3450,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
-    planOpen:BT.planOpen,
+    planOpen:BT.planOpen, moreOpen:BT.moreOpen,
     obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, oppBoard:BT.oppBoard, oppItem:BT.oppItem, myType:BT.myType, turns:BT.turns, turnDraft:BT.turnDraft, tdType:BT.tdType, tdMode:BT.tdMode,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
@@ -3325,6 +3464,7 @@ function loadBtDraft(){
       /* ★観測した技は「その試合のもの」なので、時間が経っていたら捨てる（v76）。
          誤ってリロードした直後（30分以内）は残す。 */
       if(d.planOpen!=null) BT.planOpen=d.planOpen;
+      if(d.moreOpen!=null) BT.moreOpen=d.moreOpen;
       if(d.obs) BT.obs=d.obs; if(d.obsCount) BT.obsCount=d.obsCount;
       if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType; if(d.oppBoard) BT.oppBoard=d.oppBoard; if(d.oppItem) BT.oppItem=d.oppItem; if(d.myType) BT.myType=d.myType; if(d.turns) BT.turns=d.turns; if(d.turnDraft) BT.turnDraft=d.turnDraft;
     if(d.tdType) BT.tdType=d.tdType; if(d.tdMode) BT.tdMode=d.tdMode;
