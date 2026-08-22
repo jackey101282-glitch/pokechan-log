@@ -1426,7 +1426,10 @@ function movePlan(mine, oppName, opts){
      上位勢の座談会「一生設置してるわけじゃなく、じしんとステロの押し所が難しい」への回答。 */
   else if(!best && hazard && top && top.hi>0 && Math.ceil(leftPct/top.hi) >= 3){
     best = hazard;
-    why = `いちばん強い技でも${Math.ceil(leftPct/top.hi)}発かかります。`
+    /* ★2026-08-22：ここは movePlan の数字＝「いちばん硬い型」基準。
+        callIt 側の myHits は「型の平均」基準なので、同じ技が 5発 と 4発 で並んでいた。
+        数字は変えず、どちらの前提かを必ず書く。 */
+    why = `いちばん硬い型で見ると、いちばん強い技でも${Math.ceil(leftPct/top.hi)}発かかります。`
         + `殴るより<b>${hazard.name}</b>の方が、相手6体に効き続けるぶん得`;
   }
   else if(!best && opts.likelySwitch && sleeper){
@@ -2089,7 +2092,7 @@ function callIt(mine, oppName, opts){
         + (g ? `。<b>${g}は1段目で剥がされます</b>` : '')});
   });
   if(mu.myMove) detail.push({k:'info',
-    t:`こちらの最大打点：<b>${mu.myMove}</b> ${pc(mu.myDmgLo)}〜${pc(mu.myDmgHi)}%（${myHits}発で落とせる）`});
+    t:`こちらの最大打点：<b>${mu.myMove}</b> ${pc(mu.myDmgLo)}〜${pc(mu.myDmgHi)}%（型の平均で${myHits}発）`});
   /* こちら側に置かれた設置技。「引く」と言っても、これがあると引き先が削れて次で落ちる。 */
   if(st && (st.myRocks || st.mySpikes)){
     const parts = [];
@@ -2164,7 +2167,7 @@ function callIt(mine, oppName, opts){
   }else if(mu.noOffense && !mu.wallsAll){
     // 打点が無く、しかも受けられもしない＝いる意味がない
     head='引く'; cls='ng'; mark='✕';
-    why = mu.myDmg>0 ? `打点が無い（最大でも${mu.myHits}発かかる）`
+    why = mu.myDmg>0 ? `打点が無い（型の平均で${mu.myHits}発かかる）`
                      : `技がまったく通らない（無効・または効果が薄い）`;
   }else if(myHits<=1 && mu.faster && !(diesNow && !mu.faster)){
     head='殴る'; cls='ok'; mark='◎'; why=`${mu.myMove}で先に落とせる`;
@@ -2345,7 +2348,7 @@ function actionNow(mine, oppName, roster, hpNow, field, known){
   let verdict, why;
   if(canKill && !(dies && !mu.faster)){ verdict='殴る'; why=`${mu.myMove||'最大打点'}で先に落とせる`; }
   else if(dies){ verdict='引く'; why= rd ? `次の${rd.left.worstMove}で落ちる（残り${rd.hpNow}）` : `${mu.opOHKOMove||'相手の技'}で一撃`; }
-  else if(mu.noOffense){ verdict='引く'; why= mu.myDmg>0 ? `打点が無い（最大でも${mu.myHits}発）` : `技がまったく通らない`; }
+  else if(mu.noOffense){ verdict='引く'; why= mu.myDmg>0 ? `打点が無い（型の平均で${mu.myHits}発）` : `技がまったく通らない`; }
   else if(mu.winsRace){ verdict='殴る'; why=`${mu.myHits}発 対 ${mu.opHits}発で勝てる`; }
   else { verdict='引く'; why=`${mu.opHits}発で落とされる`; }
 

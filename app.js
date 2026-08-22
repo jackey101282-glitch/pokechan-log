@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '86';
+const APP_VERSION = '88';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -759,7 +759,7 @@ function renderLead(){
                const plan = esc2.type==='switch'
                  ? `<b>${esc(esc2.to)}に引く</b> <span class="muted">(${muNums(esc2.mu)}${esc2.mu.faster?' 先制':''})</span>`
                  : (esc2.mu && esc2.mu.opHits>=3
-                     ? `<b>引き先なし。${esc2.mu.opHits}発は耐えるので殴り返す</b> <span class="muted">(${dmgRange(esc2.mu.myDmgLo,esc2.mu.myDmgHi)})</span>`
+                     ? `<b>引き先なし。落とされるまで${esc2.mu.opHits}発あるので殴り返す</b> <span class="muted">(${dmgRange(esc2.mu.myDmgLo,esc2.mu.myDmgHi)})</span>`
                      : `<b>引き先なし。切るしかない</b> <span class="muted">（${esc2.mu?esc2.mu.opHits:'?'}発で落ちる）</span>`);
                return `<div class="small" style="padding:3px 0">
                  <span class="badge ${d.mu.dangerAll?'ng':'wn'}" style="font-size:10px">${d.mu.dangerAll?'危険':'型次第'}</span>
@@ -1048,6 +1048,12 @@ function newBT(){
            /* ★タイプ診断（v69・社長の要望）。tdType=選んだタイプ, tdMode='def'受ける/'atk'殴る */
            tdType:null, tdMode:'def',
            _searchTop:null,
+           /* ★選出カードを開いているか（2026-08-22 の総点検で発見）。
+              「試合が始まったら畳む」処理はあったが、相手が変わるたびに btRender が
+              `<details open>` で作り直すため、**実戦の操作では一度も畳まれていなかった**。
+              畳まれないので対戦タブが3000px近くのまま残り、
+              社長がターン記録カードを見つけられなかった（v85の指摘）。 */
+           planOpen:true,
            /* 前回の盤面を古いとして捨てたか（開いたときに1度だけ知らせる） */
            _staleDropped:false };
 }
@@ -1378,12 +1384,21 @@ function btLeadCandidates(rc){
   }).sort((a,b)=> b.good-a.good || a.bad.length-b.bad.length);
 
   const top = rows.slice(0,3);
+  /* ★2026-08-22 の総点検で発見：この表は6体全部から並べているのに、
+     すぐ上の「選出」は3体しか出していない。**選出に入っていない駒が先発候補に出ていた**
+     （選出＝メガルカリオ/ギャラドス/カバルドン なのに候補3位がキラフロル）。
+     候補を3体に絞ると「選出そのものが違う」という情報が消えるので、隠さずに印を付ける。
+     選出外が上位に来たら、それは選出を見直す合図。 */
+  const inPickL = m => BT.picks.includes(m.label) || BT.picks.includes(m.name);
+  const outCount = top.filter(r=> !inPickL(r.m)).length;
   return `<div style="margin-top:10px">
     <div class="small" style="font-weight:700">先発の候補<span class="muted"> ・相手6体に対して。上から順に有利が多い</span></div>
+    ${outCount?`<div class="small" style="color:var(--org);margin-top:3px">
+      <b>控え</b> と付いている駒は、いまの選出に入っていません。上位に来ているなら選出を見直す合図です</div>`:''}
     <table style="width:100%;margin-top:5px;font-size:13px">
       ${top.map((r,i)=>`<tr style="border-top:1px solid var(--line2)">
         <td style="padding:6px 6px 6px 0;vertical-align:top;white-space:nowrap">
-          <b>${i+1}. ${esc(r.m.disp||r.m.label)}</b><br>
+          <b>${i+1}. ${esc(r.m.disp||r.m.label)}</b>${inPickL(r.m)?'':'<span style="color:var(--org);font-weight:700"> 控え</span>'}<br>
           <span class="small muted">有利 ${r.good}/${opp.length}体</span>
         </td>
         <td style="padding:6px 0;vertical-align:top">
@@ -1511,7 +1526,7 @@ function btRender(){
   const rc = rosterForCalc(roster, BT.mega);
 
   /* 選出は試合開始時に一度読むもの。試合中は「いまの対面」を見るので、折りたたんで高さを取らない。 */
-  $('#btPlan').innerHTML = `<details open class="planbox">
+  $('#btPlan').innerHTML = `<details${BT.planOpen===false?'':' open'} class="planbox">
     <summary class="cardsum" style="border-left:3px solid var(--fg)">
       <span>選出 <b>${BT.picks.map((n,i)=> (i===0?'初手 ':'') + esc(dispName(rc,n))).join(' / ')}</b>${BT.mega?`<span class="muted"> ・メガ=${esc(BT.mega)}</span>`:'<span class="muted"> ・メガは切らない</span>'}${BT.leadGuess?`<span class="muted"> ・相手の先発予想=${esc(BT.leadGuess)}</span>`:''}</span>
     </summary>
@@ -1755,6 +1770,8 @@ function btRender(){
     toast(`相手6体・選出・観測した技${turns.length}件を記録に送りました。勝敗と敗因を入れて保存してください`);
   };
 
+  /* 社長が手で開き直したら、その状態を覚える（次の再描画で勝手に畳まない） */
+  { const pb=$('.planbox'); if(pb) pb.ontoggle=()=>{ BT.planOpen = pb.open; }; }
   $$('#btPlan [data-btmega]').forEach(b=> b.onclick=()=>{
     BT.megaFixed = b.dataset.btmega; BT.mega = BT.megaFixed;
     PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
@@ -1774,7 +1791,12 @@ function btRender(){
         }).join('')}</tr>`;
     }).join('')}</table></div>`;
   $$('#btGrid [data-bo]').forEach(tr=> tr.onclick=()=>{
-    BT.sel=tr.dataset.bo; btNowRender();   // ★自分の選択は変えない（上と同じ理由）
+    /* ★相手チップと同じ扱いにする（積み・状態異常を載せ替える）。
+       ここだけ BT.sel の代入で済ませていたので、前の相手の積みが引き継がれていた。 */
+    const moved = setSel(tr.dataset.bo);
+    if(!BT.seenOrder.includes(BT.sel) && BT.seenOrder.length<3) BT.seenOrder.push(BT.sel);
+    if(moved){ btCompute(); btRender(); saveBtDraft(); } else btNowRender();
+    // ★自分の選択は変えない（上と同じ理由）
     const w=$('#btInputWrap'); if(w) w.open=false;
     const n=$('#btNow'); if(n) n.scrollIntoView({block:'start'});   // smooth は試合中の待ち時間になるので使わない
   });
@@ -2072,7 +2094,8 @@ function btNowRender(){
           <div class="small" style="font-weight:800;margin-bottom:4px">この相手に与えたダメージ</div>
           <div class="small">${rows.join('<br>')}</div>${left}</div>`;
       })()}
-      <div class="small" style="font-weight:800">撃つ技${c.moves.best?` … <b>${esc(c.moves.best.name)}</b>`:''}</div>
+      <div class="small" style="font-weight:800">撃つ技${c.moves.best?` … <b>${esc(c.moves.best.name)}</b>`:''}
+        <span class="muted" style="font-weight:400">・%と発数は<b>相手のいちばん硬い型</b>で計算（過大評価しないため）</span></div>
       ${(()=>{ const s=c.moves.speed; if(!s) return '';
         /* ★どの型に先を取れるかを必ず数字で出す。
            「型次第」と書くだけでは、どっちに賭けるか決められない（鉄則⑥）。 */
@@ -2167,17 +2190,29 @@ function btNowRender(){
        実際に負けている。自動選択は最初の1回だけ（BT.me が未設定のとき）に限る。 */
     /* ★相手をタップする＝その相手が場に出た瞬間。
        いま出ていた相手の積み・状態異常をしまい、出てきた相手のぶんを載せ替える（社長の指摘）。 */
-    if(BT.sel !== b.dataset.btopp){ stashOppBoard(BT.sel); }
     const prevSel = BT.sel;
-    BT.sel=b.dataset.btopp;
-    if(prevSel !== BT.sel){ loadOppBoard(BT.sel); PC.clearMatchupCache(); }
+    setSel(b.dataset.btopp);
     // 出てきた順に記録する。3体で打ち切り（相手の選出は3体）
     if(!BT.seenOrder.includes(BT.sel) && BT.seenOrder.length<3) BT.seenOrder.push(BT.sel);
-    const pb=$('.planbox'); if(pb) pb.open=false;          // 試合が始まったら選出カードは畳む
+    /* ★2026-08-22：ここで上の2つを畳むと、押したチップが画面上で 562px 跳ねていた
+       （画面の高さ720pxの78%＝押した指の下から消える）。実測で確認。
+       畳むこと自体は正しい（試合中に選出カードは要らない）ので、
+       畳んだぶんだけスクロールを引いて、**押したチップを同じ位置に留める**。 */
+    const se = document.scrollingElement || document.documentElement;
+    const anchorTop = b.getBoundingClientRect().top;
+    BT.planOpen = false;                                   // 試合が始まったら選出カードは畳む
+    const pb=$('.planbox'); if(pb) pb.open=false;
     const iw=$('#btInputWrap'); if(iw) iw.open=false;
+    const keepAnchor = ()=>{
+      const b2 = $(`#btNow [data-btopp="${CSS.escape(b.dataset.btopp)}"]`);
+      if(!b2) return;
+      const diff = b2.getBoundingClientRect().top - anchorTop;
+      if(diff) se.scrollTop = Math.max(0, se.scrollTop + diff);
+    };
     /* 盤面（積み・状態異常）が載せ替わっているので、対面だけでなく計算からやり直す */
     if(prevSel !== BT.sel){ btCompute(); btRender(); saveBtDraft(); }
     else btNowRender();
+    keepAnchor();
   });
   /* ★相手を倒したときの処理（v75・社長の要望）。
      自分側（data-btdead）と対になる操作。倒した相手は
@@ -2221,7 +2256,9 @@ function btNowRender(){
     if(BT.oppFainted[BT.sel]){
       const live = x => BT.opp.includes(x) && !BT.oppFainted[x];
       const next = (BT.seenOrder||[]).find(live) || BT.opp.find(live);
-      if(next) BT.sel = next;
+      /* ★ここも載せ替えを通す。通していなかったので、積んだ相手に戻っても盤面が素になっていた。
+         setSel は「いま出ていた相手」をしまうので、倒した相手のぶんは捨て直す */
+      if(next){ setSel(next); delete BT.oppBoard[n]; }
     }
     PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
     toast(BT.oppFainted[n]
@@ -2379,15 +2416,19 @@ function btDangerCard(rc, me, c){
     const conf = seen.includes(r.move);
     const dLo = Math.round(r.rate*maxHP), dHi = Math.round(r.rateHi*maxHP);
     const ko = dHi >= hpNow;
-    const survive = dHi>0 ? Math.max(0, Math.ceil(hpNow/dHi)) : 99;   // 最悪ケースで何発耐えるか
+    /* ★2026-08-22 修正：ceil(HP/ダメージ) は「落とすのに何発かかるか」であって
+       「何発耐えるか」ではない。耐える数はそこから1を引いた数。
+       HP215 に 72ダメージ を「3発は耐える」と出していたが、実際は3発目で落ちる。
+       core.js は同じ数字を「落とすのに N発かかる」と正しく呼んでいる。言い方を core に揃える。 */
+    const need = dHi>0 ? Math.max(1, Math.ceil(hpNow/dHi)) : 99;      // 最悪ケースで落とされるまでの発数
     const mt = (PC.MOVES[r.move]||{}).type || r.type;
     return `<div class="small" style="margin:4px 0;display:flex;align-items:center;gap:2px;flex-wrap:wrap">`
       + typeBadge(mt)
       + `<b style="${ko?'color:var(--red)':''}">${esc(r.move)}</b> `
       + `<b style="${ko?'color:var(--red)':''}">${dLo}〜${dHi}</b>`
-      + `<span class="muted"> 削られる（残り${hpNow}）</span>`
+      + `<span class="muted"> ／HP${hpNow}</span>`
       + (ko ? '<b style="color:var(--red)"> → 一撃で落ちる</b>'
-            : `<b> → ${survive}発は耐える</b>`)
+            : `<b> → ${need}発で落ちる（${need-1}発は耐える）</b>`)
       + (conf ? '<span style="color:var(--red);font-weight:700"> 確定</span>'
               : `<span class="muted"> ・採用${r.rateOf==null?'—':Math.round(r.rateOf)}%</span>`)
       + `<span class="muted"> ・${Math.round(r.rate*100)}〜${Math.round(r.rateHi*100)}%</span>`
@@ -2425,7 +2466,7 @@ function btDangerCard(rc, me, c){
     <div class="small muted" style="margin:2px 0 5px;display:flex;align-items:center;gap:2px">いま対面：${typeDots(cur)}<b>${esc(cur)}</b></div>
     ${rows.length ? rows.map(line).join('')
                   : '<div class="small muted">通る技がありません</div>'}
-    ${all.length>rows.length?`<div class="small muted">他${all.length-rows.length}技は4発以上耐えるので省略</div>`:''}
+    ${all.length>rows.length?`<div class="small muted">他${all.length-rows.length}技は落とすのに4発以上かかるので省略</div>`:''}
 
     ${benchRisk.length ? `
       <div class="small" style="font-weight:800;margin-top:10px">控えにも同じ弱点を突く駒がいます
@@ -2458,7 +2499,8 @@ function btDangerCard(rc, me, c){
             ${typeDots(x.name)}<b>${esc(x.n)}</b> ${typeBadge((PC.MOVES[x.move]||{}).type)}${esc(x.move)}で
             <b style="${x.ko?'color:var(--red)':''}">${x.d}</b>
             <span class="muted">／HP${x.hp}</span>
-            ${x.ko?'<b style="color:var(--red)"> 一撃</b>':`<b> ${Math.ceil(x.hp/x.d)}発は耐える</b>`}
+            ${x.ko?'<b style="color:var(--red)"> 一撃</b>'
+                  :(n=>`<b> ${n}発で落ちる（${n-1}発は耐える）</b>`)(Math.max(1,Math.ceil(x.hp/x.d)))}
             <span class="muted"> ${x.mark}</span></div>`).join('');
     })()}
     ${blocked.length ? `
@@ -2885,8 +2927,14 @@ function commitTurn(){
   /* --- 相手の技を観測に足す（外れても「持っている」ことは分かる） --- */
   /* ★このターン中に「相手が使ってきた技」カードで同じ技を既に押していたら、
      観測も積みも**もう入っている**。ここで足すと二重になる（v86で実測して発見）。 */
-  const alreadyTagged = BT._seenTag && BT._seenTag.opp===d.opp
+  /* ★2026-08-22：v86 の判定は「使ってきた技 → ターン記録」の順しか見ていなかった。
+     逆順（ターン記録 → 使ってきた技）でも同じ1回の行動なので、両方向で1回にする。
+     ここで印を立てておき、使ってきた技カード側でも同じ印を見る（そちらは commitSeenGuard）。
+     実測：逆順で押すと つるぎのまい1回が 攻+2 ではなく 攻+4 になっていた。 */
+  let keepTag = null;
+  const alreadyTagged = BT._seenTag && BT._seenTag.from==='seen' && BT._seenTag.opp===d.opp
                      && BT._seenTag.move===op.move && BT._seenTag.at===BT.turns.length-1;
+  if(alreadyTagged) BT._seenTag = null;               // 印は使い切る
   if(op.act==='move' && op.move && !alreadyTagged){
     BT.obs = BT.obs || {}; BT.obsCount = BT.obsCount || {};
     const cur = BT.obs[d.opp] = BT.obs[d.opp] || [];
@@ -2906,9 +2954,32 @@ function commitTurn(){
     }
     const ct = PC.typeChangeOf(op.move);
     if(ct && !switchedMe){ BT.myType = BT.myType || {}; BT.myType[d.me] = ct; }
+    /* ★へんげんじざい／リベロ（2026-08-22 の総点検で発見）。
+       「使ってきた技」カードで押したときだけ効いていて、ターン記録では効いていなかった。
+       同じ1回の行動なので、どちらの入力口から入れても同じ結果になること。 */
+    const M = PC.MOVES[op.move];
+    if(M && M.power && M.cat!=='変' && PC.hasProtean(d.opp)){
+      BT.oppType = BT.oppType || {};
+      BT.oppType[d.opp] = M.type;
+    }
+    /* 相手の変化技で、こちらが状態異常になったぶんを盤面に載せる */
+    if(!op.miss && !switchedMe) applyStatusMove(op.move, 'me', d.me);
+    /* この行動は数え終わった。直後に同じ技を「使ってきた技」で押しても二重に足さない。
+       ★このあと「次のターンに印を持ち越さない」で一度 null にするので、そこで入れ直す */
+    keepTag = {opp:d.opp, move:op.move, at:BT.turns.length-1, from:'turn'};
   }
   /* --- 自分が積んだぶん／与えた実測ダメージ --- */
   if(my.act==='move' && my.move && !my.miss){
+    /* ★設置技を盤面に載せる（2026-08-22 の総点検で発見）。
+       ターン記録で「ステルスロック」を残しても盤面の「相手の場」が立たないので、
+       次のターンも「殴るよりステルスロックの方が得」と推奨し続けていた。
+       盤面カードの手動ボタンと同じキーを立てる（入力口が2つあるので必ず揃える）。 */
+    const MY_HAZARD = { 'ステルスロック':'opRocks', 'まきびし':'opSpikes',
+                        'どくびし':'opTSpikes', 'ねばねばネット':'opSticky' };
+    const hz = MY_HAZARD[my.move];
+    if(hz) BT.board = Object.assign(BT.board||{}, {[hz]:true});
+    /* こちらの変化技で、相手が状態異常になったぶんも同じように載せる（相手ごとに保存される） */
+    if(applyStatusMove(my.move, 'opp', d.opp)) stashOppBoard(d.opp);
     const up = PC.statUpOf(my.move);
     if(up){
       BT.board = BT.board || {};
@@ -2933,7 +3004,9 @@ function commitTurn(){
   BT.seenOrder = BT.seenOrder || [];
   if(!BT.seenOrder.includes(BT.sel) && BT.seenOrder.length<3) BT.seenOrder.push(BT.sel);
 
-  BT._seenTag = null;                       // 次のターンに印を持ち越さない
+  /* 次のターンに「使ってきた技」側の印を持ち越さない。
+     ただし、このターンで数えた相手の技の印だけは残す（直後に技カードを押されても二重に足さないため） */
+  BT._seenTag = keepTag;
   BT.turnDraft = turnDraftInit();          // 次のターンは「いまの対面」から始まる
   PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   toast(`ターン${BT.turns.length}を記録しました`);
@@ -3042,6 +3115,48 @@ function loadOppBoard(name){
   if(name in BT.oppBoard) Object.entries(BT.oppBoard[name]).forEach(([k,v])=> BT.board[k]=v);
   else applyOppStacks(name, +1);       // 初めて出てきた相手は、積みの記録から作る（保険）
 }
+/* ★相手を切り替える経路は1本にする（2026-08-22 の総点検で発見）。
+   BT.sel を直接代入している場所が3つあり、そのうち **対面表からのタップ** と
+   **相手を倒して自動で次に移るとき** が stash/load を通っていなかった。
+   実測：ミミッキュに剣の舞×2（攻+4）→ 対面表でライチュウをタップ →
+        ライチュウにも攻+4 が乗り、カバルドンが食らうフレアドライブが 72→210（約3倍）になった。
+   相手が変わるときは必ずここを通す。 */
+function setSel(next){
+  if(!next || BT.sel === next) return false;
+  stashOppBoard(BT.sel);
+  BT.sel = next;
+  loadOppBoard(next);
+  PC.clearMatchupCache();
+  return true;
+}
+/* ★状態異常を起こす技を、ターン記録から盤面に載せる（2026-08-22 の総点検で発見）。
+   おにび（ガオガエン 37.1%）を記録しても「自分がやけど」が立たず、
+   **やけどで半分になったインファイトのまま「◎殴る 先に落とせる」と出し続けていた**。
+   設置技（BUG4）とまったく同じ構造＝入力口が2つあって片方だけ処理が抜けている。
+   確実に入る技だけを対象にする（追加効果が確率の技は入れない。手動ボタンは残してある）。 */
+const STATUS_MOVE = {
+  'おにび':'burn', 'どくどく':'toxic', 'どくのこな':'toxic', 'どくガス':'toxic',
+  'でんじは':'para', 'でんじほう':'para', 'へびにらみ':'para', 'しびれごな':'para',
+  'キノコのほうし':'sleep', 'さいみんじゅつ':'sleep', 'ねむりごな':'sleep', 'くさぶえ':'sleep'
+};
+/* タイプで無効になるものは載せない（ほのおにやけど等）。特性による無効は手動ボタンで直せる */
+const STATUS_IMMUNE = { burn:['ほのお'], para:['でんき'], toxic:['どく','はがね'], sleep:[] };
+const STATUS_KEY = { me:{burn:'myBurn', para:'myParalysis', toxic:'myToxic', sleep:'mySleep'},
+                     opp:{burn:'opBurn', para:'opParalysis', toxic:'opToxic', sleep:'opSleep'} };
+/** side='me' … こちらが受ける（相手が撃った）／'opp' … 相手が受ける（こちらが撃った） */
+function applyStatusMove(move, side, targetName){
+  const kind = STATUS_MOVE[move]; if(!kind) return null;
+  /* 粉技はくさタイプに効かない（キノコのほうし・ねむりごな・しびれごな・どくのこな） */
+  const POWDER = ['キノコのほうし','ねむりごな','しびれごな','どくのこな'];
+  const types = ((PC.SPECIES||{})[PC.toBase(targetName)]||{types:[]}).types || [];
+  if((STATUS_IMMUNE[kind]||[]).some(t=> types.includes(t))) return null;
+  if(POWDER.includes(move) && types.includes('くさ')) return null;
+  const k = STATUS_KEY[side][kind]; if(!k) return null;
+  BT.board = BT.board || {};
+  if(BT.board[k]) return null;                 // もう立っている
+  BT.board[k] = true;
+  return k;
+}
 function applyOppStacks(name, sign){
   const st = (BT.stacks||{})[name] || {};
   BT.board = BT.board || {};
@@ -3057,6 +3172,17 @@ function applyOppStacks(name, sign){
 function btBindSeen(){
   const key = BT.sel; if(!key) return;
   const set = m =>{
+    /* ★同じ1回の行動を2つの入力口で数えない（2026-08-22）。
+       v86 は「使ってきた技 → ターン記録」の順しか見ていなかった。
+       ターン記録が先に数えていたら、ここは1回だけ見送る（印は使い切る）。
+       同じ技をもう一度撃たれたときは、印が消えているので普通に数えられる。 */
+    const t = BT._seenTag;
+    if(t && t.from==='turn' && t.opp===key && t.move===m
+       && t.at === (BT.turns||[]).length-1){
+      BT._seenTag = null;
+      toast(`${m} はターン記録で数えています（二重に足しません）`);
+      return;
+    }
     BT.obs = BT.obs || {};
     const cur = BT.obs[key] = BT.obs[key] || [];
     const up = PC.statUpOf(m);
@@ -3078,11 +3204,11 @@ function btBindSeen(){
       /* ★このターンで既に積んだ、という印（v86）。
          同じ技をターン記録カードでも押すと、積みが二重に乗って盤面が壊れる
          （攻+2 が 攻+4 になる）。commitTurn 側でこの印を見て二重加算を避ける。 */
-      BT._seenTag = {opp:key, move:m, at:BT.turns.length};
+      BT._seenTag = {opp:key, move:m, at:BT.turns.length, from:'seen'};
       toast(`${m} ${st[m]}回目 → ${Object.entries(up).map(([k,v])=>
         ({a:'攻撃',b:'防御',c:'特攻',d:'特防',s:'素早さ'}[k]+(v>0?'+':'')+v)).join('・')}`);
     }else{
-      BT._seenTag = {opp:key, move:m, at:BT.turns.length};
+      BT._seenTag = {opp:key, move:m, at:BT.turns.length, from:'seen'};
       /* ★通常技も「押した＝1回撃たれた」に変えた（v76・社長の要望）。
          以前は on/off のトグルだったので、**何回撃たれたかが残らなかった**。
          取り消しは右の「−」で1回ずつ戻す。 */
@@ -3185,6 +3311,7 @@ function btBindSeen(){
 const BT_FRESH_MS = 30*60*1000;
 function saveBtDraft(){
   try{ localStorage.setItem('pokechan_bt', JSON.stringify({
+    planOpen:BT.planOpen,
     obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, oppBoard:BT.oppBoard, oppItem:BT.oppItem, myType:BT.myType, turns:BT.turns, turnDraft:BT.turnDraft, tdType:BT.tdType, tdMode:BT.tdMode,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
     t: Date.now() })); }catch(e){}
@@ -3197,6 +3324,7 @@ function loadBtDraft(){
     if(fresh){
       /* ★観測した技は「その試合のもの」なので、時間が経っていたら捨てる（v76）。
          誤ってリロードした直後（30分以内）は残す。 */
+      if(d.planOpen!=null) BT.planOpen=d.planOpen;
       if(d.obs) BT.obs=d.obs; if(d.obsCount) BT.obsCount=d.obsCount;
       if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType; if(d.oppBoard) BT.oppBoard=d.oppBoard; if(d.oppItem) BT.oppItem=d.oppItem; if(d.myType) BT.myType=d.myType; if(d.turns) BT.turns=d.turns; if(d.turnDraft) BT.turnDraft=d.turnDraft;
     if(d.tdType) BT.tdType=d.tdType; if(d.tdMode) BT.tdMode=d.tdMode;
