@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '89';
+const APP_VERSION = '90';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -2893,9 +2893,41 @@ function btTurnCard(pool, me, oppEff){
               return chip(d.myMove===m,'tdmymove',m,
                 `${typeBadge((PC.MOVES[m]||{}).type)}${esc(m)}${up?'<span style="color:var(--org)"> 積</span>':''}`); }).join(''); })()}
     </div>
-    ${(d._openSw==='me' && myBench.length && !switchedMe)?`<div class="quick" style="margin-top:4px;padding:6px;background:var(--bg2);border-radius:8px">
-      <span class="small muted" style="width:100%">誰に交代する？</span>
-      ${myBench.map(r=>`<button class="qb mini" data-tdswme="${esc(r.label)}">${typeDots(r.name)} ${esc(r.disp||r.label)}</button>`).join('')}
+    ${(d._openSw==='me' && myBench.length && !switchedMe)?`<div style="margin-top:4px;padding:6px;background:var(--bg2);border-radius:8px">
+      <span class="small muted">誰に交代する？<b> ・交代したその1発で食らう最大</b>を出しています</span>
+      <div class="quick" style="margin-top:4px">
+      ${/* ★社長の指摘（2026-08-22）：「交代した時、そもそも交代した後一発目に食らってしまう。
+             じゃあそのダメージを計算する、上行かなきゃいけない」
+           → 交代先を選ぶその場に、食らう最大ダメージと結論を出す。
+             数字は「引くなら → …」の行と同じ計算（PC.callIt の oppRows の最大）を使う。
+             別の出し方をすると必ず食い違う（鉄則⑤）。 */''}
+      ${myBench.map(r=>{
+        let cc=null; try{ cc = PC.callIt(r, oppEff, {roster:null, st:BT.board||{}}); }catch(e){}
+        const w = cc ? (cc.mu.oppRows||[]).slice().sort((a,b)=> b.rateHi-a.rateHi)[0] : null;
+        const hpMax = r.stats ? r.stats.h : 0;
+        const dmg = w && hpMax ? Math.round(w.rateHi*hpMax) : null;
+        const ko  = dmg!=null && dmg >= hpMax;
+        const res = SWITCH_RESOURCE[r.ability||''] || (r.item==='きあいのタスキ' ? 'きあいのタスキを使ってしまいます' : null);
+        /* ★1発を**完全に**防ぐ資源（ばけのかわ・がんじょう・タスキ）を持っているなら「落ちる」ではない。
+           マルチスケイルは半減するだけなので、落ちるかどうかは数字どおり。
+           ここを分けないと、同じボタンの中で「落ちる」と「ばけのかわが剥がれます」が矛盾する。 */
+        const fullBlock = (r.ability||'')==='ばけのかわ' || (r.ability||'')==='がんじょう'
+                       || r.item==='きあいのタスキ';
+        const gone = !!(BT.guardGone||{})[r.label];
+        const blocks = fullBlock && !gone;
+        return `<button class="qb mini" data-tdswme="${esc(r.label)}" style="text-align:left">
+          ${typeDots(r.name)} <b>${esc(r.disp||r.label)}</b>${cc?`<span class="muted"> ${cc.mark}</span>`:''}
+          ${dmg!=null?`<br><span class="small ${(ko&&!blocks)?'':'muted'}" style="${(ko&&!blocks)?'color:var(--red);font-weight:700':''}">${
+            esc(w.move)}で ${dmg}/${hpMax}${
+              blocks ? `（${Math.round(w.rateHi*100)}%）` :
+              ko ? ' → 交代した瞬間に落ちる' : `（${Math.round(w.rateHi*100)}%）`}</span>`
+           :'<br><span class="small muted">計算できません</span>'}
+          ${res && !gone ? `<br><span class="small" style="color:var(--org)">${
+            blocks && ko ? `この1発は${esc((r.ability||'')==='ばけのかわ'?'ばけのかわ':(r.ability||'')==='がんじょう'?'がんじょう':'きあいのタスキ')}で耐えるが、そこで使い切る`
+                         : esc(res)}</span>`:''}
+        </button>`;
+      }).join('')}
+      </div>
     </div>`:''}
 
     <div class="small" style="margin-top:10px;font-weight:700">相手 <span class="muted">${esc(d.opp)}</span>${switchedOpp?'<span class="muted"> ・交代したので技は不要</span>':''}</div>
