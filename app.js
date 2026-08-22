@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '85';
+const APP_VERSION = '86';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1042,6 +1042,9 @@ function newBT(){
               ★あとから思い出して書くのではなく、その場で残すためのもの。
                 「体感はあるものの実際そういうわけでもない」を潰すのが目的。 */
            turns:[], turnDraft:null,
+           /* ★このターンで「相手が使ってきた技」を既に押したか（v86）。
+              ターン記録カードでも同じ技を押したときの二重加算を防ぐ。 */
+           _seenTag:null,
            /* ★タイプ診断（v69・社長の要望）。tdType=選んだタイプ, tdMode='def'受ける/'atk'殴る */
            tdType:null, tdMode:'def',
            _searchTop:null,
@@ -2839,6 +2842,8 @@ function bindTurnCard(){
   $$('#btNow [data-tdfirst]').forEach(b=> b.onclick=()=>{ d.first = d.first===b.dataset.tdfirst?null:b.dataset.tdfirst; re(); });
   $$('#btNow [data-tdmymove]').forEach(b=> b.onclick=()=>{ d.myMove = d.myMove===b.dataset.tdmymove?'':b.dataset.tdmymove; d.myProtect=false; re(); });
   $$('#btNow [data-tdopmove]').forEach(b=> b.onclick=()=>{ d.opMove = d.opMove===b.dataset.tdopmove?'':b.dataset.tdopmove; d.opProtect=false; re(); });
+  /* ★ターン記録カードで選んだだけでは状態を触らない（記録するまで確定しない）。
+     「相手が使ってきた技」で押した印はそのまま残し、commitTurn で二重加算を避ける。 */
   $$('#btNow [data-tdmyprot]').forEach(b=> b.onclick=()=>{ d.myProtect=!d.myProtect; if(d.myProtect)d.myMove=''; re(); });
   $$('#btNow [data-tdopprot]').forEach(b=> b.onclick=()=>{ d.opProtect=!d.opProtect; if(d.opProtect)d.opMove=''; re(); });
   $$('#btNow [data-tdmymiss]').forEach(b=> b.onclick=()=>{ d.myMiss=!d.myMiss; re(); });
@@ -2878,7 +2883,11 @@ function commitTurn(){
                   heal: (d.heal.me||d.heal.opp) ? {...d.heal} : undefined });
 
   /* --- 相手の技を観測に足す（外れても「持っている」ことは分かる） --- */
-  if(op.act==='move' && op.move){
+  /* ★このターン中に「相手が使ってきた技」カードで同じ技を既に押していたら、
+     観測も積みも**もう入っている**。ここで足すと二重になる（v86で実測して発見）。 */
+  const alreadyTagged = BT._seenTag && BT._seenTag.opp===d.opp
+                     && BT._seenTag.move===op.move && BT._seenTag.at===BT.turns.length-1;
+  if(op.act==='move' && op.move && !alreadyTagged){
     BT.obs = BT.obs || {}; BT.obsCount = BT.obsCount || {};
     const cur = BT.obs[d.opp] = BT.obs[d.opp] || [];
     if(!cur.includes(op.move)) cur.push(op.move);
@@ -2924,6 +2933,7 @@ function commitTurn(){
   BT.seenOrder = BT.seenOrder || [];
   if(!BT.seenOrder.includes(BT.sel) && BT.seenOrder.length<3) BT.seenOrder.push(BT.sel);
 
+  BT._seenTag = null;                       // 次のターンに印を持ち越さない
   BT.turnDraft = turnDraftInit();          // 次のターンは「いまの対面」から始まる
   PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   toast(`ターン${BT.turns.length}を記録しました`);
@@ -3065,9 +3075,14 @@ function btBindSeen(){
       });
       if(!cur.includes(m)) cur.push(m);
       stashOppBoard(key);
+      /* ★このターンで既に積んだ、という印（v86）。
+         同じ技をターン記録カードでも押すと、積みが二重に乗って盤面が壊れる
+         （攻+2 が 攻+4 になる）。commitTurn 側でこの印を見て二重加算を避ける。 */
+      BT._seenTag = {opp:key, move:m, at:BT.turns.length};
       toast(`${m} ${st[m]}回目 → ${Object.entries(up).map(([k,v])=>
         ({a:'攻撃',b:'防御',c:'特攻',d:'特防',s:'素早さ'}[k]+(v>0?'+':'')+v)).join('・')}`);
     }else{
+      BT._seenTag = {opp:key, move:m, at:BT.turns.length};
       /* ★通常技も「押した＝1回撃たれた」に変えた（v76・社長の要望）。
          以前は on/off のトグルだったので、**何回撃たれたかが残らなかった**。
          取り消しは右の「−」で1回ずつ戻す。 */
