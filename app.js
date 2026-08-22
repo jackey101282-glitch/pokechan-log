@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '84';
+const APP_VERSION = '85';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -227,7 +227,12 @@ function msg(m,c){ $('#loginMsg').innerHTML=`<div class="note ${c}" style="margi
 $('#btnOut').onclick = async ()=>{ await sb.auth.signOut(); location.reload(); };
 
 async function enterApp(user){
-  USER=user; $('#app').hidden=false; $('#whoami').textContent=user.email;
+  /* ★版数を画面に出す（2026-08-21・v85）。
+     これまでどこにも出ていなかったので、「直したものが反映されているか」を
+     社長が自分で確認できなかった（実際に「出ていない」＝キャッシュ、という判断がつかなかった）。
+     版ズレの自動リロードはあるが、**index.html と app.js が揃って古い**ときは検出できない。 */
+  USER=user; $('#app').hidden=false;
+  $('#whoami').innerHTML = `${esc(user.email||'')} <span class="muted">v${esc(APP_VERSION)}</span>`;
   $('#fSeason').innerHTML = SEASONS.map(s=>`<option>${s}</option>`).join('');
   $('#fRank').innerHTML   = RANKS.map(s=>`<option>${s}</option>`).join('');
   $('#fDate').value = todayStr();
@@ -2104,6 +2109,7 @@ function btNowRender(){
       }).join('')}
     </div>`:''}
     ${safeHtml('ターン記録', ()=> btTurnCard(pickRoster.length?pickRoster:rc, me, o))}
+
     ${safeHtml('通るタイプ', ()=> btTypeThroughCard(o, me))}
     ${(c.todo&&c.todo.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--blue)">
       <div class="small" style="font-weight:800;margin-bottom:4px">引く前にやること</div>
@@ -2741,7 +2747,11 @@ function btTurnCard(pool, me, oppEff){
   if(!BT.opp.length || !me) return '';
   BT.turnDraft = BT.turnDraft || turnDraftInit();
   const d = BT.turnDraft;
-  /* 対面は「このターンの開始時」。チップを押して交代したら、それが交代として記録される */
+  /* 対面は「このターンの開始時」。チップを押して交代したら、それが交代として記録される。
+     ★ただし**1ターン目は「誰を出すか選んでいる」だけ**なので、交代として扱わない。
+       ここを分けていなかったせいで、初手でチップを押しただけで「交代を検出」になっていた。
+     ★2ターン目以降でも、押し間違いを直したいときのために「交代ではない」で対面を直せる。 */
+  if(!BT.turns.length){ d.me = BT.me; d.opp = BT.sel; }
   if(!d.me)  d.me  = BT.me;
   if(!d.opp) d.opp = BT.sel;
   const startMe = pool.find(r=>r.label===d.me) || me;
@@ -2761,7 +2771,9 @@ function btTurnCard(pool, me, oppEff){
         (BT.oppHp||{})[d.opp]!=null?BT.oppHp[d.opp]+'%':'—'}）。
       ${switchedMe||switchedOpp?`<b style="color:var(--org)">交代を検出：${
         switchedMe?`自分→${esc(BT.me)}`:''}${switchedMe&&switchedOpp?'・':''}${
-        switchedOpp?`相手→${esc(BT.sel)}`:''}</b>`:'チップを押して交代すると、このターンの交代として記録します'}
+        switchedOpp?`相手→${esc(BT.sel)}`:''}</b>
+        <button class="qb mini" data-tdnoswitch="1" style="margin-left:6px">交代ではない（対面を直す）</button>`
+        :'チップを押して交代すると、このターンの交代として記録します'}
     </div>
 
     <div class="hpwrap">
@@ -2823,6 +2835,7 @@ function btTurnCard(pool, me, oppEff){
 function bindTurnCard(){
   const d = BT.turnDraft; if(!d) return;
   const re = ()=>{ saveBtDraft(); btNowRender(); };
+  $$('#btNow [data-tdnoswitch]').forEach(b=> b.onclick=()=>{ d.me=BT.me; d.opp=BT.sel; d.myMove=''; d.opMove=''; re(); });
   $$('#btNow [data-tdfirst]').forEach(b=> b.onclick=()=>{ d.first = d.first===b.dataset.tdfirst?null:b.dataset.tdfirst; re(); });
   $$('#btNow [data-tdmymove]').forEach(b=> b.onclick=()=>{ d.myMove = d.myMove===b.dataset.tdmymove?'':b.dataset.tdmymove; d.myProtect=false; re(); });
   $$('#btNow [data-tdopmove]').forEach(b=> b.onclick=()=>{ d.opMove = d.opMove===b.dataset.tdopmove?'':b.dataset.tdopmove; d.opProtect=false; re(); });
