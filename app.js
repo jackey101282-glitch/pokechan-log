@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '96';
+const APP_VERSION = '97';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1298,7 +1298,12 @@ function btSwitchCard(pickRoster, me, oppEff, st, c){
   /* 引かずに戦った場合の見通し。捨て駒にする判断の材料 */
   const stay = (()=>{
     const hits = c.mu.opHits, my = c.mu.myHits;
-    const best2 = (c.moves && c.moves.best) ? c.moves.best : null;
+    /* ★ここも `moves.best`（＝このターン撃つべき最善手）を使っていたので、
+       カバルドンのように最善手が変化技になる駒では
+       「ステルスロックで相手を落とすのに2発」という嘘が出ていた（2026-08-22）。
+       発数は打点から出しているので、技名も攻撃技から取る。 */
+    const best2 = (c.moves && c.moves.rows || []).filter(m=> m.hits!=null)
+                    .sort((a,b)=> a.hits-b.hits)[0] || null;
     return `<span class="muted">引かずに戦うと：</span>相手に落とされるまで<b>${hits}発</b>`
       + (best2 ? `／<b>${esc(best2.name)}</b>で相手を落とすのに<b>${my}発</b>` : '');
   })();
@@ -2935,8 +2940,18 @@ function btTurnCard(pool, me, oppEff, c){
   const switchedMe  = !!d._swMe  || BT.me  !== d.me;
   const switchedOpp = !!d._swOpp || BT.sel !== d.opp;
   const myMoves = (startMe.moves||[]).filter(Boolean);
-  const oppMoves = (PC.oppMoveChoices(effOppBT(d.opp))||[]).slice(0,8);
+  const oppMovesBase = (PC.oppMoveChoices(effOppBT(d.opp))||[]).slice(0,8);
   const seen = (BT.obs && BT.obs[d.opp]) || [];
+  /* ★一度入れた「一覧に無い技」を、その試合のあいだ選択肢に残す（社長の要望 2026-08-22）。
+       「一覧にない技を登録する時があるんだけど、次もその技を打ってきた時に残って無くて
+         また登録しないといけないんだよね」
+     選択肢は使用率データ（oppMoveChoices の上位8つ）だけで作っていたので、
+     手で入れた技は記録した次のターンには消えていた。
+     **新しい入れ物は作らない。**記録すると `BT.obs[相手]` に入っているので、そこから戻す。
+     （状態を二重に持つと、片方だけ消える・片方だけ残るというバグを必ず生む） */
+  const oppMoves = oppMovesBase.concat(
+    seen.filter(n=> PC.MOVES[n] && !oppMovesBase.some(x=>x.name===n))
+        .map(n=>({name:n, type:(PC.MOVES[n]||{}).type, rate:null})));
   const chip = (on, attr, val, label) =>
     `<button class="qb mini ${on?'on':'off'}" data-${attr}="${esc(val)}">${label}</button>`;
 
@@ -3089,7 +3104,8 @@ function btTurnCard(pool, me, oppEff, c){
                     `${typeBadge((PC.MOVES[m]||{}).type)}${esc(m)}${up?'<span style="color:var(--org)"> 積</span>':''}`); }).join('')
               : oppMoves.map(x=>{ const up=PC.statUpOf(x.name);
                   return chip(d.opMove===x.name,'tdopmove',x.name,
-                    `${typeBadge(x.type)}${esc(x.name)}<span class="muted"> ${x.rate}%</span>${
+                    `${typeBadge(x.type)}${esc(x.name)}${
+                      x.rate==null?'<span class="muted"> 手で追加</span>':`<span class="muted"> ${x.rate}%</span>`}${
                       up?'<span style="color:var(--org)"> 積</span>':''}${seen.includes(x.name)?'<b style="color:var(--red)"> 既</b>':''}`); }).join(''))
             + chip(prot, isMe?'tdmyprot':'tdopprot','1','まもる')
             + chip(miss, isMe?'tdmymiss':'tdopmiss','1','外した')
@@ -3194,9 +3210,90 @@ function btTurnCard(pool, me, oppEff, c){
     })()}
     ${(dead.me||dead.opp)?`<div class="note r" style="margin-top:8px">
       <div class="small" style="font-weight:800">${dead.me?`${esc(startMe.disp||startMe.label)} が落ちました`:''}${dead.me&&dead.opp?' ／ ':''}${dead.opp?`${esc(d.opp)} を倒しました`:''}</div>
-      ${dead.me?(myBench.length?`<div class="small" style="margin-top:4px">次に出す駒
-        ${myBench.map(r=>`<button class="qb mini" data-tddeadme="${esc(r.label)}">${typeDots(r.name)} ${esc(r.disp||r.label)}</button>`).join('')}</div>`
-        :'<div class="small">出せる駒がもうありません</div>'):''}
+      ${dead.me?(myBench.length?(()=>{
+        /* ★どれを出すべきかを、根拠つきで並べる（社長の要望 2026-08-22）。
+           それまでは候補が名前だけ並んでいて、どちらが良いか画面から分からなかった。
+
+           ★死に出しは交代と違って「相手の1発を受けずに出られる」。
+             なので SW_ME_PANEL の「交代したその1発で食らう最大」はここに出してはいけない
+             （出すと、実際には食らわないダメージを見せることになる）。
+             出すのは **次のターンからの殴り合いがどうなるか**：
+             ①結論の印 ②相手に落とされるまで何発 ③こちらの最善手で相手を落とすのに何発。
+
+           ★数字は callIt の mu をそのまま使い、**残りHPぶんだけ発数を詰める**。
+             満タンなら callIt の opHits / myHits と完全に一致する（鉄則5：同じ計算を
+             2つの画面で違う理屈で出さない）。控えが削れている場合が死に出しでは効くので、
+             そこだけ現在HPを反映させる。 */
+        const cand = myBench.map(r=>{
+          let cc=null; try{ cc = PC.callIt(r, oppEff, {roster:null, st:BT.board||{}}); }catch(e){}
+          const hpMax = r.stats ? r.stats.h : 0;
+          const hpNow = (BT.hp||{})[r.label]!=null ? BT.hp[r.label] : hpMax;
+          const ratio = hpMax ? Math.max(0,hpNow)/hpMax : 1;
+          let opH=99, myH=99, best=null;
+          if(cc){
+            const od = cc.mu.opDmg, md = cc.mu.myDmg;
+            opH = od>0 ? Math.max(1, Math.ceil(ratio/od)) : 99;
+            /* ばけのかわ等は callIt と同じく1発ぶん足す（使い切っていたら足さない） */
+            if(cc.mu.guard && !(BT.guardGone||{})[r.label] && opH<99) opH += 1;
+            myH = md>0 ? Math.max(1, Math.ceil((Math.max(0,opHpNow)/100)/md)) : 99;
+            /* ★`moves.best` は「このターン撃つべき最善手」であって最大打点ではない。
+               カバルドンだと best が **ステルスロック** になり、
+               「ステルスロックで2発で落とす」という嘘になった（社長のスクショで発見）。
+               発数（myH）は打点から出しているので、技名も**攻撃技**から取る。 */
+            best = (cc.moves && cc.moves.rows || []).filter(m=> m.hits!=null)
+                     .sort((a,b)=> a.hits-b.hits)[0] || null;
+          }
+          /* ★2発 vs 2発 のときは**どちらが先に動けるか**が勝負を決める。
+             言い方は技の行のバッジ（先に動ける／後に動く／型次第）と同じにする。 */
+          const first = best ? best.first : null;
+          /* ばけのかわ・がんじょう・タスキで1発ぶん稼いでいるなら、そう書く。
+             書かないと「2発耐える」に見えて、実際は資源を使い切った後は1発で落ちる。 */
+          const guarded = !!(cc && cc.mu.guard) && !(BT.guardGone||{})[r.label];
+          /* ★並べ替えは callIt の score だけでは足りない（2026-08-22・実際に嘘を出したので修正）。
+             score は**満タン前提**なので、HP3割まで削れてばけのかわも使い切ったミミッキュが
+             「はめつのひかりでいきなり落ちる」と表示されながら★おすすめの先頭に居た。
+             → score を土台にしたまま、「満タンなら何発／いまなら何発」の差を
+               core.js の score と同じ係数(0.9)で足し引きする。
+               満タンのときは差が0なので、score そのままになる（＝並びが今までと変わらない）。 */
+          let score = cc ? cc.mu.score : -999;
+          if(cc){
+            const cap = v => Math.min(v, 9);
+            score += (cap(opH) - cap(cc.mu.opHits)) * 0.9      // 自分が削れている＝下がる
+                   - (cap(myH) - cap(cc.mu.myHits)) * 0.9;     // 相手が削れている＝上がる
+          }
+          return {r, cc, hpMax, hpNow, opH, myH, best, first, guarded, score};
+        }).sort((a,b)=> b.score - a.score);
+        /* 差が僅かなら「おすすめ」と言い切らない（嘘の断定をしないため） */
+        const close = cand.length>1 && (cand[0].score - cand[1].score) < 0.5;
+        const row = (x,i)=>{
+          /* ★差が僅かでも順位は必ず示す（社長の要望は「おすすめしてほしい」）。
+             僅差のときは見出しでそう断るだけにして、★は消さない。
+             消すと「結局どっち？」が画面に残らない。 */
+          const top = i===0;
+          const dies = x.opH<=1;
+          const wins = x.opH>x.myH || (x.opH===x.myH);
+          return `<button class="qb mini" data-tddeadme="${esc(x.r.label)}" style="text-align:left;${
+            top?'border-color:var(--grn);border-width:2px':''}">
+            ${top?'<b style="color:var(--grn)">★ </b>':''}${typeDots(x.r.name)} <b>${esc(x.r.disp||x.r.label)}</b>${
+              x.cc?`<span class="muted"> ${x.cc.mark}</span>`:''}
+            ${x.hpMax && x.hpNow<x.hpMax ? `<span class="small muted"> 残り${x.hpNow}/${x.hpMax}</span>`:''}
+            ${x.first ? `<br>${
+                x.first==='always' ? '<span class="badge g">先に動ける</span>'
+              : x.first==='never'  ? '<span class="badge ng">後に動く</span>'
+                                   : '<span class="badge wn">型次第</span>'} ` : '<br>'}
+            ${x.cc?`<span class="small" style="${dies?'color:var(--red);font-weight:700':''}">${
+              x.opH>=99 ? '落とされません'
+                        : (dies ? `${esc(x.cc.mu.opMove||'相手の技')}で いきなり落ちる`
+                                : `落とされるまで ${x.opH}発`)}${
+              x.guarded && !dies ? '<span class="muted">（うち1発は' + esc((x.r.ability||'')==='ばけのかわ'?'ばけのかわ':(x.r.ability||'')==='がんじょう'?'がんじょう':'きあいのタスキ') + 'ぶん）</span>' : ''}${
+              x.best && x.myH<99 ? `<span class="muted"> ／ ${esc(x.best.name)}で ${x.myH}発</span>` : ''}</span>`
+             :'<span class="small muted">計算できません</span>'}
+          </button>`;
+        };
+        return `<div class="small" style="margin-top:4px">次に出す駒<span class="muted"> ・おすすめ順${
+          close?'（僅差。速さで決めてください）':''}。相手の1発は受けずに出られます</span>
+          <div class="quick" style="margin-top:4px">${cand.map(row).join('')}</div></div>`;
+      })():'<div class="small">出せる駒がもうありません</div>'):''}
       ${dead.opp?(opBench.length?`<div class="small" style="margin-top:4px">何が出てきた？
         ${opBench.map(n=>`<button class="qb mini" data-tddeadopp="${esc(n)}">${typeDots(n)} ${esc(n)}</button>`).join('')}</div>`
         :'<div class="small">相手の残りはもういません</div>'):''}
@@ -3536,10 +3633,18 @@ function commitTurn(){
   }
   if(!BT.picksLocked && BT.picks.length) BT.picksLocked = true;   // 記録が始まったら選出は固定
   /* --- 出した順の記録 --- */
+  /* ★「そのターンに場に居た駒」を必ず入れる（2026-08-22・落ちた関門の検証で発見）。
+     BT.me だけを見ていたので、**落ちて次の駒を出した経路で、落ちた駒が記録から抜けていた**。
+     `[data-tddeadme]` のハンドラは BT.me を次の駒に替えてから commitTurn() を呼ぶため、
+     ここに着いた時点で BT.me はもう次の駒になっている。
+     実測：メガルカリオで戦って落ち、カバルドンを出したのに usedMine=["カバルドン"]。
+     → **保存する「こちらの選出」から落ちた駒が消える**（v65 と同じ壊れ方）。
+     ターン開始時の駒（d.me）と、いま場に居る駒（BT.me）の両方を、出た順に入れる。
+     相手側も同じ理由で d.opp を入れる（相手が落ちたときに同じことが起きる）。 */
   BT.usedMine = BT.usedMine || [];
-  if(!BT.usedMine.includes(BT.me)) BT.usedMine.push(BT.me);
+  [d.me, BT.me].forEach(n=>{ if(n && !BT.usedMine.includes(n)) BT.usedMine.push(n); });
   BT.seenOrder = BT.seenOrder || [];
-  if(!BT.seenOrder.includes(BT.sel) && BT.seenOrder.length<3) BT.seenOrder.push(BT.sel);
+  [d.opp, BT.sel].forEach(n=>{ if(n && !BT.seenOrder.includes(n) && BT.seenOrder.length<3) BT.seenOrder.push(n); });
 
   /* 次のターンに「使ってきた技」側の印を持ち越さない。
      ただし、このターンで数えた相手の技の印だけは残す（直後に技カードを押されても二重に足さないため） */
