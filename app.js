@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '93';
+const APP_VERSION = '94';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -1065,6 +1065,11 @@ function newBT(){
            moreOpen:false,
            /* ★このターンを始めた時点の状態（取り消し用）。turnDraftInit で控える */
            _turnPre:null,
+           /* ★選出を固定したか（2026-08-22）。試合が始まったら true。
+              「次の試合へ」で newBT() し直すので、自然に解ける。 */
+           picksLocked:false,
+           /* 固定中に「いまの情報だとこうなる」を出すための参考値（選出そのものではない） */
+           picksNow:null,
            /* 前回の盤面を古いとして捨てたか（開いたときに1度だけ知らせる） */
            _staleDropped:false };
 }
@@ -1446,8 +1451,24 @@ function btCompute(){
   const targets = (pp && pp.picks && pp.picks.length) ? pp.picks : BT.opp;
   BT.oppPredict = targets;
   const bp = bestPlan(roster, targets, size, BT.opp, BT.megaFixed, effOppBT);
-  BT.picks = bp.plan ? bp.plan.members : roster.slice(0,size).map(m=>m.name);
-  BT.mega  = bp.mega;
+  const freshPicks = bp.plan ? bp.plan.members : roster.slice(0,size).map(m=>m.name);
+  /* ★★選出は試合が始まったら動かさない（2026-08-22・社長の報告）。
+       「推奨された選出3体が途中で変わった気がした。最初はミミッキュだったのに、
+         ふと確認したらギャラドスになってた。結果惨敗した」
+     btCompute() は**呼ばれるたびに選出を計算し直す**作りで、試合中に何度も呼ばれる
+     （相手チップ・持ち物確定・倒した・交代・技の記録・メガ切替…）。
+     入力が少しでも変われば選出が入れ替わりうる。
+     ★引き金は特定できていない（盤面・持ち物・タイプ・倒した・メガ・6体の訂正では再現しなかった）。
+       ただし **選出は試合前の1回の決定**であって、試合中に書き換わってよいものではない。
+       固定してしまえば、どの引き金であっても起こらなくなる。
+     いまの情報での推奨は freshPicks として持っておき、変わったときだけ画面に添える。 */
+  if(BT.picksLocked){
+    BT.picksNow = freshPicks;                       // 参考表示用（選出そのものは変えない）
+  }else{
+    BT.picks = freshPicks;
+    BT.mega  = bp.mega;
+    BT.picksNow = null;
+  }
   // メガ枠が選出に入っていなければ、そのメガは切れない。嘘を出さないよう必ず外す
   if(BT.mega && !BT.picks.includes(BT.mega)) BT.mega = null;
   /* ★選出の並びは「初手に出す順」にする（社長の指摘 2026-08-20）。
@@ -1456,7 +1477,8 @@ function btCompute(){
      毎試合そこを押し直す無駄が発生していた。
      → 相手の先発予想に対していちばん強い駒を先頭に置き、対面の既定もそれに揃える。 */
   const leadGuess = (PC.predictLead(targets, BATTLES)||[])[0];
-  if(leadGuess && BT.picks.length>1){
+  /* 並べ替え（初手をどれにするか）も選出の一部。固定中は動かさない。 */
+  if(leadGuess && BT.picks.length>1 && !BT.picksLocked){
     const rcLead = rosterForCalc(roster, BT.mega);
     const scoreOf = n => {
       const me = rcLead.find(r=>r.label===n||r.name===n);
@@ -1542,6 +1564,19 @@ function btRender(){
       <span>選出 <b>${BT.picks.map((n,i)=> (i===0?'初手 ':'') + esc(dispName(rc,n))).join(' / ')}</b>${BT.mega?`<span class="muted"> ・メガ=${esc(BT.mega)}</span>`:'<span class="muted"> ・メガは切らない</span>'}${BT.leadGuess?`<span class="muted"> ・相手の先発予想=${esc(BT.leadGuess)}</span>`:''}</span>
     </summary>
     <div class="card" style="border-left:3px solid var(--fg)">
+    ${(()=>{ /* ★試合中は選出を固定していることを明示する（2026-08-22・社長の報告）。
+         黙って固定すると「変わらないのはバグでは」と思わせるし、
+         黙って変えると社長が実際に遭った「途中で変わった」になる。どちらも書く。 */
+      if(!BT.picksLocked) return '';
+      const now = BT.picksNow || [];
+      const same = now.length && now.slice().sort().join()===BT.picks.slice().sort().join();
+      return `<div class="small" style="margin-bottom:6px;padding:6px 8px;border-radius:8px;background:var(--soft)">
+        <b>試合中なので選出は固定しています</b>
+        <span class="muted">（試合前に決めたものです。途中で書き換わりません）</span>
+        ${(now.length && !same) ? `<br><span style="color:var(--org)">いまの情報だけで選び直すなら
+          <b>${now.map(n=>esc(dispName(rc,n))).join(' / ')}</b> ですが、
+          <b>もう選出は変えられません</b>。次の試合の参考に</span>` : ''}
+      </div>`; })()}
     ${(()=>{ const slots = megaSlotsOf(roster);
       if(slots.length<=1) return BT.mega?`<div class="small">メガは <b>${esc(BT.mega)}</b> に切る</div>`:'';
       return `<div class="small" style="margin-top:6px">メガをどれに切るか（変えると全部の判定が変わります）</div>
@@ -2230,6 +2265,9 @@ function btNowRender(){
        畳んだぶんだけスクロールを引いて、**押したチップを同じ位置に留める**。 */
     const se = document.scrollingElement || document.documentElement;
     const anchorTop = b.getBoundingClientRect().top;
+    /* ★相手が出てきた＝試合開始。ここで選出を固定する（2026-08-22・社長の報告）。
+       以後 btCompute() が何度呼ばれても、選出と初手の並びは動かない。 */
+    if(!BT.picksLocked && BT.picks.length){ BT.picksLocked = true; }
     BT.planOpen = false;                                   // 試合が始まったら選出カードは畳む
     const pb=$('.planbox'); if(pb) pb.open=false;
     const iw=$('#btInputWrap'); if(iw) iw.open=false;
@@ -3473,6 +3511,7 @@ function commitTurn(){
       if(n) BT.board.opFallen = Math.min(5, n);
     }
   }
+  if(!BT.picksLocked && BT.picks.length) BT.picksLocked = true;   // 記録が始まったら選出は固定
   /* --- 出した順の記録 --- */
   BT.usedMine = BT.usedMine || [];
   if(!BT.usedMine.includes(BT.me)) BT.usedMine.push(BT.me);
