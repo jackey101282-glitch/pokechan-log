@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '94';
+const APP_VERSION = '95';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -2883,7 +2883,14 @@ function snapshotTurnStart(){
     board:BT.board, oppBoard:BT.oppBoard, obs:BT.obs, obsCount:BT.obsCount, stacks:BT.stacks,
     hp:BT.hp, oppHp:BT.oppHp, fainted:BT.fainted, oppFainted:BT.oppFainted,
     oppType:BT.oppType, myType:BT.myType, guardGone:BT.guardGone, dealt:BT.dealt,
-    oppMega:BT.oppMega, seenTag:BT._seenTag, me:BT.me, sel:BT.sel
+    oppMega:BT.oppMega, seenTag:BT._seenTag, me:BT.me, sel:BT.sel,
+    /* ★控え漏れ3つ（2026-08-22・Codexの指摘を再現して追加）。
+       鉄則21「取り消しは効果を1つずつ打ち消さず、丸ごと控えて戻す」を作った当日に、
+       このリストに入れ忘れていた。実測：交代ターンを記録して取り消すと、
+       対面は正しく戻るのに usedMine=[メガルカリオ,カバルドン] seenOrder=[ガオガエン,ゲッコウガ]
+       が残り、**出ていない駒が「実際に出した駒」として保存される**（v65と同じ壊れ方）。
+       oppItem は「回復した＝持ち物が確定した」を取り消しても消えなかったぶん。 */
+    oppItem:BT.oppItem, usedMine:BT.usedMine, seenOrder:BT.seenOrder
   });
 }
 function turnDraftInit(){
@@ -3325,8 +3332,13 @@ function bindTurnCard(){
     d.heal.me = d.heal.me===v?'':v; re(); });
   $$bt('[data-tdhealop]').forEach(b=> b.onclick=()=>{ const v=b.dataset.tdhealop;
     d.heal.opp = d.heal.opp===v?'':v;
-    /* ★回復したということは持ち物が確定したということ（v79の確定に流し込む） */
-    if(d.heal.opp){ BT.oppItem = BT.oppItem||{}; BT.oppItem[d.opp]=d.heal.opp; syncOppItems(); PC.clearMatchupCache(); }
+    /* ★回復したということは持ち物が確定したということ（v79の確定に流し込む）。
+       ★押し直して解除したら確定も消す（2026-08-22・Codexの指摘を再現して修正）。
+       消していなかったので、押し間違いを戻しても相手はその持ち物を持ったまま計算され続けていた。 */
+    BT.oppItem = BT.oppItem||{};
+    if(d.heal.opp) BT.oppItem[d.opp]=d.heal.opp;
+    else if(BT.oppItem[d.opp]===v) delete BT.oppItem[d.opp];
+    syncOppItems(); PC.clearMatchupCache();
     btCompute(); btRender(); saveBtDraft(); });
   /* ★取り消しは「落ちた」も戻す（2026-08-22）。
      戻さないと、落ちた関門から抜けられずに詰む（HPが0のままなので同じ画面に戻る）。 */
@@ -3343,6 +3355,10 @@ function bindTurnCard(){
         BT.oppFainted=pre.oppFainted; BT.oppType=pre.oppType; BT.myType=pre.myType;
         BT.guardGone=pre.guardGone; BT.dealt=pre.dealt; BT.oppMega=pre.oppMega;
         BT._seenTag=pre.seenTag; BT.meManual=true;
+        /* 上の★と対。oppItem は PC 側にも渡してあるので戻したら流し直す */
+        if(pre.oppItem){ BT.oppItem=pre.oppItem; syncOppItems(); }
+        if(pre.usedMine) BT.usedMine=pre.usedMine;
+        if(pre.seenOrder) BT.seenOrder=pre.seenOrder;
         /* ★誰が場に居たかは、控えではなく**そのターンの記録**から戻す。
            控えは「下書きを作った時点」なので、1ターン目だと
            相手チップを押す前（既定の先頭の相手）まで巻き戻ってしまう。
@@ -3732,6 +3748,14 @@ function btBindSeen(){
       if(!cur.includes(m)) cur.push(m);
       if(oc[m] > 1) toast(`${m} ${oc[m]}回目`);
     }
+    /* ★状態異常技を、この入力口でも効かせる（2026-08-22・Codexの指摘を再現して修正）。
+       鉄則13「入力口を2つ作ったら、両方に同じ処理を書く」の違反が残っていた。
+       applyStatusMove() は commitTurn からしか呼ばれておらず、
+       「使ってきた技」から おにび を押しても盤面に何も立たなかった。
+       実測：同じ「おにび」で ターン記録→{"myBurn":true} ／ 使ってきた技→{} 。
+       実害は、ルカリオがやけどなのに素の火力で「◎殴れる」と出ること。
+       ※ applyStatusMove は既に立っていれば何もしないので、ターン記録と二重には乗らない。 */
+    if(BT.me) applyStatusMove(m, 'me', BT.me);
     /* ★みずびたし等（v80・社長の指摘）。
        撃たれた時点で、**いま場に出しているこちらの駒**のタイプが変わる。
        ハラバリーの みずびたし は採用率93.8%＝ほぼ必ず来る。
@@ -3834,6 +3858,18 @@ function saveBtDraft(){
     planOpen:BT.planOpen, moreOpen:BT.moreOpen,
     obs:BT.obs, obsCount:BT.obsCount, opp:BT.opp, hp:BT.hp, oppHp:BT.oppHp, dealt:BT.dealt, stacks:BT.stacks, fainted:BT.fainted, oppFainted:BT.oppFainted, oppMega:BT.oppMega, oppType:BT.oppType, oppBoard:BT.oppBoard, oppItem:BT.oppItem, myType:BT.myType, turns:BT.turns, turnDraft:BT.turnDraft, tdType:BT.tdType, tdMode:BT.tdMode,
     megaFixed:BT.megaFixed, guardGone:BT.guardGone, board:BT.board,
+    /* ★リロードで試合が壊れるのを止める（2026-08-22・Codexの指摘を再現して修正）。
+       版ズレを検出すると app.js:9-17 が自動で location.reload() する。
+       デプロイした瞬間、対戦中の画面がリロードされうる。
+       ここに無かったせいで、そのとき
+       ・picksLocked が false に戻る＝**v94 で固定した選出がまた動き出す**
+       ・seenOrder / usedMine が消える＝**保存する戦績の「相手の選出」「自分の選出」が壊れる**（v65と同じ事故）
+       ・me / sel が復元されず、対面が別物に戻る
+       が起きていた。実測：リロード前 固定=true seenOrder=[ガオガエン] usedMine=[メガルカリオ]
+                          リロード後 固定=false seenOrder=[]         usedMine=[] */
+    me:BT.me, sel:BT.sel, meManual:BT.meManual,
+    seenOrder:BT.seenOrder, usedMine:BT.usedMine,
+    picks:BT.picks, picksLocked:BT.picksLocked, mega:BT.mega, leadGuess:BT.leadGuess,
     t: Date.now() })); }catch(e){}
 }
 function loadBtDraft(){
@@ -3850,6 +3886,12 @@ function loadBtDraft(){
       if(d.hp) BT.hp=d.hp; if(d.oppHp) BT.oppHp=d.oppHp; if(d.dealt) BT.dealt=d.dealt; if(d.stacks) BT.stacks=d.stacks; if(d.fainted) BT.fainted=d.fainted; if(d.oppFainted) BT.oppFainted=d.oppFainted; if(d.oppMega) BT.oppMega=d.oppMega; if(d.oppType) BT.oppType=d.oppType; if(d.oppBoard) BT.oppBoard=d.oppBoard; if(d.oppItem) BT.oppItem=d.oppItem; if(d.myType) BT.myType=d.myType; if(d.turns) BT.turns=d.turns; if(d.turnDraft) BT.turnDraft=d.turnDraft;
     if(d.tdType) BT.tdType=d.tdType; if(d.tdMode) BT.tdMode=d.tdMode;
       if(d.guardGone) BT.guardGone=d.guardGone; if(d.board) BT.board=d.board;
+      /* ★上の saveBtDraft の★と対。戻す順番は btCompute より前でなければならない
+         （btCompute は picksLocked を見て「選出を計算し直すかどうか」を決めるため）。 */
+      if(d.me) BT.me=d.me; if(d.sel) BT.sel=d.sel; if(d.meManual!=null) BT.meManual=d.meManual;
+      if(d.seenOrder) BT.seenOrder=d.seenOrder; if(d.usedMine) BT.usedMine=d.usedMine;
+      if(d.picks) BT.picks=d.picks; if(d.picksLocked) BT.picksLocked=d.picksLocked;
+      if(d.mega) BT.mega=d.mega; if(d.leadGuess) BT.leadGuess=d.leadGuess;
     }else if(d.board && Object.keys(d.board).length){
       // 黙って捨てると「さっき入れた状態が消えた」と見えるので、捨てたことは伝える
       BT._staleDropped = true;
