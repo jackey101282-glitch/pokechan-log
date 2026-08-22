@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="90">
+<meta name="app-version" content="91">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -139,6 +139,14 @@ details[open] > .cardsum::after{content:'▴'}
 .nowbar-mark{font-size:15px;white-space:nowrap}
 .nowbar-vs{white-space:nowrap}
 .nowbar-mv{white-space:nowrap;font-size:12px}
+/* ★ターンの1手番ぶん（2026-08-22・社長の指摘）。
+   「先に動いた」が横軸、HPが縦軸で軸が混ざっていたのを、
+   **行＝手番／その行の中に 誰が・何を・結果どちらのHPがどうなったか** に揃える。 */
+.tdrow{margin-top:8px;padding:8px 10px;border-radius:10px;border:1px solid var(--line2)}
+.tdrow.me{border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 4%,transparent)}
+.tdrow.opp{border-left:3px solid var(--org);background:color-mix(in srgb,var(--org) 4%,transparent)}
+.tdno{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;
+  border-radius:50%;background:var(--fg);color:var(--card);font-size:11px;margin-right:3px}
 /* ★HP欄は type=text（inputmode=numeric）にしてある。type=number は Chrome で
    カーソル位置を取れず、打った数字が逆順に並ぶため（2026-08-21 修正）。 */
 .hpwrap input[type=number],.hpwrap input.hpnum{width:92px;text-align:right;font-size:17px;font-weight:700}
@@ -738,18 +746,18 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=90"></script>
-<script src="./data/species.js?v=90"></script>
-<script src="./data/moves.js?v=90"></script>
-<script src="./data/principles.js?v=90"></script>
-<script src="./data/usage.js?v=90"></script>
-<script src="./data/teams.js?v=90"></script>
-<script src="./core.js?v=90"></script>
+<script src="./supabase-config.js?v=91"></script>
+<script src="./data/species.js?v=91"></script>
+<script src="./data/moves.js?v=91"></script>
+<script src="./data/principles.js?v=91"></script>
+<script src="./data/usage.js?v=91"></script>
+<script src="./data/teams.js?v=91"></script>
+<script src="./core.js?v=91"></script>
 <!-- ★音声（読み上げ）は 2026-08-21 に停止。社長の判定「9種すべて不自然」＋
      スマホで対戦しPCでこのアプリを操作する運用になったため、読み上げの必要が無くなった。
      コードとクリップは残してあるので、この1行を戻せば復活する。
-<script src="./voice.js?v=90"></script> -->
+<script src="./voice.js?v=91"></script> -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=90"></script>
+<script src="./app.js?v=91"></script>
 </body>
 </html>
