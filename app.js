@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '95';
+const APP_VERSION = '96';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -3336,8 +3336,15 @@ function bindTurnCard(){
        ★押し直して解除したら確定も消す（2026-08-22・Codexの指摘を再現して修正）。
        消していなかったので、押し間違いを戻しても相手はその持ち物を持ったまま計算され続けていた。 */
     BT.oppItem = BT.oppItem||{};
-    if(d.heal.opp) BT.oppItem[d.opp]=d.heal.opp;
-    else if(BT.oppItem[d.opp]===v) delete BT.oppItem[d.opp];
+    /* ★解除で消してよいのは「このターンカードで確定したぶん」だけ（Codexの差分レビュー）。
+       持ち物欄から手で確定した同じ名前まで消えてしまうと、社長には
+       「解除しただけなのに確定が黙って消えた」ように見える。 */
+    if(d.heal.opp){
+      if(BT.oppItem[d.opp] !== d.heal.opp) d._healSetOpp = true;   // ここで初めて確定させた
+      BT.oppItem[d.opp]=d.heal.opp;
+    }else if(d._healSetOpp && BT.oppItem[d.opp]===v){
+      delete BT.oppItem[d.opp]; d._healSetOpp = false;
+    }
     syncOppItems(); PC.clearMatchupCache();
     btCompute(); btRender(); saveBtDraft(); });
   /* ★取り消しは「落ちた」も戻す（2026-08-22）。
@@ -3754,8 +3761,13 @@ function btBindSeen(){
        「使ってきた技」から おにび を押しても盤面に何も立たなかった。
        実測：同じ「おにび」で ターン記録→{"myBurn":true} ／ 使ってきた技→{} 。
        実害は、ルカリオがやけどなのに素の火力で「◎殴れる」と出ること。
-       ※ applyStatusMove は既に立っていれば何もしないので、ターン記録と二重には乗らない。 */
-    if(BT.me) applyStatusMove(m, 'me', BT.me);
+       ※ applyStatusMove は既に立っていれば何もしないので、ターン記録と二重には乗らない。
+       ★立てたら必ず言う（外れていた場合に社長が気づけるように）。
+         この入力口には「当たったか外れたか」の情報が無いので、当たった前提で立てている。 */
+    if(BT.me){
+      const _k = applyStatusMove(m, 'me', BT.me);
+      if(_k) toast(`${BT.me} が ${({myBurn:'やけど',myParalysis:'まひ',myToxic:'どく',mySleep:'ねむり'})[_k]||'状態異常'} になりました（外れていたら「−」で戻せます）`);
+    }
     /* ★みずびたし等（v80・社長の指摘）。
        撃たれた時点で、**いま場に出しているこちらの駒**のタイプが変わる。
        ハラバリーの みずびたし は採用率93.8%＝ほぼ必ず来る。
@@ -3812,6 +3824,15 @@ function btBindSeen(){
     }
     stashOppBoard(key);
     const remain = up ? (((BT.stacks||{})[key]||{})[m]||0) : (((BT.obsCount||{})[key]||{})[m]||0);
+    /* ★「−」で0まで戻したら、その技が立てた状態異常も落とす
+       （2026-08-22・Codexの差分レビュー。set に足しておいて dec に足さないのは
+         まさに鉄則13「入力口を2つ作ったら両方に同じ処理を書く」の違反だった）。
+       これが無いと、押し間違いを戻しても やけど が残り、火力が半減したまま計算され続ける。 */
+    if(!remain){
+      const _kind = STATUS_MOVE[m];
+      const _key  = _kind && STATUS_KEY.me[_kind];
+      if(_key && BT.board && BT.board[_key]){ delete BT.board[_key]; }
+    }
     if(!remain){
       const cur = (BT.obs||{})[key] || [];
       const i = cur.indexOf(m); if(i>=0) cur.splice(i,1);
