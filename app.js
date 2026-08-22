@@ -5,7 +5,7 @@
 'use strict';
 /* HTMLとJSの版ズレを検出する。ズレていたら1回だけ強制リロードする。
    （GitHub Pages は index.html と app.js を別々に10分キャッシュするため） */
-const APP_VERSION = '83';
+const APP_VERSION = '84';
 (function(){
   const meta=document.querySelector('meta[name="app-version"]');
   const html=meta?meta.content:null;
@@ -278,7 +278,6 @@ $$('.tab').forEach(b=> b.onclick=()=>{
   $$('.tab').forEach(x=>x.classList.toggle('on',x===b));
   // タブを増やしたときに書き換え漏れが起きないよう、セクションはDOMから拾う
   $$('main section[id^="tab-"]').forEach(sec=> sec.hidden = (sec.id !== 'tab-'+b.dataset.tab));
-  if(b.dataset.tab==='turn') renderTurnTab();
   if(b.dataset.tab==='stat') renderStats();
   if(b.dataset.tab==='hist') renderHist();
   if(b.dataset.tab==='advice') renderAdvice();
@@ -2104,6 +2103,7 @@ function btNowRender(){
         return `<div class="small" style="margin:3px 0;${on?'font-weight:700':''}">${on?'▶ ':'・'}${fst}${pri}${esc(r.name)} … ${body}${shot}</div>`;
       }).join('')}
     </div>`:''}
+    ${safeHtml('ターン記録', ()=> btTurnCard(pickRoster.length?pickRoster:rc, me, o))}
     ${safeHtml('通るタイプ', ()=> btTypeThroughCard(o, me))}
     ${(c.todo&&c.todo.length)?`<div class="card" style="margin-top:8px;padding:11px 13px;border-left:3px solid var(--blue)">
       <div class="small" style="font-weight:800;margin-bottom:4px">引く前にやること</div>
@@ -2310,7 +2310,7 @@ function btNowRender(){
     inp.onblur=()=>{ const v = BT.hp[BT.me]!=null ? BT.hp[BT.me] : maxHP;
       if(inp.value !== String(v)) inp.value = v; };
   }
-  btBindSeen(); btBindBoard();
+  btBindSeen(); btBindBoard(); bindTurnCard();
 }
 
 /* ---------- 盤面の状態 ----------
@@ -2661,7 +2661,6 @@ function btBindBoard(){
     stashOppBoard(BT.sel);
     PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   });
-  { const tt=$('#turnNow'); if(tt && !$('#tab-turn').hidden) renderTurnTab(); }
   const r=$('#btNow [data-bbreset]');
   /* ★「盤面をリセット」は、相手ごとにしまってあるぶんも消す。
      ここを消し忘れると、交代して戻ってきた瞬間に積みが復活する。 */
@@ -2721,227 +2720,174 @@ function btTypeThroughCard(oppEff, me){
      ② **入れた内容をそのまま BT に反映する**（HP・積み・観測技）。二重入力にしない
      ③ **技はボタン**。自分は4つ固定、相手は採用率順。プルダウンは試合中に開けない
    ========================================================= */
+/* ★対戦タブの中に置く（v84・社長の指摘で作り直し）。
+   > 「既存の対戦タブの中にターンごとのアクションを追加できるようにしたい。
+   >   **普段見てる対戦ページを見ながらターンを追加していきたい**」
+   ★v83では別タブにしたが、それだと判定を見ながら記録できない。対戦タブの中へ移した。
+
+   ★入力を最小にするため、**画面に既にあるものは読むだけにする**：
+     ・対面（相手チップ・自分チップ）… 押した結果が BT.sel / BT.me
+     ・HP（相手の残りHP・自分の残りHP）… BT.oppHp / BT.hp
+   → このカードで足すのは「**先に動いた側／技／外れ／持ち物で回復**」の4つだけ。
+   ★交代はチップを押した時点で分かるので、**自動で検出して記録する**（押す手間を増やさない）。 */
 function turnDraftInit(){
-  const last = BT.turns.length ? BT.turns[BT.turns.length-1] : null;
-  return {
-    me:  (last && last.my && last.my.act==='switch' && last.my.to) ? last.my.to : (last ? last.me : BT.me),
-    opp: (last && last.op && last.op.act==='switch' && last.op.to) ? last.op.to : (last ? last.opp : BT.sel),
-    first:null,
-    my:{act:'move', move:'', to:'', miss:false},
-    op:{act:'move', move:'', to:'', miss:false},
-    myHp:null, oppHp:null
-  };
+  return { me:BT.me, opp:BT.sel, first:null,
+           myMove:'', myMiss:false, myProtect:false,
+           opMove:'', opMiss:false, opProtect:false,
+           heal:{me:'', opp:''} };
 }
-function renderTurnTab(){
-  const host=$('#turnNow'), head=$('#turnHead'), list=$('#turnList');
-  if(!host) return;
-  if(!BT.opp.length){
-    head.innerHTML = '<div class="small muted">先に「対戦」タブで相手6体を入れてください。</div>';
-    host.innerHTML=''; list.innerHTML=''; return;
-  }
-  syncOppItems();
-  const roster = currentRoster();
-  const rc = rosterForCalc(roster, BT.mega);
-  const mine = rc.filter(r=> BT.picks.includes(r.label) || BT.picks.includes(r.name));
-  const pool = mine.length ? mine : rc;
+const HEAL_ITEMS = ['たべのこし','オボンのみ','ラムのみ','くろいヘドロ'];
+function btTurnCard(pool, me, oppEff){
+  if(!BT.opp.length || !me) return '';
   BT.turnDraft = BT.turnDraft || turnDraftInit();
   const d = BT.turnDraft;
-  if(!d.me  && pool[0]) d.me  = pool[0].label;
-  if(!d.opp && BT.opp[0]) d.opp = BT.opp[0];
-
-  const meObj = pool.find(r=>r.label===d.me) || pool[0] || {};
-  const maxHP = meObj.stats ? meObj.stats.h : 0;
-  const oppEff = effOppBT(d.opp);
-
-  head.innerHTML = `<div class="small muted">${BT.turns.length}ターンぶん記録済み
-    ${BT.turns.length?`・<button class="btn ghost sm" id="turnUndo">直前を取り消す</button>
-      <button class="btn ghost sm" id="turnClear">全部消す</button>`:''}</div>`;
-
-  /* 相手の技は採用率順。観測済みは色を変えて上に出す */
-  const oppMoves = (PC.oppMoveChoices(oppEff)||[]).slice(0,10);
+  /* 対面は「このターンの開始時」。チップを押して交代したら、それが交代として記録される */
+  if(!d.me)  d.me  = BT.me;
+  if(!d.opp) d.opp = BT.sel;
+  const startMe = pool.find(r=>r.label===d.me) || me;
+  const switchedMe  = BT.me  !== d.me;
+  const switchedOpp = BT.sel !== d.opp;
+  const myMoves = (startMe.moves||[]).filter(Boolean);
+  const oppMoves = (PC.oppMoveChoices(effOppBT(d.opp))||[]).slice(0,8);
   const seen = (BT.obs && BT.obs[d.opp]) || [];
-  const myMoves = (meObj.moves||[]).filter(Boolean);
-  const chip = (on, attr, val, label, extra) =>
-    `<button class="qb ${on?'on':'off'}" data-${attr}="${esc(val)}"${extra||''}>${label}</button>`;
+  const chip = (on, attr, val, label) =>
+    `<button class="qb mini ${on?'on':'off'}" data-${attr}="${esc(val)}">${label}</button>`;
 
-  host.innerHTML = `
-  <div class="card" style="border-left:4px solid var(--blue)">
-    <h2>ターン ${BT.turns.length+1}<span class="sub">対面が変わったときだけ押す</span></h2>
-    <div class="small muted">相手</div>
-    <div class="quick" style="margin-top:4px">${BT.opp.map(n=>
-      chip(n===d.opp,'tdopp',n, `${typeDots(effOppBT(n))}${esc(n)}`)).join('')}</div>
-    <div class="small muted" style="margin-top:8px">自分</div>
-    <div class="quick" style="margin-top:4px">${pool.map(m=>
-      chip(m.label===d.me,'tdme',m.label, `${typeDots(effMeBT(m).name)}${esc(m.disp||m.label)}`)).join('')}</div>
+  return `<div class="card" style="margin-top:8px;border-left:3px solid var(--blue)">
+    <div class="small" style="font-weight:800">ターン ${BT.turns.length+1} を記録
+      <span class="muted"> ・${esc(startMe.disp||startMe.label)} vs ${esc(d.opp)}</span></div>
+    <div class="small muted" style="margin:2px 0 6px">
+      HPは上の欄の値をそのまま使います（自分 ${(BT.hp||{})[d.me]!=null?BT.hp[d.me]:'—'} ／ 相手 ${
+        (BT.oppHp||{})[d.opp]!=null?BT.oppHp[d.opp]+'%':'—'}）。
+      ${switchedMe||switchedOpp?`<b style="color:var(--org)">交代を検出：${
+        switchedMe?`自分→${esc(BT.me)}`:''}${switchedMe&&switchedOpp?'・':''}${
+        switchedOpp?`相手→${esc(BT.sel)}`:''}</b>`:'チップを押して交代すると、このターンの交代として記録します'}
+    </div>
 
-    <div class="hpwrap" style="margin-top:12px">
-      <span class="small muted" style="min-width:74px">先に動いた</span>
+    <div class="hpwrap">
+      <span class="small muted" style="min-width:66px">先に動いた</span>
       <div class="seg">
         <button class="${d.first==='me'?'on':''}" data-tdfirst="me">自分</button>
         <button class="${d.first==='opp'?'on':''}" data-tdfirst="opp">相手</button>
       </div>
-      ${(BT.oppItem||{})[d.opp]==='せんせいのツメ'
-        ? '<span class="small" style="color:var(--red)">せんせいのツメ持ち</span>' : ''}
+      ${(BT.oppItem||{})[d.opp]==='せんせいのツメ'?'<span class="small" style="color:var(--red)">ツメ持ち</span>':''}
     </div>
 
-    <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
-      <div class="small" style="font-weight:800">自分の行動 <span class="muted">${esc(meObj.disp||meObj.label||'')}</span></div>
-      <div class="quick" style="margin-top:4px">
-        ${myMoves.map(m=>{
-          const up = PC.statUpOf(m);
-          return chip(d.my.act==='move'&&d.my.move===m,'tdmymove',m,
-            `${typeBadge((PC.MOVES[m]||{}).type)}${esc(m)}${up?'<span style="color:var(--org)"> 積</span>':''}`);
+    <div class="small muted" style="margin-top:8px">自分の技${switchedMe?'（交代したので不要）':''}</div>
+    <div class="quick" style="margin-top:3px">
+      ${switchedMe ? '<span class="small muted">交代として記録します</span>' : myMoves.map(m=>{
+        const up = PC.statUpOf(m);
+        return chip(d.myMove===m,'tdmymove',m,
+          `${typeBadge((PC.MOVES[m]||{}).type)}${esc(m)}${up?'<span style="color:var(--org)"> 積</span>':''}`);
+      }).join('') + chip(d.myProtect,'tdmyprot','1','まもる') + chip(d.myMiss,'tdmymiss','1','外した')}
+    </div>
+
+    <div class="small muted" style="margin-top:8px">相手の技${switchedOpp?'（交代したので不要）':''}</div>
+    <div class="quick" style="margin-top:3px">
+      ${switchedOpp ? '<span class="small muted">交代として記録します</span>' : oppMoves.map(c=>{
+        const up = PC.statUpOf(c.name);
+        return chip(d.opMove===c.name,'tdopmove',c.name,
+          `${typeBadge(c.type)}${esc(c.name)}<span class="muted"> ${c.rate}%</span>${
+            up?'<span style="color:var(--org)"> 積</span>':''}${seen.includes(c.name)?'<b style="color:var(--red)"> 既</b>':''}`);
+      }).join('') + chip(d.opProtect,'tdopprot','1','まもる') + chip(d.opMiss,'tdopmiss','1','外した')}
+    </div>
+
+    <div class="small muted" style="margin-top:8px">持ち物で回復した
+      <span class="muted">・押すと相手の持ち物も確定します</span></div>
+    <div class="quick" style="margin-top:3px">
+      ${HEAL_ITEMS.map(it=>chip(d.heal.me===it,'tdhealme',it,`自分 ${esc(it)}`)).join('')}
+      ${HEAL_ITEMS.map(it=>chip(d.heal.opp===it,'tdhealop',it,`相手 ${esc(it)}`)).join('')}
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn primary sm" id="turnCommit">ターンを記録</button>
+      ${BT.turns.length?`<button class="btn ghost sm" id="turnUndo">直前を取り消す</button>`:''}
+      ${BT.turns.length?`<span class="small muted">${BT.turns.length}ターンぶん記録済み</span>`:''}
+    </div>
+    ${BT.turns.length?`<details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">これまでのターンを見る</summary>
+      <table style="width:100%;font-size:12px;margin-top:5px">
+        <tr><th>手</th><th>対面</th><th>先</th><th>自分</th><th>相手</th><th class="num">HP</th></tr>
+        ${BT.turns.map(t=>{
+          const act=a=> a.act==='switch'?`交代→${esc(a.to||'?')}`
+                      : a.act==='protect'?'まもる'
+                      : `${esc(a.move||'—')}${a.miss?'<span style="color:var(--red)">(外)</span>':''}`;
+          return `<tr style="border-top:1px solid var(--line2)"><td>${t.n}</td>
+            <td class="small">${esc(t.me)} vs ${esc(t.opp)}</td>
+            <td class="small">${t.first==='me'?'自':t.first==='opp'?'相':'—'}</td>
+            <td class="small">${act(t.my)}</td><td class="small">${act(t.op)}</td>
+            <td class="num small">${t.myHp!=null?t.myHp:'—'} / ${t.oppHp!=null?t.oppHp+'%':'—'}</td></tr>`;
         }).join('')}
-        ${chip(d.my.act==='protect','tdmyact','protect','まもる')}
-        ${chip(d.my.act==='switch','tdmyact','switch','交代')}
-      </div>
-      ${d.my.act==='switch'?`<div class="quick" style="margin-top:4px">${pool.filter(r=>r.label!==d.me).map(r=>
-        chip(d.my.to===r.label,'tdmyto',r.label, esc(r.disp||r.label))).join('')}</div>`:''}
-      ${d.my.act==='move'?`<div class="hpwrap">
-        <span class="small muted" style="min-width:74px">相手の残りHP</span>
-        <div class="seg">${[100,90,75,60,50,40,25,10,0].map(v=>
-          `<button class="${d.oppHp===v?'on':''}" data-tdophp="${v}">${v}</button>`).join('')}</div>
-        ${chip(d.my.miss,'tdmymiss','1','外した')}
-      </div>`:''}
-    </div>
-
-    <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
-      <div class="small" style="font-weight:800">相手の行動 <span class="muted">${esc(d.opp)}</span></div>
-      <div class="quick" style="margin-top:4px">
-        ${oppMoves.map(c=>{
-          const up = PC.statUpOf(c.name);
-          return chip(d.op.act==='move'&&d.op.move===c.name,'tdopmove',c.name,
-            `${typeBadge(c.type)}${esc(c.name)}<span class="muted"> ${c.rate}%</span>${
-              up?'<span style="color:var(--org)"> 積</span>':''}${seen.includes(c.name)?'<b style="color:var(--red)"> 既</b>':''}`);
-        }).join('')}
-        ${chip(d.op.act==='protect','tdopact','protect','まもる')}
-        ${chip(d.op.act==='switch','tdopact','switch','交代')}
-      </div>
-      ${d.op.act==='switch'?`<div class="quick" style="margin-top:4px">${BT.opp.filter(n=>n!==d.opp).map(n=>
-        chip(d.op.to===n,'tdopto',n, esc(n))).join('')}</div>`:''}
-      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;align-items:center">
-        <input id="tdMyHp" class="hpnum" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4"
-               autocomplete="off" value="${d.myHp!=null?d.myHp:''}" placeholder="${maxHP}">
-        <span class="small muted">← 自分の残りHP（/ ${maxHP}）</span>
-        ${chip(d.op.miss,'tdopmiss','1','外した')}
-        <input id="tdOther" type="text" placeholder="一覧に無い技" list="mvlist" style="flex:1;min-width:120px">
-      </div>
-    </div>
-
-    <div style="display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">
-      <button class="btn primary" id="turnCommit">このターンを記録</button>
-      <span class="small muted">記録すると、対戦タブのHP・積み・観測技に反映されます</span>
-    </div>
+      </table></details>`:''}
   </div>`;
-
-  list.innerHTML = BT.turns.length ? `<div class="card">
-    <h2>これまでのターン<span class="sub">${BT.turns.length}手</span></h2>
-    <table style="width:100%;font-size:13px">
-      <tr><th>手</th><th>対面</th><th>先</th><th>自分</th><th>相手</th><th class="num">HP</th></tr>
-      ${BT.turns.map((t,i)=>{
-        const act = a => a.act==='switch' ? `交代→${esc(a.to||'?')}`
-                       : a.act==='protect' ? 'まもる'
-                       : `${esc(a.move||'—')}${a.miss?'<span style="color:var(--red)">（外れ）</span>':''}`;
-        return `<tr style="border-top:1px solid var(--line2)">
-          <td>${t.n}</td>
-          <td class="small">${esc(t.me)} vs ${esc(t.opp)}</td>
-          <td class="small">${t.first==='me'?'自':t.first==='opp'?'相':'—'}</td>
-          <td class="small">${act(t.my)}</td>
-          <td class="small">${act(t.op)}</td>
-          <td class="num small">${t.myHp!=null?t.myHp:'—'} / ${t.oppHp!=null?t.oppHp+'%':'—'}</td>
-        </tr>`;
-      }).join('')}
-    </table></div>` : '';
-
-  bindTurnTab(pool, maxHP);
 }
-function bindTurnTab(pool, maxHP){
-  const d = BT.turnDraft;
-  const re = ()=>{ saveBtDraft(); renderTurnTab(); };
-  $$('#turnNow [data-tdopp]').forEach(b=> b.onclick=()=>{ d.opp=b.dataset.tdopp; d.op.move=''; re(); });
-  $$('#turnNow [data-tdme]').forEach(b=> b.onclick=()=>{ d.me=b.dataset.tdme; d.my.move=''; re(); });
-  $$('#turnNow [data-tdfirst]').forEach(b=> b.onclick=()=>{ d.first = d.first===b.dataset.tdfirst?null:b.dataset.tdfirst; re(); });
-  $$('#turnNow [data-tdmymove]').forEach(b=> b.onclick=()=>{ d.my.act='move'; d.my.move=b.dataset.tdmymove; re(); });
-  $$('#turnNow [data-tdopmove]').forEach(b=> b.onclick=()=>{ d.op.act='move'; d.op.move=b.dataset.tdopmove; re(); });
-  $$('#turnNow [data-tdmyact]').forEach(b=> b.onclick=()=>{ const v=b.dataset.tdmyact;
-    d.my.act = d.my.act===v ? 'move' : v; d.my.move=''; re(); });
-  $$('#turnNow [data-tdopact]').forEach(b=> b.onclick=()=>{ const v=b.dataset.tdopact;
-    d.op.act = d.op.act===v ? 'move' : v; d.op.move=''; re(); });
-  $$('#turnNow [data-tdmyto]').forEach(b=> b.onclick=()=>{ d.my.to=b.dataset.tdmyto; re(); });
-  $$('#turnNow [data-tdopto]').forEach(b=> b.onclick=()=>{ d.op.to=b.dataset.tdopto; re(); });
-  $$('#turnNow [data-tdophp]').forEach(b=> b.onclick=()=>{ d.oppHp=+b.dataset.tdophp; re(); });
-  $$('#turnNow [data-tdmymiss]').forEach(b=> b.onclick=()=>{ d.my.miss=!d.my.miss; re(); });
-  $$('#turnNow [data-tdopmiss]').forEach(b=> b.onclick=()=>{ d.op.miss=!d.op.miss; re(); });
-  const hp=$('#tdMyHp'); if(hp) hp.oninput=()=>{ const v=hp.value.replace(/[^0-9]/g,'');
-    d.myHp = v===''?null:Math.max(0,Math.min(maxHP, parseInt(v,10)||0)); saveBtDraft(); };
-  const oth=$('#tdOther'); if(oth) oth.onchange=()=>{ const v=(oth.value||'').trim();
-    if(v){ d.op.act='move'; d.op.move=v; re(); } };
-  const u=$('#turnUndo'); if(u) u.onclick=()=>{ BT.turns.pop(); BT.turnDraft=turnDraftInit(); re(); };
-  const cl=$('#turnClear'); if(cl) cl.onclick=()=>{ if(!confirm('このターン記録を全部消しますか？')) return;
-    BT.turns=[]; BT.turnDraft=turnDraftInit(); re(); };
-  const c=$('#turnCommit'); if(c) c.onclick=()=> commitTurn();
+function bindTurnCard(){
+  const d = BT.turnDraft; if(!d) return;
+  const re = ()=>{ saveBtDraft(); btNowRender(); };
+  $$('#btNow [data-tdfirst]').forEach(b=> b.onclick=()=>{ d.first = d.first===b.dataset.tdfirst?null:b.dataset.tdfirst; re(); });
+  $$('#btNow [data-tdmymove]').forEach(b=> b.onclick=()=>{ d.myMove = d.myMove===b.dataset.tdmymove?'':b.dataset.tdmymove; d.myProtect=false; re(); });
+  $$('#btNow [data-tdopmove]').forEach(b=> b.onclick=()=>{ d.opMove = d.opMove===b.dataset.tdopmove?'':b.dataset.tdopmove; d.opProtect=false; re(); });
+  $$('#btNow [data-tdmyprot]').forEach(b=> b.onclick=()=>{ d.myProtect=!d.myProtect; if(d.myProtect)d.myMove=''; re(); });
+  $$('#btNow [data-tdopprot]').forEach(b=> b.onclick=()=>{ d.opProtect=!d.opProtect; if(d.opProtect)d.opMove=''; re(); });
+  $$('#btNow [data-tdmymiss]').forEach(b=> b.onclick=()=>{ d.myMiss=!d.myMiss; re(); });
+  $$('#btNow [data-tdopmiss]').forEach(b=> b.onclick=()=>{ d.opMiss=!d.opMiss; re(); });
+  $$('#btNow [data-tdhealme]').forEach(b=> b.onclick=()=>{ const v=b.dataset.tdhealme;
+    d.heal.me = d.heal.me===v?'':v; re(); });
+  $$('#btNow [data-tdhealop]').forEach(b=> b.onclick=()=>{ const v=b.dataset.tdhealop;
+    d.heal.opp = d.heal.opp===v?'':v;
+    /* ★回復したということは持ち物が確定したということ（v79の確定に流し込む） */
+    if(d.heal.opp){ BT.oppItem = BT.oppItem||{}; BT.oppItem[d.opp]=d.heal.opp; syncOppItems(); PC.clearMatchupCache(); }
+    btCompute(); btRender(); saveBtDraft(); });
+  const u=$('#btNow #turnUndo'); if(u) u.onclick=()=>{ BT.turns.pop(); BT.turnDraft=turnDraftInit(); re(); };
+  const c=$('#btNow #turnCommit'); if(c) c.onclick=()=> commitTurn();
 }
 /* ★記録したら、そのまま対戦タブの状態に反映する（二重入力をなくすのが目的） */
 function commitTurn(){
   const d = BT.turnDraft;
-  if(!d || !d.me || !d.opp) return toast('対面を選んでください', true);
-  if(d.my.act==='move' && !d.my.move && d.op.act==='move' && !d.op.move)
+  if(!d || !d.me || !d.opp) return toast('対面が決まっていません', true);
+  const switchedMe  = BT.me  !== d.me;
+  const switchedOpp = BT.sel !== d.opp;
+  const my = switchedMe  ? {act:'switch', to:BT.me,  move:'', miss:false}
+           : d.myProtect ? {act:'protect', to:'', move:'', miss:false}
+                         : {act:'move', to:'', move:d.myMove, miss:d.myMiss};
+  const op = switchedOpp ? {act:'switch', to:BT.sel, move:'', miss:false}
+           : d.opProtect ? {act:'protect', to:'', move:'', miss:false}
+                         : {act:'move', to:'', move:d.opMove, miss:d.opMiss};
+  if(my.act==='move' && !my.move && op.act==='move' && !op.move)
     return toast('どちらかの行動を入れてください', true);
 
-  /* ★HPを更新する前に「更新前の値」を取っておく。
-     先に BT.oppHp を書き換えてから差分を取ると、必ず0になる（最初の実装で踏んだ）。 */
-  const oppHpBefore = (BT.oppHp||{})[d.opp]!=null ? BT.oppHp[d.opp] : 100;
-  const myHpBefore  = (BT.hp||{})[d.me];
-  BT.turns.push({ n:BT.turns.length+1, me:d.me, opp:d.opp, first:d.first,
-                  my:{...d.my}, op:{...d.op}, myHp:d.myHp, oppHp:d.oppHp,
-                  /* あとで逆算に使えるよう、そのターンで動いた実数も残す */
-                  oppHpFrom:oppHpBefore, myHpFrom:(myHpBefore!=null?myHpBefore:null) });
+  const myHp  = (BT.hp||{})[d.me];
+  const oppHp = (BT.oppHp||{})[d.opp];
+  const last  = BT.turns.length ? BT.turns[BT.turns.length-1] : null;
+  const oppFrom = last && last.opp===d.opp && last.oppHp!=null ? last.oppHp : 100;
 
-  /* --- 反映① 場に出ている駒 --- */
-  BT.me  = (d.my.act==='switch' && d.my.to) ? d.my.to  : d.me;
-  BT.sel = (d.op.act==='switch' && d.op.to) ? d.op.to  : d.opp;
-  /* ★これが無いと btCompute() が「先発予想に強い駒」で BT.me を上書きしてしまい、
-     ターンタブで交代を記録しても対戦タブが前の駒のままになる（実装時に踏んだ）。 */
-  BT.meManual = true;
-  BT.usedMine = BT.usedMine || [];
-  if(!BT.usedMine.includes(BT.me)) BT.usedMine.push(BT.me);
-  BT.seenOrder = BT.seenOrder || [];
-  if(!BT.seenOrder.includes(BT.sel) && BT.seenOrder.length<3) BT.seenOrder.push(BT.sel);
-  /* 交代したら、みずびたし等のタイプ変更は元に戻る（v80と同じ扱い） */
-  if(d.my.act==='switch' && BT.myType) delete BT.myType[d.me];
-  /* 相手が交代したら、積み・状態異常は載せ替える（v77と同じ扱い） */
-  if(d.op.act==='switch' && d.op.to){ stashOppBoard(d.opp); loadOppBoard(d.op.to); }
+  BT.turns.push({ n:BT.turns.length+1, me:d.me, opp:d.opp, first:d.first, my, op,
+                  myHp: myHp!=null?myHp:null, oppHp: oppHp!=null?oppHp:null,
+                  heal: (d.heal.me||d.heal.opp) ? {...d.heal} : undefined });
 
-  /* --- 反映② HP --- */
-  if(d.myHp!=null)  BT.hp[d.me] = d.myHp;
-  if(d.oppHp!=null) BT.oppHp[d.opp] = d.oppHp;
-
-  /* --- 反映③ 相手の技を観測に足す（外れても「持っている」ことは分かる） --- */
-  if(d.op.act==='move' && d.op.move){
+  /* --- 相手の技を観測に足す（外れても「持っている」ことは分かる） --- */
+  if(op.act==='move' && op.move){
     BT.obs = BT.obs || {}; BT.obsCount = BT.obsCount || {};
     const cur = BT.obs[d.opp] = BT.obs[d.opp] || [];
-    if(!cur.includes(d.op.move)) cur.push(d.op.move);
+    if(!cur.includes(op.move)) cur.push(op.move);
     const oc = BT.obsCount[d.opp] = BT.obsCount[d.opp] || {};
-    oc[d.op.move] = (oc[d.op.move]||0) + 1;
-    /* 積み技なら盤面のランクに乗せる（v66と同じ） */
-    const up = PC.statUpOf(d.op.move);
-    if(up){
+    oc[op.move] = (oc[op.move]||0) + 1;
+    const up = PC.statUpOf(op.move);
+    if(up && !op.miss){
       BT.stacks = BT.stacks || {};
       const st = BT.stacks[d.opp] = BT.stacks[d.opp] || {};
-      st[d.op.move] = (st[d.op.move]||0) + 1;
+      st[op.move] = (st[op.move]||0) + 1;
       BT.board = BT.board || {};
       Object.entries(up).forEach(([k,v])=>{ const bk=STACK_RANK_MAP[k]; if(!bk) return;
         BT.board[bk] = Math.max(-6, Math.min(6, (BT.board[bk]||0) + v));
         if(!BT.board[bk]) delete BT.board[bk]; });
       stashOppBoard(d.opp);
     }
-    /* みずびたし等でこちらのタイプが変わる（v80と同じ） */
-    const ct = PC.typeChangeOf(d.op.move);
-    if(ct && d.my.act!=='switch'){ BT.myType = BT.myType || {}; BT.myType[d.me] = ct; }
+    const ct = PC.typeChangeOf(op.move);
+    if(ct && !switchedMe){ BT.myType = BT.myType || {}; BT.myType[d.me] = ct; }
   }
-  /* --- 反映④ 自分が積んだぶん --- */
-  if(d.my.act==='move' && d.my.move && !d.my.miss){
-    const up = PC.statUpOf(d.my.move);
+  /* --- 自分が積んだぶん／与えた実測ダメージ --- */
+  if(my.act==='move' && my.move && !my.miss){
+    const up = PC.statUpOf(my.move);
     if(up){
       BT.board = BT.board || {};
       const MY = {a:'myAtkRank', b:'myDefRank', c:'mySpaRank', d:'mySpdRank', s:'mySpeRank'};
@@ -2949,14 +2895,24 @@ function commitTurn(){
         BT.board[bk] = Math.max(-6, Math.min(6, (BT.board[bk]||0) + v));
         if(!BT.board[bk]) delete BT.board[bk]; });
     }
-    /* 与えた実測ダメージ（v62の dealt と同じ形で残す）。★更新前の値と比べること */
-    if(d.oppHp!=null && d.oppHp < oppHpBefore){
+    /* ★与えた実測ダメージ。**HPの段ボタン（v62の setOppHp）が既に技名なしで積んでいる**ので、
+       そのまま push すると二重に数える。直前の「技名なし・同じ割合」があれば技名を埋めるだけにする。 */
+    if(oppHp!=null && oppHp < oppFrom){
       BT.dealt[d.opp] = BT.dealt[d.opp] || [];
-      BT.dealt[d.opp].push({move:d.my.move, pct: oppHpBefore - d.oppHp});
+      const arr = BT.dealt[d.opp];
+      const last = arr[arr.length-1];
+      if(last && !last.move && last.pct === (oppFrom - oppHp)) last.move = my.move;
+      else arr.push({move:my.move, pct: oppFrom - oppHp});
     }
   }
-  BT.turnDraft = turnDraftInit();
-  PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft(); renderTurnTab();
+  /* --- 出した順の記録 --- */
+  BT.usedMine = BT.usedMine || [];
+  if(!BT.usedMine.includes(BT.me)) BT.usedMine.push(BT.me);
+  BT.seenOrder = BT.seenOrder || [];
+  if(!BT.seenOrder.includes(BT.sel) && BT.seenOrder.length<3) BT.seenOrder.push(BT.sel);
+
+  BT.turnDraft = turnDraftInit();          // 次のターンは「いまの対面」から始まる
+  PC.clearMatchupCache(); btCompute(); btRender(); saveBtDraft();
   toast(`ターン${BT.turns.length}を記録しました`);
 }
 
