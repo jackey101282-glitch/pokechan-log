@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<meta name="app-version" content="91">
+<meta name="app-version" content="92">
 <title>ポケチャン ノート</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%23ff5d5d'/><path d='M4 50h92' stroke='%23222' stroke-width='8'/><circle cx='50' cy='50' r='16' fill='%23fff' stroke='%23222' stroke-width='8'/></svg>">
 <style>
@@ -51,11 +51,40 @@ a{color:var(--blue)}
    ここだけ画面中央で外へ広げる。 */
 @media (min-width:1180px){
   /* 対戦タブだけ、画面中央で外へ広げる。#toast は section の外にあるので transform の影響を受けない */
-  #tab-bt{ width:min(1280px, calc(100vw - 48px)); margin-left:50%; transform:translateX(-50%); }
+  #tab-bt{ width:min(1480px, calc(100vw - 32px)); margin-left:50%; transform:translateX(-50%); }
   /* 選出（左）と いまの対面（右）を横に並べる */
   .btcols{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);
            gap:16px; align-items:start; }
   .btcols > div{ min-width:0 }
+}
+/* ★横1500px以上は3列（2026-08-22・社長の指摘「左右の余白がまだ全然ある。もう一列ぐらい追加できる」）。
+     左＝選出と気をつけること／中＝盤面と結論と撃つ技／右＝リアルタイム入力。
+     1920pxのPCで 860px しか使っておらず、1060px 捨てていた。 */
+@media (min-width:1500px){
+  #tab-bt{ width:min(1860px, calc(100vw - 32px)); }
+  .btcols{ grid-template-columns:minmax(0,0.92fr) minmax(0,1fr) minmax(0,1.02fr); }
+  /* ★盤面の6体チップを詰める（社長の指摘「なるべくスクロールしたくない」）。
+     中カラムの高さの27%（296px）をチップだけが使っていて、3行に折り返していた。
+     PCはマウスなので、指で押す前提の余白は要らない。 */
+  #btNow .quick .qb{ padding:2px 6px; font-size:11.5px; gap:3px }
+  #btNow .quick{ gap:4px }
+}
+/* ★上の帯を薄くして、対戦の中身に縦を回す（社長の指摘「上だけで画面の1/4を使っている」）。
+     PCではヘッダを1行にまとめ、「使う構築」と「相手6体を入れる」を同じ帯に横並びにする。 */
+@media (min-width:1180px){
+  header.top{ padding:5px 0 }
+  header.top .top-row{ gap:14px }
+  header.top .tabs{ margin-top:0; flex:1 1 auto }
+  header.top .wrap{ display:flex; align-items:center; gap:14px;
+                    max-width:min(1860px, calc(100vw - 32px)) }
+  header.top .top-row{ flex:0 0 auto }
+  .btsetup{ display:grid; grid-template-columns:minmax(280px,0.9fr) minmax(0,2fr); gap:14px; align-items:start }
+  /* 「使う構築」も1行に畳む。ラベル・選択・6体の並びを横に並べるだけで70px縦が浮く */
+  .btsetup > .card{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:6px 12px }
+  .btsetup > .card > label.f{ margin:0; flex:0 0 auto; white-space:nowrap }
+  .btsetup > .card > label.f .muted{ display:none }
+  .btsetup > .card > select{ flex:1 1 200px; min-width:160px }
+  .btsetup > .card > #btTeamChips{ margin:0; flex:1 1 100%; font-size:11px }
 }
 
 /* header */
@@ -147,6 +176,10 @@ details[open] > .cardsum::after{content:'▴'}
 .tdrow.opp{border-left:3px solid var(--org);background:color-mix(in srgb,var(--org) 4%,transparent)}
 .tdno{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;
   border-radius:50%;background:var(--fg);color:var(--card);font-size:11px;margin-right:3px}
+/* ★「持ち物で回復した」は 自分の行／相手の行 で必ず分ける（社長の指摘）。
+   1列に8個並べると折り返しが幅任せになり、自分5・相手3 のようにずれる。 */
+.healrow{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;margin-top:4px;overflow-x:auto}
+.healrow > span{flex:0 0 30px}
 /* ★HP欄は type=text（inputmode=numeric）にしてある。type=number は Chrome で
    カーソル位置を取れず、打った数字が逆順に並ぶため（2026-08-21 修正）。 */
 .hpwrap input[type=number],.hpwrap input.hpnum{width:92px;text-align:right;font-size:17px;font-weight:700}
@@ -414,6 +447,9 @@ tr.bad .bar>i{background:var(--lose)}
   <!-- 試合中はこの1画面で完結させる。上から順に「使う構築 → 相手を入れる → 選出 → いまの対面」
        ★使う構築の切替は「記録」タブの中にしか無く、試合前に見つけられなかった（社長の指摘 2026-08-20）。
          対戦タブの先頭に置く。中身は #fTeam と同じものを指すので、どちらで変えても一致する。 -->
+  <!-- ★PCでは「使う構築」と「相手6体を入れる」を横に並べる（2026-08-22・社長の指摘）。
+       縦に積むとここだけで画面の1/4を使っていた。狭い画面ではCSSで縦に戻る。 -->
+  <div class="btsetup">
   <div class="card" style="padding:10px 14px">
     <label class="f">使う構築<span class="muted">（ここを変えると選出も対面も全部この構築で計算します）</span></label>
     <select id="btTeam"></select>
@@ -442,6 +478,7 @@ tr.bad .bar>i{background:var(--lose)}
       <div id="btOppChips" class="pklist" style="margin-top:10px"></div>
     </div>
   </details>
+  </div>
   <!-- ★PCでは選出と「いまの対面」を横に並べる（2026-08-21）。
        社長はスマホで対戦しながらPCでこれを操作するので、
        タブや上下スクロールで往復させないことがそのまま時間の節約になる。
@@ -449,6 +486,10 @@ tr.bad .bar>i{background:var(--lose)}
   <div class="btcols">
     <div id="btPlan"></div>
     <div id="btNow"></div>
+    <!-- ★3列目＝リアルタイム入力（2026-08-22・社長の指摘
+         「左側には選出と気をつけること、右側で実際に対面している相手との対戦・入力」）。
+         狭い画面ではCSSで縦1列に戻る。 -->
+    <div id="btTurn"></div>
   </div>
   <!-- ★「試合が終わった」は"いまの対面"の下に置く。
        この対面でどうなったか → その結果を残す、という流れになるため（社長の指摘 2026-08-20）。 -->
@@ -746,18 +787,18 @@ tr.bad .bar>i{background:var(--lose)}
 </div>
 <div id="toast"></div>
 
-<script src="./supabase-config.js?v=91"></script>
-<script src="./data/species.js?v=91"></script>
-<script src="./data/moves.js?v=91"></script>
-<script src="./data/principles.js?v=91"></script>
-<script src="./data/usage.js?v=91"></script>
-<script src="./data/teams.js?v=91"></script>
-<script src="./core.js?v=91"></script>
+<script src="./supabase-config.js?v=91t7"></script>
+<script src="./data/species.js?v=91t7"></script>
+<script src="./data/moves.js?v=91t7"></script>
+<script src="./data/principles.js?v=91t7"></script>
+<script src="./data/usage.js?v=91t7"></script>
+<script src="./data/teams.js?v=91t7"></script>
+<script src="./core.js?v=91t7"></script>
 <!-- ★音声（読み上げ）は 2026-08-21 に停止。社長の判定「9種すべて不自然」＋
      スマホで対戦しPCでこのアプリを操作する運用になったため、読み上げの必要が無くなった。
      コードとクリップは残してあるので、この1行を戻せば復活する。
-<script src="./voice.js?v=91"></script> -->
+<script src="./voice.js?v=91t7"></script> -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="./app.js?v=91"></script>
+<script src="./app.js?v=91t7"></script>
 </body>
 </html>
